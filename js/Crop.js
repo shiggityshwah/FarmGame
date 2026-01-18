@@ -13,9 +13,21 @@ export const CROP_TYPES = {
     WEED: { index: 10, name: 'Weed' }
 };
 
+// Helper to get crop type by index
+export function getCropTypeByIndex(index) {
+    for (const key of Object.keys(CROP_TYPES)) {
+        if (CROP_TYPES[key].index === index) {
+            return CROP_TYPES[key];
+        }
+    }
+    return CROP_TYPES.CARROT; // Default fallback
+}
+
 // Growth stages
 export const GROWTH_STAGE = {
-    SEED: 0,
+    PLANTING_PHASE1: -2,  // First doing animation, hole becomes half-closed (1010)
+    PLANTED: -1,          // Second doing animation done, hole closed (818), needs watering
+    SEED: 0,              // After watering, wet hole (882), seed starting to sprout
     SEEDLING: 1,
     EARLY_GROWTH: 2,
     ALMOST_HARVESTABLE: 3,
@@ -63,19 +75,41 @@ const HARVEST_STAGE_TIMES = {
 };
 
 export class Crop {
-    constructor(tileX, tileY, cropType) {
+    constructor(tileX, tileY, cropType, startAsPlanted = false) {
         this.tileX = tileX;
         this.tileY = tileY;
         this.cropType = cropType;
-        this.stage = GROWTH_STAGE.SEED;
+        this.stage = startAsPlanted ? GROWTH_STAGE.PLANTING_PHASE1 : GROWTH_STAGE.SEED;
         this.growthTimer = 0;
         this.isHarvested = false;
+        this.isWatered = !startAsPlanted;  // Existing crops start watered, planted crops need watering
 
         // Post-harvest state
         this.harvestStage = HARVEST_STAGE.LARGE_HOLE;
         this.harvestTimer = 0;
         this.alpha = 1;
         this.isGone = false;
+    }
+
+    // Advance planting phase (called after each DOING animation)
+    advancePlantingPhase() {
+        if (this.stage === GROWTH_STAGE.PLANTING_PHASE1) {
+            this.stage = GROWTH_STAGE.PLANTED;
+            return true;
+        }
+        return false;
+    }
+
+    // Water the crop to start growth
+    water() {
+        if (this.isWatered || this.isHarvested) return false;
+        this.isWatered = true;
+        // If planted but not yet growing, start growing
+        if (this.stage === GROWTH_STAGE.PLANTED) {
+            this.stage = GROWTH_STAGE.SEED;
+        }
+        console.log(`Watered ${this.cropType.name} at (${this.tileX}, ${this.tileY})`);
+        return true;
     }
 
     update(deltaTime) {
@@ -105,8 +139,16 @@ export class Crop {
             return;
         }
 
+        // Only grow if watered
+        if (!this.isWatered) return;
+
         // Handle growth
         if (this.stage >= GROWTH_STAGE.HARVESTABLE) {
+            return;
+        }
+
+        // Don't grow if still in planted stage (needs watering first)
+        if (this.stage === GROWTH_STAGE.PLANTED) {
             return;
         }
 
@@ -137,10 +179,22 @@ export class Crop {
         const offset = this.cropType.index;
 
         switch (this.stage) {
-            case GROWTH_STAGE.SEED:
+            case GROWTH_STAGE.PLANTING_PHASE1:
+                // First phase of planting, show half-closed hole (1010)
                 return [
-                    { id: DIRT_TILES.WET, offsetY: 0 },
-                    { id: TILE_BASE.SEED + offset, offsetY: 0 }
+                    { id: DIRT_TILES.SMALL_HOLE, offsetY: 0 }
+                ];
+
+            case GROWTH_STAGE.PLANTED:
+                // Fully planted, show closed dry hole (818), needs watering
+                return [
+                    { id: DIRT_TILES.DRY, offsetY: 0 }
+                ];
+
+            case GROWTH_STAGE.SEED:
+                // After watering, show closed wet hole (no visible seed yet)
+                return [
+                    { id: DIRT_TILES.WET, offsetY: 0 }
                 ];
 
             case GROWTH_STAGE.SEEDLING:
@@ -200,5 +254,12 @@ export class Crop {
         }
 
         return tileX === this.tileX && tileY === this.tileY;
+    }
+
+    // Get the Y position for depth sorting
+    // Use slightly before the middle of the bottom tile as the depth line
+    // Characters whose center is at or past this point appear in front
+    getSortY(tileSize) {
+        return (this.tileY + 0.5) * tileSize - 1;
     }
 }

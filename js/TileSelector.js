@@ -2,30 +2,57 @@ import { TOOLS } from './Toolbar.js';
 
 // Define which tiles are acceptable for each tool
 const ACCEPTABLE_TILES = {
-    // Hoe can work on grass/dirt tiles (NOT already hoed ground - tile 67)
+    // Hoe can work on grass tiles (NOT already hoed ground/dirt tiles)
     hoe: {
-        // Include common grass and dirt tile IDs from the tileset
-        // These are typical ground tiles - may need adjustment based on actual tileset
+        // Grass tiles: 65, 66, 129, 130, 131, 132, 133, 134, 192, 193, 194, 195, 197, 199, 257, 258
+        // Exclude dirt tiles: 67, 449, 457, 458, 459, 521, 522
         validTileIds: new Set([
-            // Row 0-3 grass variations (excluding 67 which is hoed ground)
-            0, 1, 2, 3, 64, 65, 66, 128, 129, 130, 131, 192, 193, 194, 195,
-            // Additional grass tiles
-            4, 5, 6, 68, 69, 70, 132, 133, 134, 196, 197, 198,
-            // Light grass
-            256, 257, 258, 259, 320, 321, 322, 323
+            65, 66, 129, 130, 131, 132, 133, 134, 192, 193, 194, 195, 197, 199, 257, 258
         ])
     },
-    // Shovel can only work on hoed ground (tile 67) that doesn't already have a hole
+    // Shovel can work on hoed ground (all dirt tiles) that doesn't already have a hole
     shovel: {
-        validTileIds: new Set([67])
+        // Dirt tiles: 67, 449, 457, 458, 459, 521, 522
+        validTileIds: new Set([67, 449, 457, 458, 459, 521, 522]),
+        // Also need to check overlay for holes - handled in isAcceptableTile
+        checkOverlay: true
+    },
+    // Plant tool works on open holes (overlay tile 1138)
+    plant: {
+        // Requires hole overlay check, not base tile check
+        requiresHoleOverlay: true
+    },
+    // Watering can works on closed dry holes (tile ID 818) that have an unwatered planted crop
+    watering_can: {
+        // Requires planted crop check - handled in isAcceptableTile
+        requiresPlantedCrop: true
+    },
+    // Sword targets enemies
+    sword: {
+        // Requires enemy check - handled in isAcceptableTile
+        requiresEnemy: true
+    },
+    // Pickaxe targets ore veins
+    pickaxe: {
+        // Requires ore vein check - handled in isAcceptableTile
+        requiresOre: true
+    },
+    // Axe targets trees
+    axe: {
+        // Requires tree check - handled in isAcceptableTile
+        requiresTree: true
     }
 };
 
 export class TileSelector {
-    constructor(tilemap, camera, overlayManager = null) {
+    constructor(tilemap, camera, overlayManager = null, cropManager = null) {
         this.tilemap = tilemap;
         this.camera = camera;
         this.overlayManager = overlayManager;
+        this.cropManager = cropManager;
+        this.enemyManager = null;
+        this.oreManager = null;
+        this.treeManager = null;
 
         // Selection state
         this.isSelecting = false;
@@ -41,6 +68,22 @@ export class TileSelector {
         // Visual settings
         this.highlightColor = 'rgba(255, 255, 0, 0.4)';
         this.invalidColor = 'rgba(255, 0, 0, 0.3)';
+    }
+
+    setCropManager(cropManager) {
+        this.cropManager = cropManager;
+    }
+
+    setEnemyManager(enemyManager) {
+        this.enemyManager = enemyManager;
+    }
+
+    setOreManager(oreManager) {
+        this.oreManager = oreManager;
+    }
+
+    setTreeManager(treeManager) {
+        this.treeManager = treeManager;
     }
 
     setTool(tool) {
@@ -110,8 +153,57 @@ export class TileSelector {
             return true;
         }
 
+        // Special handling for plant tool - requires open hole overlay (tile ID 1138)
+        if (toolRules.requiresHoleOverlay) {
+            if (!this.overlayManager) return false;
+            const overlay = this.overlayManager.getOverlay(tileX, tileY);
+            // Open hole is tile ID 1138
+            if (!overlay || overlay.tileId !== 1138) return false;
+            // Also check there's no crop already planted here
+            if (this.cropManager && this.cropManager.getCropAt(tileX, tileY)) return false;
+            return true;
+        }
+
+        // Special handling for watering can - requires planted crop that needs water
+        if (toolRules.requiresPlantedCrop) {
+            if (!this.cropManager) return false;
+            const crop = this.cropManager.getCropAt(tileX, tileY);
+            // Check if there's a planted crop that needs watering
+            if (!crop || crop.isHarvested) return false;
+            // Check if crop needs watering (not already watered)
+            if (crop.isWatered) return false;
+            return true;
+        }
+
+        // Special handling for sword - requires alive enemy at tile
+        if (toolRules.requiresEnemy) {
+            if (!this.enemyManager) return false;
+            const enemy = this.enemyManager.getEnemyAt(tileX, tileY);
+            // Check if there's an alive enemy at this tile
+            if (!enemy || !enemy.isAlive) return false;
+            return true;
+        }
+
+        // Special handling for pickaxe - requires mineable ore vein at tile
+        if (toolRules.requiresOre) {
+            if (!this.oreManager) return false;
+            const ore = this.oreManager.getOreAt(tileX, tileY);
+            // Check if there's a mineable ore at this tile
+            if (!ore || !ore.canBeMined()) return false;
+            return true;
+        }
+
+        // Special handling for axe - requires choppable tree at tile
+        if (toolRules.requiresTree) {
+            if (!this.treeManager) return false;
+            const tree = this.treeManager.getTreeAt(tileX, tileY);
+            // Check if there's a choppable tree at this tile
+            if (!tree || !tree.canBeChopped()) return false;
+            return true;
+        }
+
         // Check if tile ID is valid for this tool
-        if (!toolRules.validTileIds.has(tileId)) {
+        if (toolRules.validTileIds && !toolRules.validTileIds.has(tileId)) {
             return false;
         }
 
@@ -119,6 +211,10 @@ export class TileSelector {
         if (this.currentTool.id === 'shovel') {
             // Can't dig a hole where there's already a hole overlay
             if (this.overlayManager && this.overlayManager.hasOverlay(tileX, tileY)) {
+                return false;
+            }
+            // Can't dig where there's a crop
+            if (this.cropManager && this.cropManager.getCropAt(tileX, tileY)) {
                 return false;
             }
         }

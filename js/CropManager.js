@@ -1,4 +1,4 @@
-import { Crop, CROP_TYPES, GROWTH_STAGE } from './Crop.js';
+import { Crop, CROP_TYPES, GROWTH_STAGE, getCropTypeByIndex } from './Crop.js';
 
 export class CropManager {
     constructor(tilemap) {
@@ -7,19 +7,43 @@ export class CropManager {
         this.harvestEffects = [];
     }
 
+    // Plant a new crop at a tile position
+    plantCrop(tileX, tileY, cropTypeIndex) {
+        // Check if there's already a crop here
+        if (this.getCropAt(tileX, tileY)) {
+            console.log(`Cannot plant at (${tileX}, ${tileY}) - crop already exists`);
+            return null;
+        }
+
+        const cropType = getCropTypeByIndex(cropTypeIndex);
+        const crop = new Crop(tileX, tileY, cropType, true); // true = start as planted
+        this.crops.push(crop);
+
+        console.log(`Planted ${cropType.name} at (${tileX}, ${tileY})`);
+        return crop;
+    }
+
+    // Water a crop at a tile position
+    waterCrop(tileX, tileY) {
+        const crop = this.getCropAt(tileX, tileY);
+        if (crop && !crop.isWatered) {
+            return crop.water();
+        }
+        return false;
+    }
+
     spawnRandomCrops(count = 10) {
         const cropTypeKeys = Object.keys(CROP_TYPES);
         const usedPositions = new Set();
 
         for (let i = 0; i < count; i++) {
-            // Get random position
-            let tileX, tileY, posKey;
+            // Get random position using tilemap's method (respects house boundaries)
+            let position, posKey;
             let attempts = 0;
 
             do {
-                tileX = Math.floor(Math.random() * this.tilemap.mapWidth);
-                tileY = Math.floor(Math.random() * (this.tilemap.mapHeight - 1)) + 1; // Leave room for top tile
-                posKey = `${tileX},${tileY}`;
+                position = this.tilemap.getRandomTilePosition();
+                posKey = `${position.tileX},${position.tileY}`;
                 attempts++;
             } while (usedPositions.has(posKey) && attempts < 100);
 
@@ -31,7 +55,7 @@ export class CropManager {
             const randomType = cropTypeKeys[Math.floor(Math.random() * cropTypeKeys.length)];
             const cropType = CROP_TYPES[randomType];
 
-            const crop = new Crop(tileX, tileY, cropType);
+            const crop = new Crop(position.tileX, position.tileY, cropType);
             this.crops.push(crop);
         }
 
@@ -43,6 +67,9 @@ export class CropManager {
         for (const crop of this.crops) {
             crop.update(deltaTime);
         }
+
+        // Clean up crops that have completely faded away
+        this.cleanupGoneCrops();
 
         // Update harvest effects
         for (let i = this.harvestEffects.length - 1; i >= 0; i--) {
@@ -145,10 +172,83 @@ export class CropManager {
     // Get crop at tile position (for hover effects, etc.)
     getCropAt(tileX, tileY) {
         for (const crop of this.crops) {
-            if (crop.containsTile(tileX, tileY) && !crop.isHarvested) {
+            // Skip harvested or gone crops
+            if (crop.isHarvested || crop.isGone) continue;
+            if (crop.containsTile(tileX, tileY)) {
                 return crop;
             }
         }
         return null;
+    }
+
+    // Clean up crops that have completely faded away
+    cleanupGoneCrops() {
+        this.crops = this.crops.filter(crop => !crop.isGone);
+    }
+
+    // Get all crops for depth-sorted rendering
+    getCrops() {
+        return this.crops;
+    }
+
+    // Render a single crop (for depth-sorted rendering)
+    renderCrop(ctx, crop) {
+        if (crop.isGone) return;
+
+        const tileSize = this.tilemap.tileSize;
+        const tiles = crop.getTileIds();
+        if (tiles.length === 0) return;
+
+        // Apply alpha for fading crops
+        if (crop.alpha < 1) {
+            ctx.save();
+            ctx.globalAlpha = crop.alpha;
+        }
+
+        for (const tile of tiles) {
+            const sourceRect = this.tilemap.getTilesetSourceRect(tile.id);
+            const worldX = crop.tileX * tileSize;
+            const worldY = (crop.tileY + tile.offsetY) * tileSize;
+
+            ctx.drawImage(
+                this.tilemap.tilesetImage,
+                sourceRect.x, sourceRect.y, sourceRect.width, sourceRect.height,
+                worldX, worldY, tileSize, tileSize
+            );
+        }
+
+        if (crop.alpha < 1) {
+            ctx.restore();
+        }
+    }
+
+    // Render only the harvest effects (rendered after all entities)
+    renderEffects(ctx, camera) {
+        const tileSize = this.tilemap.tileSize;
+
+        for (const effect of this.harvestEffects) {
+            ctx.save();
+            ctx.globalAlpha = effect.alpha;
+
+            // Draw the harvested crop icon floating up
+            const sourceRect = this.tilemap.getTilesetSourceRect(effect.tileId);
+            ctx.drawImage(
+                this.tilemap.tilesetImage,
+                sourceRect.x, sourceRect.y, sourceRect.width, sourceRect.height,
+                effect.x - tileSize / 2, effect.y - tileSize / 2,
+                tileSize, tileSize
+            );
+
+            // Draw "+1" text
+            ctx.fillStyle = '#ffffff';
+            ctx.strokeStyle = '#000000';
+            ctx.lineWidth = 2;
+            ctx.font = 'bold 8px Arial';
+            ctx.textAlign = 'center';
+            ctx.strokeText('+1', effect.x, effect.y - tileSize / 2 - 2);
+            ctx.fillText('+1', effect.x, effect.y - tileSize / 2 - 2);
+
+            ctx.restore();
+        }
     }
 }

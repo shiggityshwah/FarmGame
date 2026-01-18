@@ -3,7 +3,8 @@ const JOB_STATUS = {
     PENDING: 'pending',
     WALKING: 'walking',
     WORKING: 'working',
-    COMPLETED: 'completed'
+    COMPLETED: 'completed',
+    PAUSED: 'paused'
 };
 
 export class JobManager {
@@ -13,6 +14,8 @@ export class JobManager {
         this.currentJob = null;
         this.isProcessing = false;
         this.jobIdCounter = 0;
+        this.isPausedForCombat = false;
+        this.savedJobState = null; // Save state when paused
     }
 
     addJob(tool, tiles) {
@@ -42,7 +45,7 @@ export class JobManager {
             this.isProcessing = false;
             this.currentJob = null;
             // Return to idle animation
-            this.game.setAnimation('WAITING');
+            this.game.setAnimation('IDLE');
             return;
         }
 
@@ -77,6 +80,12 @@ export class JobManager {
     onTileReached() {
         if (!this.currentJob) return;
 
+        // Don't start work if paused for combat
+        if (this.isPausedForCombat) {
+            console.log('JobManager: Tile reached but paused for combat - will resume later');
+            return;
+        }
+
         // Start working animation
         this.currentJob.status = JOB_STATUS.WORKING;
         const animation = this.currentJob.tool.animation;
@@ -88,11 +97,73 @@ export class JobManager {
     }
 
     onAnimationComplete() {
+        // If paused for combat, don't continue the job
+        if (this.isPausedForCombat) {
+            console.log('JobManager: Animation complete but paused for combat');
+            return;
+        }
+
         if (!this.currentJob) return;
 
-        // Apply tool effect to tile
         const tile = this.currentJob.tiles[this.currentJob.currentTileIndex];
-        this.applyToolEffect(this.currentJob.tool, tile.x, tile.y);
+        const tool = this.currentJob.tool;
+
+        // Special handling for plant tool - needs two animation phases
+        if (tool.id === 'plant') {
+            // Check if we need to do the second phase
+            if (!this.currentJob.plantingPhase) {
+                this.currentJob.plantingPhase = 1;
+            }
+
+            if (this.currentJob.plantingPhase === 1) {
+                // First animation complete - apply phase 1 effect (create crop, half-closed hole)
+                this.applyPlantPhase1(tool, tile.x, tile.y);
+                this.currentJob.plantingPhase = 2;
+
+                // Do second animation
+                this.game.setAnimation(tool.animation, false, () => {
+                    this.onAnimationComplete();
+                });
+                return;
+            } else {
+                // Second animation complete - apply phase 2 effect (fully planted)
+                this.applyPlantPhase2(tile.x, tile.y);
+                this.currentJob.plantingPhase = 0; // Reset for next tile
+            }
+        } else if (tool.id === 'sword') {
+            // Attack enemy - continue until dead
+            const shouldContinue = this.attackEnemy(tile.x, tile.y);
+            if (shouldContinue) {
+                // Enemy still alive, attack again
+                this.game.setAnimation(tool.animation, false, () => {
+                    this.onAnimationComplete();
+                });
+                return;
+            }
+        } else if (tool.id === 'pickaxe') {
+            // Mine ore - continue until depleted
+            const shouldContinue = this.mineOre(tile.x, tile.y);
+            if (shouldContinue) {
+                // Ore still has more to mine, mine again
+                this.game.setAnimation(tool.animation, false, () => {
+                    this.onAnimationComplete();
+                });
+                return;
+            }
+        } else if (tool.id === 'axe') {
+            // Chop tree - continue until removed
+            const shouldContinue = this.chopTree(tile.x, tile.y);
+            if (shouldContinue) {
+                // Tree still has more to chop, chop again
+                this.game.setAnimation(tool.animation, false, () => {
+                    this.onAnimationComplete();
+                });
+                return;
+            }
+        } else {
+            // Apply tool effect to tile (other tools)
+            this.applyToolEffect(tool, tile.x, tile.y);
+        }
 
         // Clear the work tile reference
         this.game.currentWorkTile = null;
@@ -133,8 +204,31 @@ export class JobManager {
 
         switch (tool.id) {
             case 'hoe':
-                // Change tile to hoed ground (tile ID 67)
-                this.game.tilemap.setTileAt(tileX, tileY, 67);
+                // Randomize dirt tile: mainly 67 and 449, with smaller chance of 457, 458, 459, 521, 522
+                const commonDirtTiles = [67, 449];
+                const rareDirtTiles = [457, 458, 459, 521, 522];
+
+                let dirtTileId;
+                const rand = Math.random();
+                if (rand < 0.8) {
+                    // 80% chance for common dirt tiles
+                    const tileIndex = Math.floor(Math.random() * commonDirtTiles.length);
+                    dirtTileId = commonDirtTiles[tileIndex];
+                } else {
+                    // 20% chance for rare dirt tiles
+                    const tileIndex = Math.floor(Math.random() * rareDirtTiles.length);
+                    dirtTileId = rareDirtTiles[tileIndex];
+                }
+
+                // Change tile to hoed ground
+                this.game.tilemap.setTileAt(tileX, tileY, dirtTileId);
+
+                // Mark tile as hoed and update edge overlays
+                if (this.game.overlayManager) {
+                    this.game.overlayManager.markTileAsHoed(tileX, tileY);
+                    // Also update edge overlays for neighboring hoed tiles
+                    this.updateNeighborEdgeOverlays(tileX, tileY);
+                }
                 break;
 
             case 'shovel':
@@ -144,11 +238,160 @@ export class JobManager {
                 }
                 break;
 
+            case 'plant':
+                // Plant tool is handled separately via applyPlantPhase1/2
+                // This case should not be reached
+                console.log('Plant tool should use phase methods');
+                break;
+
+            case 'watering_can':
+                // Water the crop at this tile
+                if (this.game.cropManager) {
+                    this.game.cropManager.waterCrop(tileX, tileY);
+                }
+                break;
+
+            // Sword and pickaxe are handled in onAnimationComplete for continuous action
+            case 'sword':
+            case 'pickaxe':
+                // These should not reach here - handled specially in onAnimationComplete
+                break;
+
             // Other tools can be implemented later
             default:
                 console.log(`No effect implemented for ${tool.name}`);
                 break;
         }
+    }
+
+    // Plant phase 1: Remove hole overlay, create crop in PLANTING_PHASE1 stage (shows half-closed hole)
+    applyPlantPhase1(tool, tileX, tileY) {
+        console.log(`Planting phase 1 at (${tileX}, ${tileY})`);
+
+        // Remove the hole overlay first
+        if (this.game.overlayManager) {
+            this.game.overlayManager.removeOverlay(tileX, tileY);
+        }
+
+        // Plant the crop with the seed type from the tool (starts in PLANTING_PHASE1)
+        if (this.game.cropManager && tool.seedType !== undefined) {
+            this.game.cropManager.plantCrop(tileX, tileY, tool.seedType);
+        }
+    }
+
+    // Plant phase 2: Advance crop to PLANTED stage (shows closed dry hole)
+    applyPlantPhase2(tileX, tileY) {
+        console.log(`Planting phase 2 at (${tileX}, ${tileY})`);
+
+        // Get the crop and advance its planting phase
+        if (this.game.cropManager) {
+            const crop = this.game.cropManager.getCropAt(tileX, tileY);
+            if (crop) {
+                crop.advancePlantingPhase();
+            }
+        }
+    }
+
+    // Update edge overlays for neighboring tiles when a new tile is hoed
+    updateNeighborEdgeOverlays(tileX, tileY) {
+        if (!this.game.overlayManager) return;
+
+        // Check all four neighbors and update their edge overlays if they're hoed
+        const neighbors = [
+            { x: tileX, y: tileY - 1 },  // Above
+            { x: tileX - 1, y: tileY },  // Left
+            { x: tileX, y: tileY + 1 },  // Below
+            { x: tileX + 1, y: tileY }   // Right
+        ];
+
+        for (const neighbor of neighbors) {
+            if (this.game.overlayManager.isHoedTile(neighbor.x, neighbor.y)) {
+                this.game.overlayManager.updateEdgeOverlays(neighbor.x, neighbor.y);
+            }
+        }
+    }
+
+    // Attack an enemy at the specified tile
+    // Returns true if enemy is still alive and should continue attacking
+    attackEnemy(tileX, tileY) {
+        if (!this.game.enemyManager) return false;
+
+        const enemy = this.game.enemyManager.getEnemyAt(tileX, tileY);
+        if (!enemy || !enemy.isAlive) {
+            console.log(`No alive enemy at (${tileX}, ${tileY})`);
+            return false;
+        }
+
+        // Make enemy face the player
+        const playerX = this.game.humanPosition.x;
+        enemy.setFacingLeft(playerX > enemy.x);
+
+        // Deal damage to the enemy
+        const damage = this.game.playerDamage;
+        const enemyDied = enemy.takeDamage(damage);
+
+        console.log(`Player attacked ${enemy.type} for ${damage} damage!`);
+
+        if (enemyDied) {
+            console.log(`${enemy.type} has been defeated!`);
+            return false; // Stop attacking
+        }
+
+        return true; // Continue attacking
+    }
+
+    // Mine an ore vein at the specified tile
+    // Returns true if ore is still mineable and should continue mining
+    mineOre(tileX, tileY) {
+        if (!this.game.oreManager) return false;
+
+        const ore = this.game.oreManager.getOreAt(tileX, tileY);
+        if (!ore || !ore.canBeMined()) {
+            console.log(`No mineable ore at (${tileX}, ${tileY})`);
+            return false;
+        }
+
+        // Mine the ore vein
+        const result = this.game.oreManager.mineOre(tileX, tileY);
+
+        if (result && result.stageChanged) {
+            console.log(`Mined ${ore.oreType.name} ore!`);
+        }
+
+        // Check if we should continue mining
+        if (ore.canBeMined()) {
+            return true; // Continue mining
+        }
+
+        console.log(`${ore.oreType.name} ore vein depleted!`);
+        return false; // Stop mining
+    }
+
+    // Chop a tree at the specified tile
+    // Returns true if tree is still choppable and should continue chopping
+    chopTree(tileX, tileY) {
+        if (!this.game.treeManager) return false;
+
+        const tree = this.game.treeManager.getTreeAt(tileX, tileY);
+        if (!tree || !tree.canBeChopped()) {
+            console.log(`No choppable tree at (${tileX}, ${tileY})`);
+            return false;
+        }
+
+        // Chop the tree
+        const result = this.game.treeManager.chopTree(tileX, tileY);
+
+        if (result && result.stageChanged) {
+            console.log(`Chopped ${tree.treeType.name}!`);
+        }
+
+        // Check if we should continue chopping
+        if (tree.canBeChopped()) {
+            return true; // Continue chopping
+        }
+
+        console.log(`${tree.treeType.name} removed!`);
+        return false; // Stop chopping
     }
 
     completeJob() {
@@ -167,7 +410,7 @@ export class JobManager {
             this.currentJob = null;
         }
         this.isProcessing = false;
-        this.game.setAnimation('WAITING');
+        this.game.setAnimation('IDLE');
     }
 
     clearQueue() {
@@ -211,6 +454,62 @@ export class JobManager {
         }
 
         return tiles;
+    }
+
+    // Pause job processing for combat - save current state
+    pauseForCombat() {
+        if (this.isPausedForCombat) return;
+
+        this.isPausedForCombat = true;
+        console.log('JobManager: Pausing for combat');
+
+        // Save current job state if we're in the middle of something
+        if (this.currentJob) {
+            const status = this.currentJob.status;
+            if (status === JOB_STATUS.WALKING || status === JOB_STATUS.WORKING) {
+                this.savedJobState = {
+                    status: status,
+                    // If working, we'll need to redo this tile
+                    needsRedo: status === JOB_STATUS.WORKING
+                };
+                this.currentJob.status = JOB_STATUS.PAUSED;
+                console.log(`JobManager: Saved state - was ${status}, needsRedo: ${status === JOB_STATUS.WORKING}`);
+            }
+        }
+    }
+
+    // Resume job processing after combat
+    resumeFromCombat() {
+        if (!this.isPausedForCombat) return;
+
+        this.isPausedForCombat = false;
+        console.log('JobManager: Resuming from combat');
+
+        // Restore job state and continue
+        if (this.currentJob) {
+            // Check if we need to redo the current tile (was interrupted during work)
+            const needsRedo = this.savedJobState && this.savedJobState.needsRedo;
+
+            if (this.savedJobState) {
+                this.savedJobState = null;
+            }
+
+            // Always walk back to the current tile (player may have moved during combat)
+            this.currentJob.status = JOB_STATUS.WALKING;
+            console.log(`JobManager: Resuming - walking to tile ${this.currentJob.currentTileIndex}`);
+            this.walkToCurrentTile();
+        } else if (this.queue.length > 0) {
+            // No current job but queue has items - start next job
+            this.processNextJob();
+        } else {
+            // No jobs - return to idle
+            this.game.setAnimation('IDLE');
+        }
+    }
+
+    // Check if paused for combat
+    isPaused() {
+        return this.isPausedForCombat;
     }
 }
 

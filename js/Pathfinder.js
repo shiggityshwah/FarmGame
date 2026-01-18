@@ -2,8 +2,9 @@
 // These are common obstacle tiles from the tileset - adjust as needed
 const OBSTACLE_TILES = new Set([
     // Water tiles (typical water animation frames)
+    // Note: 449 excluded - it's used as a dirt/hoed ground tile in farming
     384, 385, 386, 387, 388, 389, 390, 391,
-    448, 449, 450, 451, 452, 453, 454, 455,
+    448, 450, 451, 452, 453, 454, 455,
     512, 513, 514, 515, 516, 517, 518, 519,
     576, 577, 578, 579, 580, 581, 582, 583,
     // Deep water
@@ -129,7 +130,14 @@ export class Pathfinder {
         if (tileId === null) return false;
 
         // Check if tile is an obstacle
-        return !OBSTACLE_TILES.has(tileId);
+        if (OBSTACLE_TILES.has(tileId)) return false;
+
+        // Check boundary layer (walls, furniture in house)
+        if (this.tilemap.isBoundary && this.tilemap.isBoundary(x, y)) {
+            return false;
+        }
+
+        return true;
     }
 
     reconstructPath(node) {
