@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Tileset Padding Tool</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            max-width: 800px;
+            margin: 40px auto;
+            padding: 20px;
+            background: #1a1a2e;
+            color: #eee;
+        }
+        h1 { color: #4ecca3; }
+        .form-group {
+            margin: 20px 0;
+        }
+        label {
+            display: block;
+            margin-bottom: 5px;
+            color: #aaa;
+        }
+        input[type="file"] {
+            background: #16213e;
+            border: 1px solid #4ecca3;
+            padding: 10px;
+            border-radius: 4px;
+            color: #eee;
+            width: 100%;
+            box-sizing: border-box;
+        }
+        input[type="number"] {
+            background: #16213e;
+            border: 1px solid #4ecca3;
+            padding: 10px;
+            border-radius: 4px;
+            color: #eee;
+            width: 100px;
+        }
+        button {
+            background: #4ecca3;
+            color: #1a1a2e;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-weight: bold;
+            margin-right: 10px;
+        }
+        button:hover { background: #3db892; }
+        button:disabled {
+            background: #555;
+            cursor: not-allowed;
+        }
+        .preview {
+            margin-top: 20px;
+            display: flex;
+            gap: 20px;
+            flex-wrap: wrap;
+        }
+        .preview-box {
+            background: #16213e;
+            padding: 10px;
+            border-radius: 4px;
+        }
+        .preview-box h3 {
+            margin-top: 0;
+            color: #4ecca3;
+        }
+        canvas {
+            image-rendering: pixelated;
+            max-width: 100%;
+            border: 1px solid #333;
+        }
+        .info {
+            background: #16213e;
+            padding: 15px;
+            border-radius: 4px;
+            margin: 20px 0;
+            border-left: 3px solid #4ecca3;
+        }
+        .info code {
+            background: #0d1b2a;
+            padding: 2px 6px;
+            border-radius: 3px;
+            color: #4ecca3;
+        }
+    </style>
+</head>
+<body>
+    <h1>Tileset Padding Tool</h1>
+    <p>This tool adds padding (extrusion) around each tile to prevent texture bleeding artifacts when zooming.</p>
+
+    <div class="info">
+        <strong>How it works:</strong> The tool duplicates the edge pixels of each tile into a padding area.
+        When the GPU samples beyond tile boundaries during scaling, it gets the same color instead of neighboring tile colors.
+    </div>
+
+    <div class="form-group">
+        <label for="tilesetFile">Select Tileset Image (PNG)</label>
+        <input type="file" id="tilesetFile" accept="image/png">
+    </div>
+
+    <div class="form-group">
+        <label for="tileSize">Tile Size (pixels)</label>
+        <input type="number" id="tileSize" value="16" min="1">
+    </div>
+
+    <div class="form-group">
+        <label for="padding">Padding (pixels)</label>
+        <input type="number" id="padding" value="1" min="1">
+    </div>
+
+    <div class="form-group">
+        <button id="processBtn" disabled>Process Tileset</button>
+        <button id="downloadBtn" disabled>Download Padded Tileset</button>
+    </div>
+
+    <div class="preview">
+        <div class="preview-box" id="originalBox" style="display:none;">
+            <h3>Original</h3>
+            <canvas id="originalCanvas"></canvas>
+            <p id="originalInfo"></p>
+        </div>
+        <div class="preview-box" id="paddedBox" style="display:none;">
+            <h3>Padded</h3>
+            <canvas id="paddedCanvas"></canvas>
+            <p id="paddedInfo"></p>
+        </div>
+    </div>
+
+    <div id="usage" class="info" style="display:none;">
+        <h3>Usage Instructions</h3>
+        <p>Update your <code>TilemapRenderer.js</code> constructor with these values:</p>
+        <pre id="usageCode"></pre>
+    </div>
+
+    <script>
+        const fileInput = document.getElementById('tilesetFile');
+        const tileSizeInput = document.getElementById('tileSize');
+        const paddingInput = document.getElementById('padding');
+        const processBtn = document.getElementById('processBtn');
+        const downloadBtn = document.getElementById('downloadBtn');
+
+        const originalCanvas = document.getElementById('originalCanvas');
+        const paddedCanvas = document.getElementById('paddedCanvas');
+        const originalCtx = originalCanvas.getContext('2d');
+        const paddedCtx = paddedCanvas.getContext('2d');
+
+        let loadedImage = null;
+        let paddedDataUrl = null;
+
+        fileInput.addEventListener('change', (e) => {
+            const file = e.target.files[0];
+            if (!file) return;
+
+            const reader = new FileReader();
+            reader.onload = (event) => {
+                const img = new Image();
+                img.onload = () => {
+                    loadedImage = img;
+                    processBtn.disabled = false;
+
+                    // Show original preview
+                    originalCanvas.width = img.width;
+                    originalCanvas.height = img.height;
+                    originalCtx.imageSmoothingEnabled = false;
+                    originalCtx.drawImage(img, 0, 0);
+                    document.getElementById('originalBox').style.display = 'block';
+                    document.getElementById('originalInfo').textContent =
+                        `${img.width}x${img.height} pixels`;
+                };
+                img.src = event.target.result;
+            };
+            reader.readAsDataURL(file);
+        });
+
+        processBtn.addEventListener('click', () => {
+            if (!loadedImage) return;
+
+            const tileSize = parseInt(tileSizeInput.value) || 16;
+            const padding = parseInt(paddingInput.value) || 1;
+
+            const srcWidth = loadedImage.width;
+            const srcHeight = loadedImage.height;
+            const tilesX = Math.floor(srcWidth / tileSize);
+            const tilesY = Math.floor(srcHeight / tileSize);
+
+            const newTileSize = tileSize + padding * 2;
+            const newWidth = tilesX * newTileSize;
+            const newHeight = tilesY * newTileSize;
+
+            paddedCanvas.width = newWidth;
+            paddedCanvas.height = newHeight;
+            paddedCtx.imageSmoothingEnabled = false;
+
+            // Clear canvas
+            paddedCtx.clearRect(0, 0, newWidth, newHeight);
+
+            // Process each tile
+            for (let ty = 0; ty < tilesY; ty++) {
+                for (let tx = 0; tx < tilesX; tx++) {
+                    const srcX = tx * tileSize;
+                    const srcY = ty * tileSize;
+                    const dstX = tx * newTileSize + padding;
+                    const dstY = ty * newTileSize + padding;
+
+                    // Draw the main tile
+                    paddedCtx.drawImage(loadedImage, srcX, srcY, tileSize, tileSize, dstX, dstY, tileSize, tileSize);
+
+                    // Extrude edges
+                    // Top edge
+                    paddedCtx.drawImage(loadedImage, srcX, srcY, tileSize, 1, dstX, dstY - padding, tileSize, padding);
+                    // Bottom edge
+                    paddedCtx.drawImage(loadedImage, srcX, srcY + tileSize - 1, tileSize, 1, dstX, dstY + tileSize, tileSize, padding);
+                    // Left edge
+                    paddedCtx.drawImage(loadedImage, srcX, srcY, 1, tileSize, dstX - padding, dstY, padding, tileSize);
+                    // Right edge
+                    paddedCtx.drawImage(loadedImage, srcX + tileSize - 1, srcY, 1, tileSize, dstX + tileSize, dstY, padding, tileSize);
+
+                    // Corners
+                    paddedCtx.drawImage(loadedImage, srcX, srcY, 1, 1, dstX - padding, dstY - padding, padding, padding);
+                    paddedCtx.drawImage(loadedImage, srcX + tileSize - 1, srcY, 1, 1, dstX + tileSize, dstY - padding, padding, padding);
+                    paddedCtx.drawImage(loadedImage, srcX, srcY + tileSize - 1, 1, 1, dstX - padding, dstY + tileSize, padding, padding);
+                    paddedCtx.drawImage(loadedImage, srcX + tileSize - 1, srcY + tileSize - 1, 1, 1, dstX + tileSize, dstY + tileSize, padding, padding);
+                }
+            }
+
+            paddedDataUrl = paddedCanvas.toDataURL('image/png');
+            downloadBtn.disabled = false;
+
+            document.getElementById('paddedBox').style.display = 'block';
+            document.getElementById('paddedInfo').textContent =
+                `${newWidth}x${newHeight} pixels (${tilesX}x${tilesY} tiles)`;
+
+            // Show usage instructions
+            document.getElementById('usage').style.display = 'block';
+            document.getElementById('usageCode').textContent =
+`this.tileSize = ${tileSize};           // Original tile size
+this.paddedTileSize = ${newTileSize};      // Tile size in padded tileset
+this.padding = ${padding};              // Padding around each tile`;
+        });
+
+        downloadBtn.addEventListener('click', () => {
+            if (!paddedDataUrl) return;
+
+            const link = document.createElement('a');
+            link.download = 'tileset_padded.png';
+            link.href = paddedDataUrl;
+            link.click();
+        });
+    </script>
+</body>
+</html>

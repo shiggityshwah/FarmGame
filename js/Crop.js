@@ -1,16 +1,16 @@
 // Crop types with their tile ID offsets
 export const CROP_TYPES = {
-    CARROT: { index: 0, name: 'Carrot' },
-    CAULIFLOWER: { index: 1, name: 'Cauliflower' },
-    PUMPKIN: { index: 2, name: 'Pumpkin' },
-    SUNFLOWER: { index: 3, name: 'Sunflower' },
-    RADISH: { index: 4, name: 'Radish' },
-    PARSNIP: { index: 5, name: 'Parsnip' },
-    POTATO: { index: 6, name: 'Potato' },
-    CABBAGE: { index: 7, name: 'Cabbage' },
-    BEETROOT: { index: 8, name: 'Beetroot' },
-    WHEAT: { index: 9, name: 'Wheat' },
-    WEED: { index: 10, name: 'Weed' }
+    CARROT: { index: 0, name: 'Carrot', tier: 1, seed_cost: 10, sell_price: 18, growth_time_minutes: 2 },
+    CAULIFLOWER: { index: 1, name: 'Cauliflower', tier: 3, seed_cost: 70, sell_price: 170, growth_time_minutes: 10 },
+    PUMPKIN: { index: 2, name: 'Pumpkin', tier: 4, seed_cost: 150, sell_price: 430, growth_time_minutes: 16 },
+    SUNFLOWER: { index: 3, name: 'Sunflower', tier: 3, seed_cost: 80, sell_price: 200, growth_time_minutes: 10 },
+    RADISH: { index: 4, name: 'Radish', tier: 1, seed_cost: 12, sell_price: 22, growth_time_minutes: 2 },
+    PARSNIP: { index: 5, name: 'Parsnip', tier: 1, seed_cost: 15, sell_price: 28, growth_time_minutes: 3 },
+    POTATO: { index: 6, name: 'Potato', tier: 2, seed_cost: 30, sell_price: 65, growth_time_minutes: 5 },
+    CABBAGE: { index: 7, name: 'Cabbage', tier: 2, seed_cost: 40, sell_price: 90, growth_time_minutes: 6 },
+    BEETROOT: { index: 8, name: 'Beetroot', tier: 2, seed_cost: 35, sell_price: 75, growth_time_minutes: 5 },
+    WHEAT: { index: 9, name: 'Wheat', tier: 3, seed_cost: 90, sell_price: 210, growth_time_minutes: 8 },
+    WEED: { index: 10, name: 'Weed', growth_time_minutes: 2 }
 };
 
 // Helper to get crop type by index
@@ -54,8 +54,9 @@ const DIRT_TILES = {
     LARGE_HOLE: 1138
 };
 
-// Growth time per stage in milliseconds
-const GROWTH_TIME = 3000; // 3 seconds per stage
+// Growth time per stage in milliseconds (will be calculated per crop based on growth_time_minutes)
+// There are 5 growth stages (SEED -> SEEDLING -> EARLY_GROWTH -> ALMOST_HARVESTABLE -> HARVESTABLE)
+const GROWTH_STAGES_COUNT = 5;
 
 // Post-harvest stages
 const HARVEST_STAGE = {
@@ -154,7 +155,11 @@ export class Crop {
 
         this.growthTimer += deltaTime;
 
-        if (this.growthTimer >= GROWTH_TIME) {
+        // Calculate growth time per stage based on crop's growth_time_minutes
+        // Convert minutes to milliseconds and divide by number of growth stages
+        const growthTimePerStage = (this.cropType.growth_time_minutes || 2) * 60 * 1000 / GROWTH_STAGES_COUNT;
+
+        if (this.growthTimer >= growthTimePerStage) {
             this.growthTimer = 0;
             this.stage++;
         }

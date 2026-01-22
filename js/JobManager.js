@@ -68,10 +68,35 @@ export class JobManager {
             return;
         }
 
-        // Calculate world position (center of tile)
         const tileSize = this.game.tilemap.tileSize;
-        const targetX = tile.x * tileSize + tileSize / 2;
-        const targetY = tile.y * tileSize + tileSize / 2;
+        let targetTileX = tile.x;
+        let targetTileY = tile.y;
+
+        // For multi-tile objects, find the closest base tile to walk to
+        if (tile.multiTileBaseTiles && tile.multiTileBaseTiles.length > 1) {
+            const playerX = this.game.humanPosition.x;
+            const playerY = this.game.humanPosition.y;
+
+            let closestDist = Infinity;
+            for (const baseTile of tile.multiTileBaseTiles) {
+                const baseCenterX = baseTile.x * tileSize + tileSize / 2;
+                const baseCenterY = baseTile.y * tileSize + tileSize / 2;
+                const dist = Math.abs(playerX - baseCenterX) + Math.abs(playerY - baseCenterY);
+                if (dist < closestDist) {
+                    closestDist = dist;
+                    targetTileX = baseTile.x;
+                    targetTileY = baseTile.y;
+                }
+            }
+        }
+
+        // Store which tile we're actually working on (for the animation/effect)
+        this.currentJob.workTileX = targetTileX;
+        this.currentJob.workTileY = targetTileY;
+
+        // Calculate world position (center of tile)
+        const targetX = targetTileX * tileSize + tileSize / 2;
+        const targetY = targetTileY * tileSize + tileSize / 2;
 
         // Tell game to move character to this position
         this.game.moveCharacterTo(targetX, targetY);
@@ -89,11 +114,15 @@ export class JobManager {
         // Start working animation
         this.currentJob.status = JOB_STATUS.WORKING;
         const animation = this.currentJob.tool.animation;
+        const toolId = this.currentJob.tool.id;
+
+        // Get animation speed multiplier from upgrades
+        const speedMultiplier = this.game.getToolAnimationMultiplier(toolId);
 
         // Set animation to non-looping and wait for completion
         this.game.setAnimation(animation, false, () => {
             this.onAnimationComplete();
-        });
+        }, speedMultiplier);
     }
 
     onAnimationComplete() {
@@ -108,6 +137,13 @@ export class JobManager {
         const tile = this.currentJob.tiles[this.currentJob.currentTileIndex];
         const tool = this.currentJob.tool;
 
+        // Use the actual work tile position (may differ from tile.x/y for multi-tile objects)
+        const workX = this.currentJob.workTileX !== undefined ? this.currentJob.workTileX : tile.x;
+        const workY = this.currentJob.workTileY !== undefined ? this.currentJob.workTileY : tile.y;
+
+        // Get animation speed multiplier for this tool
+        const speedMultiplier = this.game.getToolAnimationMultiplier(tool.id);
+
         // Special handling for plant tool - needs two animation phases
         if (tool.id === 'plant') {
             // Check if we need to do the second phase
@@ -117,52 +153,52 @@ export class JobManager {
 
             if (this.currentJob.plantingPhase === 1) {
                 // First animation complete - apply phase 1 effect (create crop, half-closed hole)
-                this.applyPlantPhase1(tool, tile.x, tile.y);
+                this.applyPlantPhase1(tool, workX, workY);
                 this.currentJob.plantingPhase = 2;
 
                 // Do second animation
                 this.game.setAnimation(tool.animation, false, () => {
                     this.onAnimationComplete();
-                });
+                }, speedMultiplier);
                 return;
             } else {
                 // Second animation complete - apply phase 2 effect (fully planted)
-                this.applyPlantPhase2(tile.x, tile.y);
+                this.applyPlantPhase2(workX, workY);
                 this.currentJob.plantingPhase = 0; // Reset for next tile
             }
         } else if (tool.id === 'sword') {
             // Attack enemy - continue until dead
-            const shouldContinue = this.attackEnemy(tile.x, tile.y);
+            const shouldContinue = this.attackEnemy(workX, workY);
             if (shouldContinue) {
                 // Enemy still alive, attack again
                 this.game.setAnimation(tool.animation, false, () => {
                     this.onAnimationComplete();
-                });
+                }, speedMultiplier);
                 return;
             }
         } else if (tool.id === 'pickaxe') {
             // Mine ore - continue until depleted
-            const shouldContinue = this.mineOre(tile.x, tile.y);
+            const shouldContinue = this.mineOre(workX, workY);
             if (shouldContinue) {
                 // Ore still has more to mine, mine again
                 this.game.setAnimation(tool.animation, false, () => {
                     this.onAnimationComplete();
-                });
+                }, speedMultiplier);
                 return;
             }
         } else if (tool.id === 'axe') {
             // Chop tree - continue until removed
-            const shouldContinue = this.chopTree(tile.x, tile.y);
+            const shouldContinue = this.chopTree(workX, workY);
             if (shouldContinue) {
                 // Tree still has more to chop, chop again
                 this.game.setAnimation(tool.animation, false, () => {
                     this.onAnimationComplete();
-                });
+                }, speedMultiplier);
                 return;
             }
         } else {
             // Apply tool effect to tile (other tools)
-            this.applyToolEffect(tool, tile.x, tile.y);
+            this.applyToolEffect(tool, workX, workY);
         }
 
         // Clear the work tile reference
@@ -204,6 +240,16 @@ export class JobManager {
 
         switch (tool.id) {
             case 'hoe':
+                // Remove any flower on this tile (destroyed by hoeing, not harvested)
+                if (this.game.flowerManager) {
+                    const flower = this.game.flowerManager.getFlowerAt(tileX, tileY);
+                    if (flower) {
+                        flower.isHarvested = true; // Mark as gone without yielding
+                        flower.isGone = true;
+                        console.log(`Flower destroyed by hoeing at (${tileX}, ${tileY})`);
+                    }
+                }
+
                 // Randomize dirt tile: mainly 67 and 449, with smaller chance of 457, 458, 459, 521, 522
                 const commonDirtTiles = [67, 449];
                 const rareDirtTiles = [457, 458, 459, 521, 522];
@@ -354,7 +400,11 @@ export class JobManager {
         // Mine the ore vein
         const result = this.game.oreManager.mineOre(tileX, tileY);
 
-        if (result && result.stageChanged) {
+        if (result && result.oreYielded) {
+            // Add ore to inventory
+            if (this.game.inventory) {
+                this.game.inventory.addOreByName(ore.oreType.name);
+            }
             console.log(`Mined ${ore.oreType.name} ore!`);
         }
 
@@ -381,7 +431,11 @@ export class JobManager {
         // Chop the tree
         const result = this.game.treeManager.chopTree(tileX, tileY);
 
-        if (result && result.stageChanged) {
+        if (result && result.woodYielded) {
+            // Add wood to inventory
+            if (this.game.inventory) {
+                this.game.inventory.addWood();
+            }
             console.log(`Chopped ${tree.treeType.name}!`);
         }
 
@@ -436,20 +490,34 @@ export class JobManager {
     }
 
     // Get all tiles that are queued or being worked on (for overlay display)
+    // For multi-tile objects, this expands to show all base tiles
     getAllQueuedTiles() {
         const tiles = [];
+
+        // Helper to add tile(s) - expands multi-tile objects to all their base tiles
+        const addTileOrExpand = (tile) => {
+            if (tile.multiTileBaseTiles && tile.multiTileBaseTiles.length > 0) {
+                // Multi-tile object: add all base tiles for display
+                for (const baseTile of tile.multiTileBaseTiles) {
+                    tiles.push({ x: baseTile.x, y: baseTile.y });
+                }
+            } else {
+                // Regular tile
+                tiles.push({ x: tile.x, y: tile.y });
+            }
+        };
 
         // Add tiles from current job (remaining tiles)
         if (this.currentJob) {
             for (let i = this.currentJob.currentTileIndex; i < this.currentJob.tiles.length; i++) {
-                tiles.push(this.currentJob.tiles[i]);
+                addTileOrExpand(this.currentJob.tiles[i]);
             }
         }
 
         // Add tiles from queued jobs
         for (const job of this.queue) {
             for (const tile of job.tiles) {
-                tiles.push(tile);
+                addTileOrExpand(tile);
             }
         }
 

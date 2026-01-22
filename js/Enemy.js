@@ -51,6 +51,11 @@ export class Enemy {
         // Damage flash effect
         this.damageFlashTimer = 0;
         this.isDamageFlashing = false;
+
+        // Fade out after death
+        this.isFadingOut = false;
+        this.fadeAlpha = 1.0;
+        this.fadeDuration = 1500; // ms to fully fade out
     }
 
     async load(tileSize) {
@@ -136,8 +141,9 @@ export class Enemy {
         console.log(`${this.type} died!`);
 
         await this.setAnimation('DEATH', false, () => {
-            // Stay on last frame of death animation
-            console.log(`${this.type} death animation complete`);
+            // Start fading out after death animation completes
+            console.log(`${this.type} death animation complete, starting fade out`);
+            this.isFadingOut = true;
         });
     }
 
@@ -309,22 +315,42 @@ export class Enemy {
                 this.isDamageFlashing = false;
             }
         }
+
+        // Update fade out after death
+        if (this.isFadingOut) {
+            this.fadeAlpha -= deltaTime / this.fadeDuration;
+            if (this.fadeAlpha <= 0) {
+                this.fadeAlpha = 0;
+            }
+        }
+    }
+
+    // Check if enemy has completely faded out and can be removed
+    isFullyFaded() {
+        return this.isFadingOut && this.fadeAlpha <= 0;
     }
 
     render(ctx, camera) {
         if (!this.sprite) return;
 
+        // Don't render if fully faded
+        if (this.fadeAlpha <= 0) return;
+
+        ctx.save();
+
+        // Apply fade out effect
+        if (this.isFadingOut && this.fadeAlpha < 1) {
+            ctx.globalAlpha = this.fadeAlpha;
+        }
+
         // Apply damage flash effect (tint red)
         if (this.isDamageFlashing) {
-            ctx.save();
             ctx.globalCompositeOperation = 'source-atop';
         }
 
         this.sprite.render(ctx, camera);
 
-        if (this.isDamageFlashing) {
-            ctx.restore();
-        }
+        ctx.restore();
 
         // Render health bar if damaged and alive
         if (this.isAlive && this.health < this.maxHealth) {

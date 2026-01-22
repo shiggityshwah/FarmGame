@@ -276,3 +276,42 @@ body {
     image-rendering: -moz-crisp-edges;
     image-rendering: crisp-edges;
 }
+
+/* Game Menu Overlay */
+#game-menu-container {
+    font-family: Arial, sans-serif;
+}
+
+#game-menu-panel {
+    animation: menuSlideIn 0.2s ease-out;
+}
+
+@keyframes menuSlideIn {
+    from {
+        opacity: 0;
+        transform: scale(0.95);
+    }
+    to {
+        opacity: 1;
+        transform: scale(1);
+    }
+}
+
+/* Scrollbar styling for menus */
+#game-menu-panel ::-webkit-scrollbar {
+    width: 8px;
+}
+
+#game-menu-panel ::-webkit-scrollbar-track {
+    background: #d4c4a4;
+    border-radius: 4px;
+}
+
+#game-menu-panel ::-webkit-scrollbar-thumb {
+    background: #8b7355;
+    border-radius: 4px;
+}
+
+#game-menu-panel ::-webkit-scrollbar-thumb:hover {
+    background: #6b5a45;
+}

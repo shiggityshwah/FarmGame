@@ -12,13 +12,9 @@ export const TREE_TYPES = {
         height: 3,
         // Tiles from top to bottom
         tiles: [244, 308, 372],
-        // Chopping stages: full -> stump -> gone
-        stages: {
-            full: [244, 308, 372],      // Full tree
-            stump: [372]                 // Just the stump (bottom tile)
-        },
-        hitsToChop: 3,      // Hits to fell the tree (full -> stump)
-        hitsToRemoveStump: 2 // Hits to remove stump (stump -> gone)
+        // Resource range for small trees: 2-5 wood
+        minResources: 2,
+        maxResources: 5
     },
     THICK: {
         name: 'Thick Tree',
@@ -26,20 +22,16 @@ export const TREE_TYPES = {
         height: 3,
         // Tiles arranged as: [top-left, top-right, mid-left, mid-right, bottom-left, bottom-right]
         tiles: [435, 436, 499, 500, 563, 564],
-        stages: {
-            full: [435, 436, 499, 500, 563, 564],
-            stump: [563, 564]            // Just the stumps
-        },
-        hitsToChop: 5,       // Hits to fell the tree
-        hitsToRemoveStump: 2 // Hits to remove stump
+        // Resource range for large trees: 5-10 wood
+        minResources: 5,
+        maxResources: 10
     }
 };
 
-// Chopping stages
+// Tree is gone when resources are depleted
 export const CHOP_STAGE = {
     FULL: 0,
-    STUMP: 1,
-    GONE: 2
+    GONE: 1
 };
 
 export class Tree {
@@ -49,13 +41,17 @@ export class Tree {
         this.tileY = tileY;
         this.treeType = treeType;
         this.stage = CHOP_STAGE.FULL;
-        this.hitsRemaining = treeType.hitsToChop;
+
+        // Randomize resource amount based on tree type
+        const { minResources, maxResources } = treeType;
+        this.resourcesRemaining = Math.floor(Math.random() * (maxResources - minResources + 1)) + minResources;
+        this.initialResources = this.resourcesRemaining;
 
         // Visual state
         this.isGone = false;
         this.alpha = 1;
         this.fadeTimer = 0;
-        this.fadeDuration = 500; // ms to fade out after becoming stump
+        this.fadeDuration = 500; // ms to fade out after depletion
     }
 
     // Get the tile positions this tree occupies (base tiles at bottom)
@@ -116,13 +112,11 @@ export class Tree {
     getCurrentStageTiles() {
         switch (this.stage) {
             case CHOP_STAGE.FULL:
-                return this.treeType.stages.full;
-            case CHOP_STAGE.STUMP:
-                return this.treeType.stages.stump;
+                return this.treeType.tiles;
             case CHOP_STAGE.GONE:
                 return [];
             default:
-                return this.treeType.stages.full;
+                return this.treeType.tiles;
         }
     }
 
@@ -139,42 +133,36 @@ export class Tree {
         return basePositions.some(pos => pos.x === tileX && pos.y === tileY);
     }
 
-    // Chop the tree - returns result with wood yielded
+    // Chop the tree - each chop yields 1 wood until depleted
     chop() {
-        if (this.stage >= CHOP_STAGE.GONE) {
+        if (this.stage >= CHOP_STAGE.GONE || this.resourcesRemaining <= 0) {
             return { stageChanged: false, woodYielded: null };
         }
 
-        this.hitsRemaining--;
+        // Each chop yields 1 resource
+        this.resourcesRemaining--;
+        const woodYielded = WOOD_ICON_TILE_ID;
 
-        if (this.hitsRemaining <= 0) {
-            const previousStage = this.stage;
-            this.stage++;
+        console.log(`Tree chopped: ${this.treeType.name} - ${this.resourcesRemaining}/${this.initialResources} wood remaining`);
 
-            // Yield wood when tree falls (transition to STUMP) or stump removed (transition to GONE)
-            const woodYielded = WOOD_ICON_TILE_ID;
-
-            console.log(`Tree chopped: ${this.treeType.name} stage ${previousStage} -> ${this.stage}`);
-
-            // Set hits for next stage
-            if (this.stage === CHOP_STAGE.STUMP) {
-                this.hitsRemaining = this.treeType.hitsToRemoveStump;
-            }
-
-            return { stageChanged: true, woodYielded: woodYielded };
+        // Check if tree is depleted
+        if (this.resourcesRemaining <= 0) {
+            this.stage = CHOP_STAGE.GONE;
+            console.log(`${this.treeType.name} depleted!`);
+            return { stageChanged: true, woodYielded: woodYielded, depleted: true };
         }
 
-        return { stageChanged: false, woodYielded: null };
+        return { stageChanged: false, woodYielded: woodYielded, depleted: false };
     }
 
-    // Check if tree can still be chopped
+    // Check if tree can still be chopped (has resources remaining)
     canBeChopped() {
-        return this.stage < CHOP_STAGE.GONE && !this.isGone;
+        return this.stage < CHOP_STAGE.GONE && this.resourcesRemaining > 0 && !this.isGone;
     }
 
     // Check if tree is completely removed
     isRemoved() {
-        return this.stage >= CHOP_STAGE.GONE;
+        return this.stage >= CHOP_STAGE.GONE || this.resourcesRemaining <= 0;
     }
 
     update(deltaTime) {

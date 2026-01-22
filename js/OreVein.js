@@ -1,6 +1,6 @@
 // Ore vein types with their tile IDs
 // Each ore has 4 tiles arranged in a 2x2 grid (top-left, top-right, bottom-left, bottom-right)
-// Each stage: full -> partially mined -> well mined -> depleted
+// Visual stages: full (100-75%) -> partial (75-50%) -> depleted (50-25%) -> near-gone (25-0%)
 export const ORE_TYPES = {
     IRON: {
         name: 'Iron',
@@ -10,7 +10,8 @@ export const ORE_TYPES = {
             depleted: [1397, 1398, 1461, 1462]
         },
         iconTileId: 1463,
-        hitsPerStage: 1
+        minResources: 5,
+        maxResources: 10
     },
     COAL: {
         name: 'Coal',
@@ -20,7 +21,8 @@ export const ORE_TYPES = {
             depleted: [1525, 1526, 1589, 1590]
         },
         iconTileId: 1591,
-        hitsPerStage: 1
+        minResources: 5,
+        maxResources: 10
     },
     MITHRIL: {
         name: 'Mithril',
@@ -30,7 +32,8 @@ export const ORE_TYPES = {
             depleted: [1653, 1654, 1717, 1718]
         },
         iconTileId: 1719,
-        hitsPerStage: 1
+        minResources: 5,
+        maxResources: 10
     },
     GOLD: {
         name: 'Gold',
@@ -40,7 +43,8 @@ export const ORE_TYPES = {
             depleted: [1781, 1782, 1845, 1846]
         },
         iconTileId: 1847,
-        hitsPerStage: 1
+        minResources: 5,
+        maxResources: 10
     },
     ROCK: {
         name: 'Rock',
@@ -50,7 +54,8 @@ export const ORE_TYPES = {
             depleted: [1909, 1910, 1973, 1974]
         },
         iconTileId: 1975,
-        hitsPerStage: 1
+        minResources: 5,
+        maxResources: 10
     }
 };
 
@@ -68,8 +73,14 @@ export class OreVein {
         this.tileX = tileX;
         this.tileY = tileY;
         this.oreType = oreType;
+
+        // Randomize resource amount (5-10 for ores)
+        const { minResources, maxResources } = oreType;
+        this.resourcesRemaining = Math.floor(Math.random() * (maxResources - minResources + 1)) + minResources;
+        this.initialResources = this.resourcesRemaining;
+
+        // Visual stage is determined by resource percentage
         this.stage = MINING_STAGE.FULL;
-        this.hitsRemaining = oreType.hitsPerStage;
 
         // Visual state
         this.isGone = false;
@@ -78,9 +89,27 @@ export class OreVein {
         this.fadeDuration = 500; // ms to fade out after depleted
     }
 
-    // Get the current tile IDs based on mining stage
+    // Calculate visual stage based on remaining resources percentage
+    calculateVisualStage() {
+        const percentage = this.resourcesRemaining / this.initialResources;
+        if (percentage > 0.75) {
+            return MINING_STAGE.FULL;
+        } else if (percentage > 0.5) {
+            return MINING_STAGE.PARTIAL;
+        } else if (percentage > 0.25) {
+            return MINING_STAGE.DEPLETED;
+        } else if (percentage > 0) {
+            // Still use depleted sprite for last quarter
+            return MINING_STAGE.DEPLETED;
+        } else {
+            return MINING_STAGE.GONE;
+        }
+    }
+
+    // Get the current tile IDs based on visual stage (calculated from resource percentage)
     getTileIds() {
-        switch (this.stage) {
+        const visualStage = this.calculateVisualStage();
+        switch (visualStage) {
             case MINING_STAGE.FULL:
                 return this.oreType.stages.full;
             case MINING_STAGE.PARTIAL:
@@ -110,39 +139,41 @@ export class OreVein {
                (tileY === this.tileY || tileY === this.tileY + 1);
     }
 
-    // Mine the ore vein - returns true if stage changed, ore icon tile ID if yielded ore
+    // Mine the ore vein - each mine yields 1 ore until depleted
     mine() {
-        if (this.stage === MINING_STAGE.GONE) {
+        if (this.resourcesRemaining <= 0 || this.stage === MINING_STAGE.GONE) {
             return { stageChanged: false, oreYielded: null };
         }
 
-        this.hitsRemaining--;
+        const previousVisualStage = this.calculateVisualStage();
 
-        if (this.hitsRemaining <= 0) {
-            // Advance to next stage
-            const previousStage = this.stage;
-            this.stage++;
-            this.hitsRemaining = this.oreType.hitsPerStage;
+        // Each mine yields 1 resource
+        this.resourcesRemaining--;
+        const oreYielded = this.oreType.iconTileId;
 
-            // Yield ore when transitioning stages (except when going to GONE)
-            const oreYielded = this.stage <= MINING_STAGE.GONE ? this.oreType.iconTileId : null;
+        console.log(`Ore mined: ${this.oreType.name} - ${this.resourcesRemaining}/${this.initialResources} remaining`);
 
-            console.log(`Ore vein mined: ${this.oreType.name} stage ${previousStage} -> ${this.stage}`);
+        const newVisualStage = this.calculateVisualStage();
+        const stageChanged = previousVisualStage !== newVisualStage;
 
-            return { stageChanged: true, oreYielded: oreYielded };
+        // Check if ore is depleted
+        if (this.resourcesRemaining <= 0) {
+            this.stage = MINING_STAGE.GONE;
+            console.log(`${this.oreType.name} ore depleted!`);
+            return { stageChanged: true, oreYielded: oreYielded, depleted: true };
         }
 
-        return { stageChanged: false, oreYielded: null };
+        return { stageChanged: stageChanged, oreYielded: oreYielded, depleted: false };
     }
 
-    // Check if the ore vein can still be mined
+    // Check if the ore vein can still be mined (has resources remaining)
     canBeMined() {
-        return this.stage < MINING_STAGE.GONE && !this.isGone;
+        return this.resourcesRemaining > 0 && this.stage < MINING_STAGE.GONE && !this.isGone;
     }
 
     // Check if ore vein is completely depleted
     isDepleted() {
-        return this.stage >= MINING_STAGE.GONE;
+        return this.resourcesRemaining <= 0 || this.stage >= MINING_STAGE.GONE;
     }
 
     update(deltaTime) {

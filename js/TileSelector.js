@@ -32,15 +32,19 @@ const ACCEPTABLE_TILES = {
         // Requires enemy check - handled in isAcceptableTile
         requiresEnemy: true
     },
-    // Pickaxe targets ore veins
+    // Pickaxe targets ore veins (requires selecting base tiles of multi-tile ore)
     pickaxe: {
         // Requires ore vein check - handled in isAcceptableTile
-        requiresOre: true
+        requiresOre: true,
+        // Multi-tile object - must select base tiles
+        isMultiTile: true
     },
-    // Axe targets trees
+    // Axe targets trees (requires selecting base tiles of multi-tile tree)
     axe: {
         // Requires tree check - handled in isAcceptableTile
-        requiresTree: true
+        requiresTree: true,
+        // Multi-tile object - must select base tiles
+        isMultiTile: true
     }
 };
 
@@ -90,6 +94,56 @@ export class TileSelector {
         this.currentTool = tool;
     }
 
+    // Get the multi-tile object at a tile position and its base tile positions
+    // Returns { object, baseTiles: [{x, y}] } or null if no multi-tile object
+    getMultiTileObjectAt(tileX, tileY) {
+        if (!this.currentTool) return null;
+
+        const toolRules = ACCEPTABLE_TILES[this.currentTool.id];
+        if (!toolRules || !toolRules.isMultiTile) return null;
+
+        // Check for ore vein (2x2, base tiles are bottom two)
+        if (toolRules.requiresOre && this.oreManager) {
+            const ore = this.oreManager.getOreAt(tileX, tileY);
+            if (ore && ore.canBeMined()) {
+                // Ore base tiles are the bottom row (tileY + 1)
+                return {
+                    object: ore,
+                    type: 'ore',
+                    baseTiles: [
+                        { x: ore.tileX, y: ore.tileY + 1 },     // bottom-left
+                        { x: ore.tileX + 1, y: ore.tileY + 1 }  // bottom-right
+                    ]
+                };
+            }
+        }
+
+        // Check for tree (variable width, base tiles are the bottom row)
+        if (toolRules.requiresTree && this.treeManager) {
+            const tree = this.treeManager.getTreeAt(tileX, tileY);
+            if (tree && tree.canBeChopped()) {
+                // Tree base tiles are the bottom row at tree.tileY
+                const baseTiles = [];
+                for (let x = 0; x < tree.treeType.width; x++) {
+                    baseTiles.push({ x: tree.tileX + x, y: tree.tileY });
+                }
+                return {
+                    object: tree,
+                    type: 'tree',
+                    baseTiles: baseTiles
+                };
+            }
+        }
+
+        return null;
+    }
+
+    // Check if a tile is a base tile of a multi-tile object
+    isBaseTileOf(tileX, tileY, multiTileInfo) {
+        if (!multiTileInfo) return false;
+        return multiTileInfo.baseTiles.some(bt => bt.x === tileX && bt.y === tileY);
+    }
+
     setOverlayManager(overlayManager) {
         this.overlayManager = overlayManager;
     }
@@ -129,16 +183,93 @@ export class TileSelector {
         const minY = Math.min(this.startTileY, this.endTileY);
         const maxY = Math.max(this.startTileY, this.endTileY);
 
+        // Check if current tool targets multi-tile objects
+        const toolRules = this.currentTool ? ACCEPTABLE_TILES[this.currentTool.id] : null;
+        const isMultiTileTool = toolRules && toolRules.isMultiTile;
+
+        if (isMultiTileTool) {
+            // For multi-tile tools, find all objects that have any tile in the selection
+            // and expand to include all their base tiles
+            this.updateSelectedTilesForMultiTile(minX, maxX, minY, maxY);
+        } else {
+            // Standard tile-by-tile selection for non-multi-tile tools
+            for (let y = minY; y <= maxY; y++) {
+                for (let x = minX; x <= maxX; x++) {
+                    const tileId = this.tilemap.getTileAt(x, y);
+                    const isValid = this.isAcceptableTile(x, y, tileId);
+                    this.selectedTiles.push({
+                        x: x,
+                        y: y,
+                        tileId: tileId,
+                        valid: isValid
+                    });
+                }
+            }
+        }
+    }
+
+    // Handle selection for multi-tile objects (ore veins, trees)
+    // When any tile of an object is selected, expand to show all base tiles
+    updateSelectedTilesForMultiTile(minX, maxX, minY, maxY) {
+        // Track which multi-tile objects we've found (by their unique identifier)
+        const foundObjects = new Map(); // key: "type_x_y" -> multiTileInfo
+
+        // First pass: find all tiles in the selection rectangle
         for (let y = minY; y <= maxY; y++) {
             for (let x = minX; x <= maxX; x++) {
-                const tileId = this.tilemap.getTileAt(x, y);
-                const isValid = this.isAcceptableTile(x, y, tileId);
-                this.selectedTiles.push({
-                    x: x,
-                    y: y,
-                    tileId: tileId,
-                    valid: isValid
-                });
+                const multiTileInfo = this.getMultiTileObjectAt(x, y);
+                if (multiTileInfo) {
+                    // Use object's origin as unique key
+                    const key = `${multiTileInfo.type}_${multiTileInfo.object.tileX}_${multiTileInfo.object.tileY}`;
+                    if (!foundObjects.has(key)) {
+                        foundObjects.set(key, multiTileInfo);
+                    }
+                }
+            }
+        }
+
+        // Second pass: add all base tiles from found objects
+        const addedTiles = new Set(); // Track tiles we've already added
+
+        for (const [key, multiTileInfo] of foundObjects) {
+            for (const baseTile of multiTileInfo.baseTiles) {
+                const tileKey = `${baseTile.x},${baseTile.y}`;
+                if (!addedTiles.has(tileKey)) {
+                    addedTiles.add(tileKey);
+                    const tileId = this.tilemap.getTileAt(baseTile.x, baseTile.y);
+                    this.selectedTiles.push({
+                        x: baseTile.x,
+                        y: baseTile.y,
+                        tileId: tileId,
+                        valid: true, // Base tiles of valid objects are always valid
+                        multiTileObject: multiTileInfo.object,
+                        multiTileType: multiTileInfo.type
+                    });
+                }
+            }
+        }
+
+        // Also add any tiles in the selection that DON'T belong to a multi-tile object
+        // These will be shown as invalid (red) to indicate they can't be selected
+        for (let y = minY; y <= maxY; y++) {
+            for (let x = minX; x <= maxX; x++) {
+                const tileKey = `${x},${y}`;
+                if (!addedTiles.has(tileKey)) {
+                    // Check if this tile is part of any multi-tile object
+                    const multiTileInfo = this.getMultiTileObjectAt(x, y);
+                    if (!multiTileInfo) {
+                        // Not part of a multi-tile object - show as invalid
+                        const tileId = this.tilemap.getTileAt(x, y);
+                        this.selectedTiles.push({
+                            x: x,
+                            y: y,
+                            tileId: tileId,
+                            valid: false
+                        });
+                    }
+                    // If it IS part of a multi-tile object but not a base tile,
+                    // we don't add it (the base tiles were already added above)
+                }
             }
         }
     }
@@ -225,9 +356,53 @@ export class TileSelector {
     endSelection() {
         this.isSelecting = false;
 
-        // Return only valid tiles
+        // Return only valid tiles, deduplicated for multi-tile objects
+        return this.getDeduplicatedValidTiles();
+    }
+
+    // Get valid tiles, with multi-tile objects deduplicated to one tile per object
+    // Includes multiTileBaseTiles array for multi-tile objects so the UI can show all base tiles
+    getDeduplicatedValidTiles() {
         const validTiles = this.selectedTiles.filter(t => t.valid);
-        return validTiles.map(t => ({ x: t.x, y: t.y }));
+
+        // Check if current tool targets multi-tile objects
+        const toolRules = this.currentTool ? ACCEPTABLE_TILES[this.currentTool.id] : null;
+        const isMultiTileTool = toolRules && toolRules.isMultiTile;
+
+        if (!isMultiTileTool) {
+            // Standard tiles - return all valid tiles
+            return validTiles.map(t => ({ x: t.x, y: t.y }));
+        }
+
+        // For multi-tile tools, return only one tile per unique object
+        // This prevents the character from working on the same object multiple times
+        // But include all base tiles info so the UI can display them all
+        const seenObjects = new Set();
+        const result = [];
+
+        for (const tile of validTiles) {
+            if (tile.multiTileObject) {
+                // Create unique key for this object
+                const objKey = `${tile.multiTileType}_${tile.multiTileObject.tileX}_${tile.multiTileObject.tileY}`;
+                if (!seenObjects.has(objKey)) {
+                    seenObjects.add(objKey);
+                    // Get all base tiles for this object
+                    const multiTileInfo = this.getMultiTileObjectAt(tile.x, tile.y);
+                    const baseTiles = multiTileInfo ? multiTileInfo.baseTiles : [{ x: tile.x, y: tile.y }];
+                    // Return the first base tile, but include all base tiles for UI display
+                    result.push({
+                        x: tile.x,
+                        y: tile.y,
+                        multiTileBaseTiles: baseTiles
+                    });
+                }
+            } else {
+                // Non-multi-tile valid tile (shouldn't happen for multi-tile tools, but handle gracefully)
+                result.push({ x: tile.x, y: tile.y });
+            }
+        }
+
+        return result;
     }
 
     cancelSelection() {
@@ -240,7 +415,7 @@ export class TileSelector {
     }
 
     getSelectedTiles() {
-        return this.selectedTiles.filter(t => t.valid).map(t => ({ x: t.x, y: t.y }));
+        return this.getDeduplicatedValidTiles();
     }
 
     render(ctx, camera) {

@@ -12,6 +12,10 @@ import { TileOverlayManager } from './TileOverlayManager.js';
 import { EnemyManager } from './EnemyManager.js';
 import { OreManager } from './OreManager.js';
 import { TreeManager } from './TreeManager.js';
+import { FlowerManager } from './FlowerManager.js';
+import { Inventory, RESOURCE_TYPES } from './Inventory.js';
+import { UIManager } from './UIManager.js';
+import { ORE_TYPES } from './OreVein.js';
 
 // Animation frame counts for human character
 const ANIMATION_DATA = {
@@ -70,6 +74,14 @@ export class Game {
         this.enemyManager = null;
         this.oreManager = null;
         this.treeManager = null;
+        this.flowerManager = null;
+
+        // Inventory and UI
+        this.inventory = null;
+        this.uiManager = null;
+
+        // Tool animation speed multipliers (modified by upgrades)
+        this.toolAnimationMultipliers = {};
 
         // Player combat stats
         this.playerMaxHealth = 100;
@@ -165,9 +177,19 @@ export class Game {
             this.cropManager = new CropManager(this.tilemap);
             this.spawnCropsAvoidingOccupied(15, occupiedBaseTiles);
 
-            // Initialize ore manager and spawn one random ore (avoiding occupied tiles)
+            // Initialize ore manager and spawn ores (avoiding occupied tiles)
+            // Always spawn one stone ore for testing crafting, plus one random ore
             this.oreManager = new OreManager(this.tilemap);
-            this.spawnOresAvoidingOccupied(1, occupiedBaseTiles);
+            this.spawnOresAvoidingOccupied(1, occupiedBaseTiles, ORE_TYPES.ROCK); // Stone ore for crafting
+            this.spawnOresAvoidingOccupied(1, occupiedBaseTiles); // Random ore
+
+            // Initialize inventory system
+            this.inventory = new Inventory();
+            // Give player starting gold
+            this.inventory.addGold(100);
+
+            // Initialize UI manager
+            this.uiManager = new UIManager(this);
 
             // Initialize input manager
             this.inputManager = new InputManager(this.canvas, this.camera);
@@ -187,6 +209,13 @@ export class Game {
             this.tileSelector.setTreeManager(this.treeManager);
             this.jobManager = new JobManager(this);
             this.toolbar = new Toolbar(this, this.tilemap);
+
+            // Initialize flower manager (spawns flowers on grass tiles over time)
+            this.flowerManager = new FlowerManager(this.tilemap, this.overlayManager);
+            this.flowerManager.setCropManager(this.cropManager);
+            this.flowerManager.setTreeManager(this.treeManager);
+            this.flowerManager.setOreManager(this.oreManager);
+            this.flowerManager.setEnemyManager(this.enemyManager);
 
             // Connect enemy manager to pathfinder and game
             this.enemyManager.setPathfinder(this.pathfinder);
@@ -269,7 +298,8 @@ export class Game {
     }
 
     // Spawn ore veins avoiding occupied base tiles
-    spawnOresAvoidingOccupied(count, occupiedBaseTiles) {
+    // Optional oreType parameter to spawn a specific type
+    spawnOresAvoidingOccupied(count, occupiedBaseTiles, oreType = null) {
         for (let i = 0; i < count; i++) {
             let tileX, tileY;
             let attempts = 0;
@@ -311,7 +341,7 @@ export class Game {
                 }
             }
 
-            this.oreManager.spawnOre(tileX, tileY);
+            this.oreManager.spawnOre(tileX, tileY, oreType);
         }
 
         console.log(`Spawned ${this.oreManager.oreVeins.length} ore veins`);
@@ -351,7 +381,7 @@ export class Game {
         await this.loadHumanSprites();
     }
 
-    async setAnimation(animation, loop = true, onComplete = null) {
+    async setAnimation(animation, loop = true, onComplete = null, speedMultiplier = 1.0) {
         // COMBAT GUARD: Prevent work animations during combat
         // This is a fail-safe in case something tries to start a work animation
         if (this.isInCombat && !['IDLE', 'WALKING', 'ATTACK', 'HURT', 'DEATH'].includes(animation)) {
@@ -394,8 +424,15 @@ export class Game {
                 sprite.setOnComplete(i === 0 ? wrappedCallback : null);
                 sprite.resetAnimation();
                 sprite.setFacingLeft(this.facingLeft);
+                // Apply speed multiplier
+                sprite.setSpeedMultiplier(speedMultiplier);
             }
         }
+    }
+
+    // Get the animation speed multiplier for a tool (from upgrades)
+    getToolAnimationMultiplier(toolId) {
+        return this.toolAnimationMultipliers[toolId] || 1.0;
     }
 
     setFacingDirection(facingLeft) {
@@ -416,6 +453,13 @@ export class Game {
     }
 
     onWorldClick(worldX, worldY) {
+        // Check for interactable buildings first (works in any mode)
+        const interactable = this.tilemap.getInteractableAt(worldX, worldY);
+        if (interactable && interactable.action) {
+            this.handleInteractableAction(interactable.action);
+            return;
+        }
+
         // Only handle harvest clicks in pan mode
         if (this.inputMode !== 'pan') return;
 
@@ -423,10 +467,62 @@ export class Game {
         const tileX = Math.floor(worldX / this.tilemap.tileSize);
         const tileY = Math.floor(worldY / this.tilemap.tileSize);
 
-        // Try to harvest a crop
+        // Try to harvest a crop first
         const harvested = this.cropManager.tryHarvest(tileX, tileY);
         if (harvested) {
+            // Add to inventory
+            if (this.inventory) {
+                this.inventory.addCropByIndex(harvested.index);
+            }
             console.log(`Collected: ${harvested.name}`);
+            return;
+        }
+
+        // Try to harvest a flower
+        if (this.flowerManager) {
+            const flowerHarvest = this.flowerManager.tryHarvest(tileX, tileY);
+            if (flowerHarvest) {
+                // Add to inventory
+                if (this.inventory) {
+                    this.inventory.add(RESOURCE_TYPES.FLOWER, flowerHarvest.yield);
+                }
+                console.log(`Collected: ${flowerHarvest.flowerType.name} x${flowerHarvest.yield}`);
+                return;
+            }
+
+            // Try to remove a weed
+            const weedResult = this.flowerManager.tryRemoveWeed(tileX, tileY);
+            if (weedResult !== null) {
+                // Weed was clicked (may or may not be removed yet)
+                return;
+            }
+        }
+    }
+
+    handleInteractableAction(action) {
+        console.log(`Interactable action: ${action}`);
+
+        switch (action) {
+            case 'openStorage':
+                if (this.uiManager) {
+                    this.uiManager.openStorage();
+                }
+                break;
+
+            case 'openCrafting':
+                if (this.uiManager) {
+                    this.uiManager.openCrafting();
+                }
+                break;
+
+            case 'openShop':
+                if (this.uiManager) {
+                    this.uiManager.openShop();
+                }
+                break;
+
+            default:
+                console.warn('Unknown interactable action:', action);
         }
     }
 
@@ -875,6 +971,11 @@ export class Game {
             this.cropManager.update(deltaTime);
         }
 
+        // Update flowers (spawning and harvest effects)
+        if (this.flowerManager) {
+            this.flowerManager.update(deltaTime);
+        }
+
         // Update job manager (only if not in combat)
         if (this.jobManager && !this.isInCombat) {
             this.jobManager.update(deltaTime);
@@ -986,6 +1087,29 @@ export class Game {
             }
         }
 
+        // Add flowers
+        if (this.flowerManager) {
+            for (const flower of this.flowerManager.getFlowers()) {
+                if (!flower.isGone) {
+                    depthEntities.push({
+                        type: 'flower',
+                        entity: flower,
+                        sortY: flower.getSortY(tileSize)
+                    });
+                }
+            }
+            // Add weeds
+            for (const weed of this.flowerManager.getWeeds()) {
+                if (!weed.isGone) {
+                    depthEntities.push({
+                        type: 'weed',
+                        entity: weed,
+                        sortY: weed.getSortY(tileSize)
+                    });
+                }
+            }
+        }
+
         // Add enemies
         if (this.enemyManager) {
             for (const enemy of this.enemyManager.getEnemies()) {
@@ -1032,6 +1156,12 @@ export class Game {
                 case 'tree':
                     this.treeManager.renderTree(this.ctx, item.entity);
                     break;
+                case 'flower':
+                    this.flowerManager.renderFlower(this.ctx, item.entity);
+                    break;
+                case 'weed':
+                    this.flowerManager.renderWeed(this.ctx, item.entity);
+                    break;
                 case 'enemy':
                     this.enemyManager.renderEnemy(this.ctx, item.entity, this.camera);
                     break;
@@ -1044,6 +1174,9 @@ export class Game {
             }
         }
 
+        // Render upper layers (Buildings Upper) - above characters
+        this.tilemap.renderUpperLayers(this.ctx, this.camera);
+
         // Render effects on top of everything (floating +1 icons, etc.)
         if (this.cropManager) {
             this.cropManager.renderEffects(this.ctx, this.camera);
@@ -1053,6 +1186,9 @@ export class Game {
         }
         if (this.treeManager) {
             this.treeManager.renderEffects(this.ctx, this.camera);
+        }
+        if (this.flowerManager) {
+            this.flowerManager.renderEffects(this.ctx, this.camera);
         }
 
         // Render player health bar if damaged (on top of sprites)

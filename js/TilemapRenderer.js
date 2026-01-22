@@ -2,9 +2,12 @@ export class TilemapRenderer {
     constructor() {
         this.tileData = null;        // Base layer (grass)
         this.layers = [];            // Additional layers rendered on top
+        this.upperLayers = [];       // Layers rendered above character (Buildings Upper)
         this.boundaryData = null;    // Collision/boundary layer
         this.tilesetImage = null;
-        this.tileSize = 16;
+        this.tileSize = 16;          // Logical tile size (used for world coordinates)
+        this.paddedTileSize = 18;    // Tile size in padded tileset (tileSize + padding*2)
+        this.padding = 1;            // Padding around each tile in the tileset
         this.tilesPerRow = 0;
         this.mapWidth = 0;
         this.mapHeight = 0;
@@ -15,6 +18,18 @@ export class TilemapRenderer {
         this.houseOffsetY = 0;
         this.houseWidth = 0;
         this.houseHeight = 0;
+
+        // Store tilemap offset (where the store is placed on the map)
+        this.storeOffsetX = 0;
+        this.storeOffsetY = 0;
+        this.storeWidth = 0;
+        this.storeHeight = 0;
+
+        // Collision rectangles from TMX object layer
+        this.collisionRects = [];
+
+        // Interactable rectangles from TMX object layer
+        this.interactables = [];
     }
 
     async load(csvPath, tilesetPath) {
@@ -27,12 +42,12 @@ export class TilemapRenderer {
             // Load tileset image
             this.tilesetImage = await this.loadImage(tilesetPath);
 
-            // Calculate tiles per row based on image width
-            this.tilesPerRow = Math.floor(this.tilesetImage.width / this.tileSize);
+            // Calculate tiles per row based on image width and padded tile size
+            this.tilesPerRow = Math.floor(this.tilesetImage.width / this.paddedTileSize);
 
             this.loaded = true;
             console.log(`Tilemap loaded: ${this.mapWidth}x${this.mapHeight} tiles`);
-            console.log(`Tileset: ${this.tilesPerRow} tiles per row`);
+            console.log(`Tileset: ${this.tilesPerRow} tiles per row (padded: ${this.paddedTileSize}px)`);
         } catch (error) {
             console.error('Failed to load tilemap:', error);
             throw error;
@@ -44,8 +59,8 @@ export class TilemapRenderer {
             // Load tileset image first
             this.tilesetImage = await this.loadImage(tilesetPath);
 
-            // Calculate tiles per row based on image width
-            this.tilesPerRow = Math.floor(this.tilesetImage.width / this.tileSize);
+            // Calculate tiles per row based on image width and padded tile size
+            this.tilesPerRow = Math.floor(this.tilesetImage.width / this.paddedTileSize);
 
             // Generate procedural map
             this.mapWidth = width;
@@ -88,54 +103,67 @@ export class TilemapRenderer {
             // Load tileset image first
             this.tilesetImage = await this.loadImage(tilesetPath);
 
-            // Calculate tiles per row based on image width
-            this.tilesPerRow = Math.floor(this.tilesetImage.width / this.tileSize);
+            // Calculate tiles per row based on image width and padded tile size
+            this.tilesPerRow = Math.floor(this.tilesetImage.width / this.paddedTileSize);
 
-            // Load the house layer CSVs
-            const layer1Response = await fetch('Tileset/home_Tile Layer 1.csv');
-            const layer2Response = await fetch('Tileset/home_Tile Layer 2.csv');
-            const layer3Response = await fetch('Tileset/home_Tile Layer 3.csv');
+            // Load and parse both TMX files
+            const [homeTmxResponse, storeTmxResponse] = await Promise.all([
+                fetch('Tileset/home.tmx'),
+                fetch('Tileset/store.tmx')
+            ]);
+            const homeTmxText = await homeTmxResponse.text();
+            const storeTmxText = await storeTmxResponse.text();
+            const homeData = this.parseTmx(homeTmxText);
+            const storeData = this.parseTmx(storeTmxText);
 
-            const layer1Text = await layer1Response.text();
-            const layer2Text = await layer2Response.text();
-            const layer3Text = await layer3Response.text();
+            // Store dimensions (both are 10x10)
+            this.storeWidth = storeData.width;
+            this.storeHeight = storeData.height;
 
-            const houseLayer1 = this.parseCsvText(layer1Text);
-            const houseLayer2 = this.parseCsvText(layer2Text);
-            const houseLayer3 = this.parseCsvText(layer3Text);
+            // House dimensions from TMX
+            this.houseWidth = homeData.width;
+            this.houseHeight = homeData.height;
 
-            // House dimensions (from the CSV)
-            this.houseWidth = houseLayer1[0].length;
-            this.houseHeight = houseLayer1.length;
-
-            // Total map: house on top, 10x10 grass area below
+            // Total map: store on left, house on right, grass area below both
+            // Store is placed directly to the left of home
             const grassHeight = 10;
-            this.mapWidth = this.houseWidth;  // Match house width (10 tiles)
-            this.mapHeight = this.houseHeight + grassHeight;
+            this.mapWidth = this.storeWidth + this.houseWidth; // 20 tiles wide (10 + 10)
+            this.mapHeight = Math.max(this.houseHeight, this.storeHeight) + grassHeight; // 20 tiles tall
 
-            // House is at the top of the map
-            this.houseOffsetX = 0;
+            // Store is on the left (x: 0-9)
+            this.storeOffsetX = 0;
+            this.storeOffsetY = 0;
+
+            // House is on the right (x: 10-19)
+            this.houseOffsetX = this.storeWidth;
             this.houseOffsetY = 0;
 
-            // Generate base layer (grass for the entire map)
+            // Generate base layer (Ground layers from both TMX + grass below)
             this.tileData = [];
             const commonGrassTiles = [66, 129, 130, 131, 192, 193, 194, 195, 197, 199, 257, 258];
+            const homeGroundLayer = homeData.tileLayers.find(l => l.name === 'Ground');
+            const storeGroundLayer = storeData.tileLayers.find(l => l.name === 'Ground');
 
             for (let y = 0; y < this.mapHeight; y++) {
                 const row = [];
                 for (let x = 0; x < this.mapWidth; x++) {
-                    // For the house area, use the house layer 1 data
-                    if (y < this.houseHeight) {
-                        const houseTile = houseLayer1[y][x];
-                        if (houseTile !== -1) {
-                            row.push(houseTile);
-                        } else {
-                            // Use grass for transparent house tiles
-                            const tileIndex = Math.floor(Math.random() * commonGrassTiles.length);
-                            row.push(commonGrassTiles[tileIndex]);
-                        }
+                    let tile = -1;
+
+                    // Check if in store area (left side, top)
+                    if (x < this.storeWidth && y < this.storeHeight && storeGroundLayer) {
+                        tile = storeGroundLayer.data[y][x];
+                    }
+                    // Check if in home area (right side, top)
+                    else if (x >= this.houseOffsetX && x < this.houseOffsetX + this.houseWidth &&
+                             y < this.houseHeight && homeGroundLayer) {
+                        const localX = x - this.houseOffsetX;
+                        tile = homeGroundLayer.data[y][localX];
+                    }
+
+                    if (tile >= 0) {
+                        row.push(tile);
                     } else {
-                        // Grass area below house
+                        // Empty tile or grass area, fill with random grass
                         const tileIndex = Math.floor(Math.random() * commonGrassTiles.length);
                         row.push(commonGrassTiles[tileIndex]);
                     }
@@ -143,18 +171,102 @@ export class TilemapRenderer {
                 this.tileData.push(row);
             }
 
-            // Store additional layers (layer 2 and 3) with their offsets
-            this.layers = [
-                { data: houseLayer2, offsetX: this.houseOffsetX, offsetY: this.houseOffsetY },
-                { data: houseLayer3, offsetX: this.houseOffsetX, offsetY: this.houseOffsetY }
-            ];
+            // Store layers rendered BELOW character: Decor, Buildings (Base), Buildings (Detail)
+            // Include layers from both home and store
+            this.layers = [];
 
-            // Create boundary data from non-walkable tiles
-            // For now, we'll mark house interior walls as boundaries
-            this.boundaryData = this.createBoundaryFromLayers(houseLayer1, houseLayer2, houseLayer3);
+            // Helper to add layer with offset
+            const addLayersFromTmx = (tmxData, offsetX, offsetY) => {
+                const decorLayer = tmxData.tileLayers.find(l => l.name === 'Decor');
+                const baseBuildingsLayer = tmxData.tileLayers.find(l => l.name === 'Buildings (Base)');
+                const detailBuildingsLayer = tmxData.tileLayers.find(l => l.name === 'Buildings (Detail)');
+
+                if (decorLayer) {
+                    this.layers.push({ data: decorLayer.data, offsetX, offsetY });
+                }
+                if (baseBuildingsLayer) {
+                    this.layers.push({ data: baseBuildingsLayer.data, offsetX, offsetY });
+                }
+                if (detailBuildingsLayer) {
+                    this.layers.push({ data: detailBuildingsLayer.data, offsetX, offsetY });
+                }
+            };
+
+            // Add store layers (left side)
+            addLayersFromTmx(storeData, this.storeOffsetX, this.storeOffsetY);
+            // Add home layers (right side)
+            addLayersFromTmx(homeData, this.houseOffsetX, this.houseOffsetY);
+
+            // Store layers rendered ABOVE character: Buildings (Upper)
+            this.upperLayers = [];
+
+            const addUpperLayersFromTmx = (tmxData, offsetX, offsetY) => {
+                const upperBuildingsLayer = tmxData.tileLayers.find(l => l.name === 'Buildings (Upper)');
+                if (upperBuildingsLayer) {
+                    this.upperLayers.push({ data: upperBuildingsLayer.data, offsetX, offsetY });
+                }
+            };
+
+            // Add store upper layers
+            addUpperLayersFromTmx(storeData, this.storeOffsetX, this.storeOffsetY);
+            // Add home upper layers
+            addUpperLayersFromTmx(homeData, this.houseOffsetX, this.houseOffsetY);
+
+            // Combine collision rectangles from both TMX files
+            this.collisionRects = [];
+
+            // Add store collision rectangles with offset
+            for (const rect of storeData.collisionRects) {
+                this.collisionRects.push({
+                    x: rect.x + this.storeOffsetX * this.tileSize,
+                    y: rect.y + this.storeOffsetY * this.tileSize,
+                    width: rect.width,
+                    height: rect.height
+                });
+            }
+
+            // Add home collision rectangles with offset
+            for (const rect of homeData.collisionRects) {
+                this.collisionRects.push({
+                    x: rect.x + this.houseOffsetX * this.tileSize,
+                    y: rect.y + this.houseOffsetY * this.tileSize,
+                    width: rect.width,
+                    height: rect.height
+                });
+            }
+
+            console.log(`Loaded ${this.collisionRects.length} collision rectangles`);
+
+            // Combine interactable objects from both TMX files
+            this.interactables = [];
+
+            // Add store interactables with offset
+            for (const interactable of storeData.interactables) {
+                this.interactables.push({
+                    x: interactable.x + this.storeOffsetX * this.tileSize,
+                    y: interactable.y + this.storeOffsetY * this.tileSize,
+                    width: interactable.width,
+                    height: interactable.height,
+                    action: interactable.action
+                });
+            }
+
+            // Add home interactables with offset
+            for (const interactable of homeData.interactables) {
+                this.interactables.push({
+                    x: interactable.x + this.houseOffsetX * this.tileSize,
+                    y: interactable.y + this.houseOffsetY * this.tileSize,
+                    width: interactable.width,
+                    height: interactable.height,
+                    action: interactable.action
+                });
+            }
+
+            console.log(`Loaded ${this.interactables.length} interactable objects`);
 
             this.loaded = true;
-            console.log(`Home map generated: ${this.mapWidth}x${this.mapHeight} tiles`);
+            console.log(`Combined map generated: ${this.mapWidth}x${this.mapHeight} tiles`);
+            console.log(`Store area: ${this.storeWidth}x${this.storeHeight} tiles at (${this.storeOffsetX}, ${this.storeOffsetY})`);
             console.log(`House area: ${this.houseWidth}x${this.houseHeight} tiles at (${this.houseOffsetX}, ${this.houseOffsetY})`);
             console.log(`Tileset: ${this.tilesPerRow} tiles per row`);
         } catch (error) {
@@ -163,39 +275,106 @@ export class TilemapRenderer {
         }
     }
 
-    // Create boundary collision data from house layers
-    createBoundaryFromLayers(layer1, layer2, layer3) {
-        const boundary = [];
-        const height = layer1.length;
-        const width = layer1[0].length;
+    // Parse TMX XML format
+    parseTmx(tmxText) {
+        const parser = new DOMParser();
+        const doc = parser.parseFromString(tmxText, 'text/xml');
+        const mapNode = doc.querySelector('map');
 
-        // Wall/furniture tile IDs that should block movement
-        // These are common wall and furniture tiles from the tileset
-        const wallTiles = new Set([
-            // Walls
-            2639, 2640, 2641, 2720, 2831, 2832, 2833,
-            2895, 2896, 2897, 2959, 2960, 2961,
-            3023, 3024, 3025, 3028, 3029, 3030,
-            // Furniture
-            2772, 2773, 2774, 2836, 2837, 2838, 2912, 2913,
-            2966, 2839
-        ]);
+        const result = {
+            width: parseInt(mapNode.getAttribute('width')),
+            height: parseInt(mapNode.getAttribute('height')),
+            tileWidth: parseInt(mapNode.getAttribute('tilewidth')),
+            tileHeight: parseInt(mapNode.getAttribute('tileheight')),
+            tileLayers: [],
+            collisionRects: [],
+            interactables: []
+        };
 
-        for (let y = 0; y < height; y++) {
-            const row = [];
-            for (let x = 0; x < width; x++) {
-                const tile1 = layer1[y] ? layer1[y][x] : -1;
-                const tile2 = layer2[y] ? layer2[y][x] : -1;
-                const tile3 = layer3[y] ? layer3[y][x] : -1;
+        // Parse tile layers
+        const layerNodes = doc.querySelectorAll('layer');
+        for (const layerNode of layerNodes) {
+            const layerName = layerNode.getAttribute('name');
+            const dataNode = layerNode.querySelector('data');
+            const csvText = dataNode.textContent.trim();
 
-                // Mark as boundary if any layer has a wall/blocking tile
-                const isWall = wallTiles.has(tile1) || wallTiles.has(tile2) || wallTiles.has(tile3);
-                row.push(isWall ? 1 : 0);
-            }
-            boundary.push(row);
+            // Parse CSV data
+            // TMX uses 1-based GIDs (firstgid="1"), but our tileset uses 0-based indices
+            // So we subtract 1 from non-zero tile IDs to convert to 0-based
+            // GID 0 in TMX means empty tile, which becomes -1 in our system
+            const rows = csvText.split('\n').map(line => {
+                return line.split(',').filter(s => s.trim() !== '').map(num => {
+                    const val = parseInt(num.trim(), 10);
+                    if (isNaN(val) || val <= 0) return -1; // Empty tile
+                    return val - 1; // Convert 1-based GID to 0-based index
+                });
+            }).filter(row => row.length > 0);
+
+            result.tileLayers.push({
+                name: layerName,
+                data: rows
+            });
         }
 
-        return boundary;
+        // Parse object groups (Collision and Interactables)
+        const objectGroups = doc.querySelectorAll('objectgroup');
+        for (const group of objectGroups) {
+            const groupName = group.getAttribute('name');
+            const objects = group.querySelectorAll('object');
+
+            for (const obj of objects) {
+                const rect = {
+                    x: parseFloat(obj.getAttribute('x')),
+                    y: parseFloat(obj.getAttribute('y')),
+                    width: parseFloat(obj.getAttribute('width')),
+                    height: parseFloat(obj.getAttribute('height'))
+                };
+
+                if (groupName === 'Collision') {
+                    result.collisionRects.push(rect);
+                } else if (groupName === 'Interactables') {
+                    // Get action property
+                    const propsNode = obj.querySelector('properties');
+                    let action = null;
+                    if (propsNode) {
+                        const propNodes = propsNode.querySelectorAll('property');
+                        for (const prop of propNodes) {
+                            if (prop.getAttribute('name') === 'action') {
+                                action = prop.getAttribute('value');
+                            }
+                        }
+                    }
+                    result.interactables.push({
+                        ...rect,
+                        action: action
+                    });
+                }
+            }
+        }
+
+        return result;
+    }
+
+    // Check if a world position collides with any collision rectangle
+    isWorldPositionBlocked(worldX, worldY) {
+        for (const rect of this.collisionRects) {
+            if (worldX >= rect.x && worldX < rect.x + rect.width &&
+                worldY >= rect.y && worldY < rect.y + rect.height) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // Get interactable at a world position
+    getInteractableAt(worldX, worldY) {
+        for (const interactable of this.interactables) {
+            if (worldX >= interactable.x && worldX < interactable.x + interactable.width &&
+                worldY >= interactable.y && worldY < interactable.y + interactable.height) {
+                return interactable;
+            }
+        }
+        return null;
     }
 
     parseCsvText(csvText) {
@@ -235,29 +414,38 @@ export class TilemapRenderer {
 
     // Check if a tile is a boundary (blocked for movement)
     isBoundary(x, y) {
-        if (!this.boundaryData) return false;
+        // Convert tile coordinates to world coordinates (center of tile)
+        const worldX = x * this.tileSize + this.tileSize / 2;
+        const worldY = y * this.tileSize + this.tileSize / 2;
 
-        // Adjust for house offset
-        const localX = x - this.houseOffsetX;
-        const localY = y - this.houseOffsetY;
-
-        if (localX < 0 || localY < 0 ||
-            localY >= this.boundaryData.length ||
-            localX >= (this.boundaryData[0]?.length || 0)) {
-            return false;
-        }
-
-        return this.boundaryData[localY][localX] === 1;
+        // Check collision rectangles
+        return this.isWorldPositionBlocked(worldX, worldY);
     }
 
     getTilesetSourceRect(tileId) {
+        // Note: Tile IDs are used directly as indices (Tiled GID convention)
+        // For padded tilesets, each tile occupies paddedTileSize pixels but we
+        // sample from the inner tileSize area (skipping the padding)
         const col = tileId % this.tilesPerRow;
         const row = Math.floor(tileId / this.tilesPerRow);
         return {
-            x: col * this.tileSize,
-            y: row * this.tileSize,
+            x: col * this.paddedTileSize + this.padding,
+            y: row * this.paddedTileSize + this.padding,
             width: this.tileSize,
             height: this.tileSize
+        };
+    }
+
+    getTilesetSourceRectWithPadding(tileId, overlap) {
+        // Same as getTilesetSourceRect but extends into the padding area
+        // to allow slight overlap when rendering to prevent subpixel gaps
+        const col = tileId % this.tilesPerRow;
+        const row = Math.floor(tileId / this.tilesPerRow);
+        return {
+            x: col * this.paddedTileSize + this.padding - overlap,
+            y: row * this.paddedTileSize + this.padding - overlap,
+            width: this.tileSize + overlap * 2,
+            height: this.tileSize + overlap * 2
         };
     }
 
@@ -276,7 +464,9 @@ export class TilemapRenderer {
         const startRow = Math.max(0, Math.floor(bounds.top / this.tileSize));
         const endRow = Math.min(this.mapHeight - 1, Math.ceil(bounds.bottom / this.tileSize));
 
-        // Render only visible tiles with slight overlap to prevent gaps
+        // Small overlap to prevent subpixel gaps between tiles.
+        // Since we use a padded tileset, we can safely sample slightly beyond
+        // the tile boundary - the padding contains the correct edge pixels.
         const overlap = 0.5;
 
         // Render base layer
@@ -285,7 +475,7 @@ export class TilemapRenderer {
                 const tileId = this.getTileAt(col, row);
                 if (tileId === null || tileId === -1) continue;
 
-                const sourceRect = this.getTilesetSourceRect(tileId);
+                const sourceRect = this.getTilesetSourceRectWithPadding(tileId, overlap);
                 const worldX = col * this.tileSize;
                 const worldY = row * this.tileSize;
 
@@ -304,7 +494,7 @@ export class TilemapRenderer {
         }
     }
 
-    renderLayer(ctx, layer, startCol, endCol, startRow, endRow, overlap) {
+    renderLayer(ctx, layer, startCol, endCol, startRow, endRow, overlap = 0) {
         const layerData = layer.data;
         const offsetX = layer.offsetX;
         const offsetY = layer.offsetY;
@@ -322,9 +512,9 @@ export class TilemapRenderer {
                 }
 
                 const tileId = layerData[localY][localX];
-                if (tileId === -1) continue; // Skip empty tiles
+                if (tileId < 0) continue; // Skip empty tiles (-1)
 
-                const sourceRect = this.getTilesetSourceRect(tileId);
+                const sourceRect = this.getTilesetSourceRectWithPadding(tileId, overlap);
                 const worldX = col * this.tileSize;
                 const worldY = row * this.tileSize;
 
@@ -338,6 +528,22 @@ export class TilemapRenderer {
         }
     }
 
+    // Render upper layers (above characters)
+    renderUpperLayers(ctx, camera) {
+        if (!this.loaded || this.upperLayers.length === 0) return;
+
+        const bounds = camera.getVisibleBounds();
+        const startCol = Math.max(0, Math.floor(bounds.left / this.tileSize));
+        const endCol = Math.min(this.mapWidth - 1, Math.ceil(bounds.right / this.tileSize));
+        const startRow = Math.max(0, Math.floor(bounds.top / this.tileSize));
+        const endRow = Math.min(this.mapHeight - 1, Math.ceil(bounds.bottom / this.tileSize));
+
+        const overlap = 0.5;
+        for (const layer of this.upperLayers) {
+            this.renderLayer(ctx, layer, startCol, endCol, startRow, endRow, overlap);
+        }
+    }
+
     getWorldWidth() {
         return this.mapWidth * this.tileSize;
     }
@@ -346,10 +552,10 @@ export class TilemapRenderer {
         return this.mapHeight * this.tileSize;
     }
 
-    // Get the center of the house area
+    // Get the center of the map (between store and house)
     getHouseCenter() {
-        const centerX = (this.houseOffsetX + this.houseWidth / 2) * this.tileSize;
-        const centerY = (this.houseOffsetY + this.houseHeight / 2) * this.tileSize;
+        const centerX = (this.mapWidth / 2) * this.tileSize;
+        const centerY = (Math.max(this.houseHeight, this.storeHeight) / 2) * this.tileSize;
         return { x: centerX, y: centerY };
     }
 

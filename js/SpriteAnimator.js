@@ -4,6 +4,7 @@ export class SpriteAnimator {
         this.y = y;
         this.frameCount = frameCount;
         this.currentFrame = 0;
+        this.baseFps = fps;
         this.frameTime = 1000 / fps; // milliseconds per frame
         this.timeSinceLastFrame = 0;
         this.image = null;
@@ -18,6 +19,9 @@ export class SpriteAnimator {
 
         // Direction (for flipping sprite)
         this.facingLeft = false;
+
+        // Speed multiplier (1.0 = normal, lower = faster animation)
+        this.speedMultiplier = 1.0;
     }
 
     async load(imagePath) {
@@ -48,8 +52,11 @@ export class SpriteAnimator {
 
         this.timeSinceLastFrame += deltaTime;
 
-        while (this.timeSinceLastFrame >= this.frameTime) {
-            this.timeSinceLastFrame -= this.frameTime;
+        // Apply speed multiplier to frame time
+        const effectiveFrameTime = this.frameTime * this.speedMultiplier;
+
+        while (this.timeSinceLastFrame >= effectiveFrameTime) {
+            this.timeSinceLastFrame -= effectiveFrameTime;
             this.currentFrame++;
 
             if (this.currentFrame >= this.frameCount) {
@@ -123,5 +130,9 @@ export class SpriteAnimator {
 
     setFacingLeft(facingLeft) {
         this.facingLeft = facingLeft;
+    }
+
+    setSpeedMultiplier(multiplier) {
+        this.speedMultiplier = multiplier;
     }
 }

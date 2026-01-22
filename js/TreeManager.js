@@ -88,6 +88,7 @@ export class TreeManager {
     }
 
     // Chop a tree at a tile position
+    // Each chop yields 1 wood - tree disappears when resources depleted
     chopTree(tileX, tileY) {
         const tree = this.getTreeAt(tileX, tileY);
         if (!tree || !tree.canBeChopped()) {
@@ -96,20 +97,12 @@ export class TreeManager {
 
         const result = tree.chop();
 
-        // Create chopping effect if wood was yielded
+        // Create chopping effect if wood was yielded (every successful chop)
         if (result.woodYielded) {
             this.createChoppingEffect(tree, result.woodYielded);
         }
 
-        // If tree became a stump (stage STUMP), continue chopping to remove it
-        if (tree.stage === CHOP_STAGE.STUMP) {
-            // The stump can still be chopped
-        }
-
-        // If tree is now GONE, start fade out
-        if (tree.stage === CHOP_STAGE.GONE) {
-            // Fade handled in tree.update()
-        }
+        // Tree fade out is handled in tree.update() when stage is GONE
 
         return result;
     }

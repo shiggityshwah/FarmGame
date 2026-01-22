@@ -84,9 +84,10 @@ export class EnemyManager {
     }
 
     removeDeadEnemies() {
-        // Remove enemies that have finished their death animation
+        // Remove enemies that have fully faded out after death
         this.enemies = this.enemies.filter(e => {
-            if (!e.isAlive && e.sprite && e.sprite.animationFinished) {
+            if (e.isFullyFaded()) {
+                console.log(`Removing ${e.type} from game`);
                 return false; // Remove
             }
             return true; // Keep
@@ -151,8 +152,8 @@ export class EnemyManager {
             }
         }
 
-        // Optionally clean up dead enemies after some time
-        // this.removeDeadEnemies();
+        // Clean up enemies that have fully faded out
+        this.removeDeadEnemies();
     }
 
     render(ctx, camera) {
