@@ -16,6 +16,8 @@ import { FlowerManager } from './FlowerManager.js';
 import { Inventory, RESOURCE_TYPES } from './Inventory.js';
 import { UIManager } from './UIManager.js';
 import { ORE_TYPES } from './OreVein.js';
+import { CONFIG } from './config.js';
+import { ForestGenerator } from './ForestGenerator.js';
 
 // Animation frame counts for human character
 const ANIMATION_DATA = {
@@ -75,6 +77,7 @@ export class Game {
         this.oreManager = null;
         this.treeManager = null;
         this.flowerManager = null;
+        this.forestGenerator = null;
 
         // Inventory and UI
         this.inventory = null;
@@ -83,19 +86,19 @@ export class Game {
         // Tool animation speed multipliers (modified by upgrades)
         this.toolAnimationMultipliers = {};
 
-        // Player combat stats
-        this.playerMaxHealth = 100;
+        // Player combat stats (from config)
+        this.playerMaxHealth = CONFIG.player.maxHealth;
         this.playerHealth = this.playerMaxHealth;
-        this.playerDamage = 10;
-        this.playerVisionRange = 5; // tiles
-        this.playerAttackRange = 1; // tiles (must be adjacent)
+        this.playerDamage = CONFIG.player.damage;
+        this.playerVisionRange = CONFIG.player.visionRange;
+        this.playerAttackRange = CONFIG.player.attackRange;
 
         // Combat state
         this.isInCombat = false;
         this.combatTarget = null; // Current enemy being attacked
-        this.engagedEnemies = []; // Enemies that have engaged the player
+        this.engagedEnemies = new Set(); // Enemies that have engaged the player
         this.isPlayerAttacking = false;
-        this.playerAttackCooldown = 800; // ms between attacks
+        this.playerAttackCooldown = CONFIG.player.attackCooldown;
         this.lastPlayerAttackTime = 0;
 
         // Damage flash effect for player
@@ -112,7 +115,7 @@ export class Game {
 
         // Character movement
         this.currentPath = null;
-        this.moveSpeed = 80;  // pixels per second
+        this.moveSpeed = CONFIG.player.moveSpeed;
 
         // Character direction (false = right, true = left)
         this.facingLeft = false;
@@ -156,6 +159,23 @@ export class Game {
             this.camera.x = houseCenter.x;
             this.camera.y = houseCenter.y;
 
+            // Initialize forest generator and generate forest around the playable area
+            this.forestGenerator = new ForestGenerator(this.tilemap);
+            this.forestGenerator.generate({
+                borderWidth: 12,         // Width of forest border in tree units (bigger forest)
+                density: 0.75,           // 75% chance to place tree at valid position
+                excludeRect: {           // Exclude the playable area
+                    x: 0,
+                    y: 0,
+                    width: this.tilemap.mapWidth,
+                    height: this.tilemap.mapHeight
+                },
+                litChance: 0.25,         // 25% chance for lit tree variants
+                pocketCount: 8,          // Number of clearings in the forest
+                pocketMinSize: 4,        // Minimum pocket radius
+                pocketMaxSize: 7         // Maximum pocket radius
+            });
+
             // Initialize enemy manager before creating characters
             this.enemyManager = new EnemyManager(this.tilemap);
 
@@ -197,11 +217,16 @@ export class Game {
 
             // Set up click handler for harvesting
             this.inputManager.setClickCallback((worldX, worldY) => {
-                this.onWorldClick(worldX, worldY);
+                try {
+                    this.onWorldClick(worldX, worldY);
+                } catch (error) {
+                    console.error('Error in click handler:', error);
+                }
             });
 
             // Initialize new systems
             this.pathfinder = new Pathfinder(this.tilemap);
+            this.pathfinder.setForestGenerator(this.forestGenerator);
             this.overlayManager = new TileOverlayManager(this.tilemap);
             this.tileSelector = new TileSelector(this.tilemap, this.camera, this.overlayManager, this.cropManager);
             this.tileSelector.setEnemyManager(this.enemyManager);
@@ -216,6 +241,13 @@ export class Game {
             this.flowerManager.setTreeManager(this.treeManager);
             this.flowerManager.setOreManager(this.oreManager);
             this.flowerManager.setEnemyManager(this.enemyManager);
+            this.flowerManager.setForestGenerator(this.forestGenerator);
+
+            // Connect flower manager to tile selector (for weed checking)
+            this.tileSelector.setFlowerManager(this.flowerManager);
+
+            // Connect forest generator to tile selector (for forest tree selection)
+            this.tileSelector.setForestGenerator(this.forestGenerator);
 
             // Connect enemy manager to pathfinder and game
             this.enemyManager.setPathfinder(this.pathfinder);
@@ -223,20 +255,32 @@ export class Game {
 
             // Set up drag callbacks for tile selection
             this.inputManager.setDragStartCallback((worldX, worldY) => {
-                if (this.inputMode === 'tool' && this.currentTool) {
-                    this.tileSelector.startSelection(worldX, worldY);
+                try {
+                    if (this.inputMode === 'tool' && this.currentTool) {
+                        this.tileSelector.startSelection(worldX, worldY);
+                    }
+                } catch (error) {
+                    console.error('Error in drag start handler:', error);
                 }
             });
 
             this.inputManager.setDragMoveCallback((worldX, worldY) => {
-                if (this.inputMode === 'tool' && this.currentTool) {
-                    this.tileSelector.updateSelection(worldX, worldY);
+                try {
+                    if (this.inputMode === 'tool' && this.currentTool) {
+                        this.tileSelector.updateSelection(worldX, worldY);
+                    }
+                } catch (error) {
+                    console.error('Error in drag move handler:', error);
                 }
             });
 
             this.inputManager.setDragEndCallback((worldX, worldY, hasMoved) => {
-                if (this.inputMode === 'tool' && this.currentTool) {
-                    this.onTileSelectionComplete();
+                try {
+                    if (this.inputMode === 'tool' && this.currentTool) {
+                        this.onTileSelectionComplete();
+                    }
+                } catch (error) {
+                    console.error('Error in drag end handler:', error);
                 }
             });
 
@@ -497,6 +541,18 @@ export class Game {
                 return;
             }
         }
+
+        // Try to harvest forest pocket crops
+        if (this.forestGenerator) {
+            const forestCropHarvest = this.forestGenerator.harvestPocketCrop(tileX, tileY);
+            if (forestCropHarvest) {
+                if (this.inventory) {
+                    this.inventory.addCropByIndex(forestCropHarvest.index);
+                }
+                console.log(`Collected from forest: ${forestCropHarvest.name}`);
+                return;
+            }
+        }
     }
 
     handleInteractableAction(action) {
@@ -561,9 +617,9 @@ export class Game {
 
     // Called by EnemyManager when an enemy spots the player
     onEnemyEngaged(enemy) {
-        if (!this.engagedEnemies.includes(enemy)) {
-            this.engagedEnemies.push(enemy);
-            console.log(`Enemy engaged! ${this.engagedEnemies.length} enemies in combat`);
+        if (!this.engagedEnemies.has(enemy)) {
+            this.engagedEnemies.add(enemy);
+            console.log(`Enemy engaged! ${this.engagedEnemies.size} enemies in combat`);
         }
 
         // If not already in combat, enter combat mode
@@ -578,14 +634,13 @@ export class Game {
         // attacking until the enemy is dead or they manually flee
         // Only truly disengage if the enemy is dead
         if (!enemy.isAlive) {
-            const index = this.engagedEnemies.indexOf(enemy);
-            if (index !== -1) {
-                this.engagedEnemies.splice(index, 1);
-                console.log(`Enemy died and disengaged! ${this.engagedEnemies.length} enemies remaining`);
+            if (this.engagedEnemies.has(enemy)) {
+                this.engagedEnemies.delete(enemy);
+                console.log(`Enemy died and disengaged! ${this.engagedEnemies.size} enemies remaining`);
             }
 
             // If no more enemies, exit combat
-            if (this.engagedEnemies.length === 0 && this.isInCombat) {
+            if (this.engagedEnemies.size === 0 && this.isInCombat) {
                 this.exitCombat();
             }
         }
@@ -641,7 +696,7 @@ export class Game {
     takeDamage(amount, source) {
         this.playerHealth -= amount;
         this.playerDamageFlashing = true;
-        this.playerDamageFlashTimer = 200;
+        this.playerDamageFlashTimer = CONFIG.player.damageFlashDuration;
 
         console.log(`Player took ${amount} damage from ${source.type}! Health: ${this.playerHealth}/${this.playerMaxHealth}`);
 
@@ -664,11 +719,15 @@ export class Game {
         const currentTime = performance.now();
         const tileSize = this.tilemap.tileSize;
 
-        // Remove dead enemies from engaged list
-        this.engagedEnemies = this.engagedEnemies.filter(e => e.isAlive);
+        // Remove dead enemies from engaged set
+        for (const enemy of this.engagedEnemies) {
+            if (!enemy.isAlive) {
+                this.engagedEnemies.delete(enemy);
+            }
+        }
 
         // Exit combat if no enemies left
-        if (this.engagedEnemies.length === 0) {
+        if (this.engagedEnemies.size === 0) {
             this.exitCombat();
             return;
         }
@@ -677,7 +736,7 @@ export class Game {
         let closestEnemy = null;
 
         // Prioritize enemies we're already engaged with
-        if (this.engagedEnemies.length > 0) {
+        if (this.engagedEnemies.size > 0) {
             let closestDistance = Infinity;
             for (const enemy of this.engagedEnemies) {
                 if (!enemy.isAlive) continue;
@@ -753,11 +812,8 @@ export class Game {
                 console.log(`Player attacked ${enemy.type} for ${this.playerDamage} damage!`);
 
                 if (died) {
-                    // Remove from engaged list
-                    const index = this.engagedEnemies.indexOf(enemy);
-                    if (index !== -1) {
-                        this.engagedEnemies.splice(index, 1);
-                    }
+                    // Remove from engaged set
+                    this.engagedEnemies.delete(enemy);
                     console.log(`${enemy.type} defeated!`);
                 }
             }
@@ -1010,6 +1066,11 @@ export class Game {
             this.treeManager.update(deltaTime);
         }
 
+        // Update forest trees
+        if (this.forestGenerator) {
+            this.forestGenerator.update(deltaTime);
+        }
+
         // Update other character animations (non-enemy NPCs)
         for (const character of this.characters) {
             character.update(deltaTime);
@@ -1029,6 +1090,13 @@ export class Game {
 
         // Render tilemap
         this.tilemap.render(this.ctx, this.camera);
+
+        // Render forest grass layer (surrounding the playable area)
+        if (this.forestGenerator) {
+            this.forestGenerator.render(this.ctx, this.camera);
+            // Render tree trunk and shadow tiles (behind characters)
+            this.forestGenerator.renderAllTreeBackgrounds(this.ctx, this.camera);
+        }
 
         // Render tile overlays (holes, etc.) on top of tilemap
         if (this.overlayManager) {
@@ -1087,6 +1155,9 @@ export class Game {
             }
         }
 
+        // Forest trees are NOT added here - trunk/shadow rendered in background pass,
+        // crowns rendered in foreground pass after all depth-sorted entities
+
         // Add flowers
         if (this.flowerManager) {
             for (const flower of this.flowerManager.getFlowers()) {
@@ -1105,6 +1176,30 @@ export class Game {
                         type: 'weed',
                         entity: weed,
                         sortY: weed.getSortY(tileSize)
+                    });
+                }
+            }
+        }
+
+        // Add forest pocket contents
+        if (this.forestGenerator) {
+            // Add pocket ore veins
+            for (const ore of this.forestGenerator.getPocketOreVeins()) {
+                if (!ore.isGone) {
+                    depthEntities.push({
+                        type: 'forestOre',
+                        entity: ore,
+                        sortY: ore.getSortY(tileSize)
+                    });
+                }
+            }
+            // Add pocket crops
+            for (const crop of this.forestGenerator.getPocketCrops()) {
+                if (!crop.isGone) {
+                    depthEntities.push({
+                        type: 'forestCrop',
+                        entity: crop,
+                        sortY: crop.getSortY(tileSize)
                     });
                 }
             }
@@ -1162,6 +1257,12 @@ export class Game {
                 case 'weed':
                     this.flowerManager.renderWeed(this.ctx, item.entity);
                     break;
+                case 'forestOre':
+                    this.forestGenerator.renderPocketOre(this.ctx, item.entity);
+                    break;
+                case 'forestCrop':
+                    this.forestGenerator.renderPocketCrop(this.ctx, item.entity);
+                    break;
                 case 'enemy':
                     this.enemyManager.renderEnemy(this.ctx, item.entity, this.camera);
                     break;
@@ -1172,6 +1273,11 @@ export class Game {
                     item.entity.render(this.ctx, this.camera);
                     break;
             }
+        }
+
+        // Render forest tree crowns (in front of characters)
+        if (this.forestGenerator) {
+            this.forestGenerator.renderAllTreeForegrounds(this.ctx, this.camera);
         }
 
         // Render upper layers (Buildings Upper) - above characters
@@ -1189,6 +1295,9 @@ export class Game {
         }
         if (this.flowerManager) {
             this.flowerManager.renderEffects(this.ctx, this.camera);
+        }
+        if (this.forestGenerator) {
+            this.forestGenerator.renderEffects(this.ctx, this.camera);
         }
 
         // Render player health bar if damaged (on top of sprites)
@@ -1241,13 +1350,18 @@ export class Game {
     loop(currentTime) {
         if (!this.running) return;
 
-        // Calculate delta time
-        const deltaTime = this.lastTime ? currentTime - this.lastTime : 0;
-        this.lastTime = currentTime;
+        try {
+            // Calculate delta time
+            const deltaTime = this.lastTime ? currentTime - this.lastTime : 0;
+            this.lastTime = currentTime;
 
-        // Update and render
-        this.update(deltaTime);
-        this.render();
+            // Update and render
+            this.update(deltaTime);
+            this.render();
+        } catch (error) {
+            console.error('Error in game loop:', error);
+            // Continue running despite errors to prevent complete freeze
+        }
 
         // Continue loop
         requestAnimationFrame((time) => this.loop(time));

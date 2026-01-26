@@ -14,13 +14,137 @@ const OBSTACLE_TILES = new Set([
     896, 897, 898, 899, 960, 961, 962, 963
 ]);
 
+// MinHeap implementation for efficient A* pathfinding
+// Provides O(log n) insert and extract-min operations
+class MinHeap {
+    constructor() {
+        this.heap = [];
+        this.nodeMap = new Map(); // For O(1) lookup by coordinates
+    }
+
+    size() {
+        return this.heap.length;
+    }
+
+    isEmpty() {
+        return this.heap.length === 0;
+    }
+
+    push(node) {
+        this.heap.push(node);
+        const index = this.heap.length - 1;
+        this.nodeMap.set(`${node.x},${node.y}`, { node, index });
+        this._bubbleUp(index);
+    }
+
+    pop() {
+        if (this.isEmpty()) return null;
+
+        const min = this.heap[0];
+        const last = this.heap.pop();
+        this.nodeMap.delete(`${min.x},${min.y}`);
+
+        if (!this.isEmpty()) {
+            this.heap[0] = last;
+            this.nodeMap.set(`${last.x},${last.y}`, { node: last, index: 0 });
+            this._bubbleDown(0);
+        }
+
+        return min;
+    }
+
+    // Get node by coordinates without removing
+    get(x, y) {
+        const entry = this.nodeMap.get(`${x},${y}`);
+        return entry ? entry.node : null;
+    }
+
+    // Update a node's f value and reposition in heap
+    decreaseKey(x, y, newG, newF, newParent) {
+        const key = `${x},${y}`;
+        const entry = this.nodeMap.get(key);
+        if (!entry) return false;
+
+        const node = entry.node;
+        node.g = newG;
+        node.f = newF;
+        node.parent = newParent;
+
+        // Find current index and bubble up
+        let index = this._findIndex(node);
+        if (index !== -1) {
+            this._bubbleUp(index);
+        }
+        return true;
+    }
+
+    _findIndex(node) {
+        for (let i = 0; i < this.heap.length; i++) {
+            if (this.heap[i].x === node.x && this.heap[i].y === node.y) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    _bubbleUp(index) {
+        while (index > 0) {
+            const parentIndex = Math.floor((index - 1) / 2);
+            if (this.heap[index].f >= this.heap[parentIndex].f) break;
+
+            this._swap(index, parentIndex);
+            index = parentIndex;
+        }
+    }
+
+    _bubbleDown(index) {
+        const length = this.heap.length;
+
+        while (true) {
+            const leftChild = 2 * index + 1;
+            const rightChild = 2 * index + 2;
+            let smallest = index;
+
+            if (leftChild < length && this.heap[leftChild].f < this.heap[smallest].f) {
+                smallest = leftChild;
+            }
+            if (rightChild < length && this.heap[rightChild].f < this.heap[smallest].f) {
+                smallest = rightChild;
+            }
+
+            if (smallest === index) break;
+
+            this._swap(index, smallest);
+            index = smallest;
+        }
+    }
+
+    _swap(i, j) {
+        const temp = this.heap[i];
+        this.heap[i] = this.heap[j];
+        this.heap[j] = temp;
+
+        // Update nodeMap indices
+        this.nodeMap.set(`${this.heap[i].x},${this.heap[i].y}`, { node: this.heap[i], index: i });
+        this.nodeMap.set(`${this.heap[j].x},${this.heap[j].y}`, { node: this.heap[j], index: j });
+    }
+}
+
 export class Pathfinder {
     constructor(tilemap) {
         this.tilemap = tilemap;
+        this.forestGenerator = null;
+    }
+
+    /**
+     * Set the forest generator for extended pathfinding into forest areas
+     */
+    setForestGenerator(forestGenerator) {
+        this.forestGenerator = forestGenerator;
     }
 
     findPath(startX, startY, endX, endY) {
-        // A* pathfinding algorithm
+        // A* pathfinding algorithm using MinHeap for O(n log n) performance
 
         // Quick check: if start or end is invalid, return null
         if (!this.isWalkable(startX, startY) || !this.isWalkable(endX, endY)) {
@@ -28,7 +152,7 @@ export class Pathfinder {
             // For now, allow pathfinding to unwalkable end (we'll stop before it)
         }
 
-        const openSet = [];
+        const openSet = new MinHeap();
         const closedSet = new Set();
 
         const startNode = {
@@ -45,12 +169,11 @@ export class Pathfinder {
         let iterations = 0;
         const maxIterations = 1000; // Prevent infinite loops
 
-        while (openSet.length > 0 && iterations < maxIterations) {
+        while (!openSet.isEmpty() && iterations < maxIterations) {
             iterations++;
 
-            // Find node with lowest f score
-            openSet.sort((a, b) => a.f - b.f);
-            const current = openSet.shift();
+            // Extract node with lowest f score - O(log n) with heap
+            const current = openSet.pop();
 
             // Check if reached goal
             if (current.x === endX && current.y === endY) {
@@ -67,7 +190,7 @@ export class Pathfinder {
                 if (closedSet.has(key)) continue;
 
                 const tentativeG = current.g + 1;
-                const existing = openSet.find(n => n.x === neighbor.x && n.y === neighbor.y);
+                const existing = openSet.get(neighbor.x, neighbor.y);
 
                 if (!existing) {
                     neighbor.g = tentativeG;
@@ -76,16 +199,16 @@ export class Pathfinder {
                     neighbor.parent = current;
                     openSet.push(neighbor);
                 } else if (tentativeG < existing.g) {
-                    existing.g = tentativeG;
-                    existing.f = existing.g + existing.h;
-                    existing.parent = current;
+                    // Update existing node with better path
+                    const newF = tentativeG + existing.h;
+                    openSet.decreaseKey(neighbor.x, neighbor.y, tentativeG, newF, current);
                 }
             }
         }
 
-        // No path found - try direct path as fallback
-        console.log('No path found, using direct movement');
-        return this.getDirectPath(startX, startY, endX, endY);
+        // No path found - return null instead of fallback to prevent walking through obstacles
+        console.warn('No path found from', startX, startY, 'to', endX, endY);
+        return null;
     }
 
     heuristic(x1, y1, x2, y2) {
@@ -121,23 +244,30 @@ export class Pathfinder {
     }
 
     isWalkable(x, y) {
-        // Check bounds
-        if (x < 0 || x >= this.tilemap.mapWidth || y < 0 || y >= this.tilemap.mapHeight) {
-            return false;
+        // Check if within main tilemap bounds
+        const inTilemap = x >= 0 && x < this.tilemap.mapWidth && y >= 0 && y < this.tilemap.mapHeight;
+
+        if (inTilemap) {
+            const tileId = this.tilemap.getTileAt(x, y);
+            if (tileId === null) return false;
+
+            // Check if tile is an obstacle
+            if (OBSTACLE_TILES.has(tileId)) return false;
+
+            // Check boundary layer (walls, furniture in house)
+            if (this.tilemap.isBoundary && this.tilemap.isBoundary(x, y)) {
+                return false;
+            }
+
+            return true;
         }
 
-        const tileId = this.tilemap.getTileAt(x, y);
-        if (tileId === null) return false;
-
-        // Check if tile is an obstacle
-        if (OBSTACLE_TILES.has(tileId)) return false;
-
-        // Check boundary layer (walls, furniture in house)
-        if (this.tilemap.isBoundary && this.tilemap.isBoundary(x, y)) {
-            return false;
+        // Check forest area (outside main tilemap)
+        if (this.forestGenerator) {
+            return this.forestGenerator.isWalkable(x, y);
         }
 
-        return true;
+        return false;
     }
 
     reconstructPath(node) {

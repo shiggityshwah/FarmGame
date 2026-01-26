@@ -30,6 +30,9 @@ export class TilemapRenderer {
 
         // Interactable rectangles from TMX object layer
         this.interactables = [];
+
+        // Map type tracking - 'procedural' for generated maps, 'home' for premade maps
+        this.mapType = null;
     }
 
     async load(csvPath, tilesetPath) {
@@ -46,6 +49,7 @@ export class TilemapRenderer {
             this.tilesPerRow = Math.floor(this.tilesetImage.width / this.paddedTileSize);
 
             this.loaded = true;
+            this.mapType = 'csv'; // Loaded from CSV, treat as non-procedural
             console.log(`Tilemap loaded: ${this.mapWidth}x${this.mapHeight} tiles`);
             console.log(`Tileset: ${this.tilesPerRow} tiles per row (padded: ${this.paddedTileSize}px)`);
         } catch (error) {
@@ -90,6 +94,7 @@ export class TilemapRenderer {
             }
 
             this.loaded = true;
+            this.mapType = 'procedural';
             console.log(`Procedural map generated: ${this.mapWidth}x${this.mapHeight} tiles`);
             console.log(`Tileset: ${this.tilesPerRow} tiles per row`);
         } catch (error) {
@@ -265,6 +270,7 @@ export class TilemapRenderer {
             console.log(`Loaded ${this.interactables.length} interactable objects`);
 
             this.loaded = true;
+            this.mapType = 'home';
             console.log(`Combined map generated: ${this.mapWidth}x${this.mapHeight} tiles`);
             console.log(`Store area: ${this.storeWidth}x${this.storeHeight} tiles at (${this.storeOffsetX}, ${this.storeOffsetY})`);
             console.log(`House area: ${this.houseWidth}x${this.houseHeight} tiles at (${this.houseOffsetX}, ${this.houseOffsetY})`);
@@ -585,5 +591,24 @@ export class TilemapRenderer {
             tileX: x,
             tileY: y
         };
+    }
+
+    // Check if a tile is in the procedural/farmable area (grass below buildings)
+    // For 'home' maps, this is the grass area below the house/store
+    // For 'procedural' maps, all tiles are farmable
+    isInFarmableArea(tileX, tileY) {
+        if (this.mapType === 'procedural') {
+            // All tiles in procedural maps are farmable
+            return true;
+        }
+
+        if (this.mapType === 'home') {
+            // Only the grass area below the buildings is farmable
+            const grassStartY = this.houseOffsetY + this.houseHeight;
+            return tileY >= grassStartY;
+        }
+
+        // CSV or other map types - not farmable
+        return false;
     }
 }

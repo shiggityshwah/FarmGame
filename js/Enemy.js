@@ -1,4 +1,5 @@
 import { SpriteAnimator } from './SpriteAnimator.js';
+import { CONFIG } from './config.js';
 
 // Enemy animation data
 const ENEMY_ANIMATIONS = {
@@ -18,24 +19,27 @@ export class Enemy {
         this.y = y;
         this.type = type;
 
+        // Get stats from config based on enemy type
+        const stats = CONFIG.enemy[type] || CONFIG.enemy.skeleton;
+
         // Stats
-        this.maxHealth = 30;
+        this.maxHealth = stats.maxHealth;
         this.health = this.maxHealth;
-        this.damage = 5;
+        this.damage = stats.damage;
         this.isAlive = true;
         this.isDying = false;
 
         // Vision and combat
-        this.visionRange = 5; // tiles
-        this.attackRange = 1; // tiles (must be adjacent to attack)
-        this.attackCooldown = 1000; // ms between attacks
+        this.visionRange = stats.visionRange;
+        this.attackRange = stats.attackRange;
+        this.attackCooldown = stats.attackCooldown;
         this.lastAttackTime = 0;
         this.target = null; // Current target to attack
         this.isInCombat = false;
         this.isAttacking = false;
 
         // Movement
-        this.moveSpeed = 40; // pixels per second (slower than player)
+        this.moveSpeed = stats.moveSpeed;
         this.currentPath = null;
         this.pathfinder = null; // Set by EnemyManager
 
@@ -55,7 +59,7 @@ export class Enemy {
         // Fade out after death
         this.isFadingOut = false;
         this.fadeAlpha = 1.0;
-        this.fadeDuration = 1500; // ms to fully fade out
+        this.fadeDuration = stats.fadeDuration;
     }
 
     async load(tileSize) {
@@ -76,6 +80,12 @@ export class Enemy {
 
         const animData = animations[animationName];
         this.currentAnimation = animationName;
+
+        // Dispose of old sprite to prevent memory leaks and stale callbacks
+        if (this.sprite) {
+            this.sprite.setOnComplete(null);
+            this.sprite = null;
+        }
 
         // Create new sprite for this animation
         const basePath = `Characters/${this.type.charAt(0).toUpperCase() + this.type.slice(1)}/PNG/`;

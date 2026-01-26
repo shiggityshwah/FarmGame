@@ -57,6 +57,8 @@ export class TileSelector {
         this.enemyManager = null;
         this.oreManager = null;
         this.treeManager = null;
+        this.flowerManager = null;
+        this.forestGenerator = null;
 
         // Selection state
         this.isSelecting = false;
@@ -90,6 +92,14 @@ export class TileSelector {
         this.treeManager = treeManager;
     }
 
+    setFlowerManager(flowerManager) {
+        this.flowerManager = flowerManager;
+    }
+
+    setForestGenerator(forestGenerator) {
+        this.forestGenerator = forestGenerator;
+    }
+
     setTool(tool) {
         this.currentTool = tool;
     }
@@ -103,18 +113,35 @@ export class TileSelector {
         if (!toolRules || !toolRules.isMultiTile) return null;
 
         // Check for ore vein (2x2, base tiles are bottom two)
-        if (toolRules.requiresOre && this.oreManager) {
-            const ore = this.oreManager.getOreAt(tileX, tileY);
-            if (ore && ore.canBeMined()) {
-                // Ore base tiles are the bottom row (tileY + 1)
-                return {
-                    object: ore,
-                    type: 'ore',
-                    baseTiles: [
-                        { x: ore.tileX, y: ore.tileY + 1 },     // bottom-left
-                        { x: ore.tileX + 1, y: ore.tileY + 1 }  // bottom-right
-                    ]
-                };
+        if (toolRules.requiresOre) {
+            // Check main tilemap ore first
+            if (this.oreManager) {
+                const ore = this.oreManager.getOreAt(tileX, tileY);
+                if (ore && ore.canBeMined()) {
+                    // Ore base tiles are the bottom row (tileY + 1)
+                    return {
+                        object: ore,
+                        type: 'ore',
+                        baseTiles: [
+                            { x: ore.tileX, y: ore.tileY + 1 },     // bottom-left
+                            { x: ore.tileX + 1, y: ore.tileY + 1 }  // bottom-right
+                        ]
+                    };
+                }
+            }
+            // Check forest pocket ore
+            if (this.forestGenerator) {
+                const forestOre = this.forestGenerator.getPocketOreAt(tileX, tileY);
+                if (forestOre && forestOre.canBeMined()) {
+                    return {
+                        object: forestOre,
+                        type: 'forestOre',
+                        baseTiles: [
+                            { x: forestOre.tileX, y: forestOre.tileY + 1 },
+                            { x: forestOre.tileX + 1, y: forestOre.tileY + 1 }
+                        ]
+                    };
+                }
             }
         }
 
@@ -131,6 +158,19 @@ export class TileSelector {
                     object: tree,
                     type: 'tree',
                     baseTiles: baseTiles
+                };
+            }
+        }
+
+        // Check for forest tree (2 tiles wide, trunk row is the target)
+        if (toolRules.requiresTree && this.forestGenerator) {
+            const forestTree = this.forestGenerator.getTreeAt(tileX, tileY);
+            if (forestTree && forestTree.canBeChopped()) {
+                // Forest tree trunk tiles (both tiles in the trunk row)
+                return {
+                    object: forestTree,
+                    type: 'forestTree',
+                    baseTiles: forestTree.getTrunkTilePositions()
                 };
             }
         }
@@ -220,7 +260,11 @@ export class TileSelector {
                 const multiTileInfo = this.getMultiTileObjectAt(x, y);
                 if (multiTileInfo) {
                     // Use object's origin as unique key
-                    const key = `${multiTileInfo.type}_${multiTileInfo.object.tileX}_${multiTileInfo.object.tileY}`;
+                    // Forest trees use baseX/baseY, regular trees use tileX/tileY
+                    const obj = multiTileInfo.object;
+                    const objX = obj.baseX !== undefined ? obj.baseX : obj.tileX;
+                    const objY = obj.baseY !== undefined ? obj.baseY : obj.tileY;
+                    const key = `${multiTileInfo.type}_${objX}_${objY}`;
                     if (!foundObjects.has(key)) {
                         foundObjects.set(key, multiTileInfo);
                     }
@@ -275,7 +319,13 @@ export class TileSelector {
     }
 
     isAcceptableTile(tileX, tileY, tileId) {
-        if (tileId === null) return false;
+        // For tiles outside main tilemap, check if forest has grass there
+        if (tileId === null) {
+            if (!this.forestGenerator || !this.forestGenerator.getGrassTileAt(tileX, tileY)) {
+                return false;
+            }
+            // Forest tile - continue with validation
+        }
         if (!this.currentTool) return false;
 
         const toolRules = ACCEPTABLE_TILES[this.currentTool.id];
@@ -317,28 +367,64 @@ export class TileSelector {
 
         // Special handling for pickaxe - requires mineable ore vein at tile
         if (toolRules.requiresOre) {
-            if (!this.oreManager) return false;
-            const ore = this.oreManager.getOreAt(tileX, tileY);
-            // Check if there's a mineable ore at this tile
-            if (!ore || !ore.canBeMined()) return false;
-            return true;
-        }
-
-        // Special handling for axe - requires choppable tree at tile
-        if (toolRules.requiresTree) {
-            if (!this.treeManager) return false;
-            const tree = this.treeManager.getTreeAt(tileX, tileY);
-            // Check if there's a choppable tree at this tile
-            if (!tree || !tree.canBeChopped()) return false;
-            return true;
-        }
-
-        // Check if tile ID is valid for this tool
-        if (toolRules.validTileIds && !toolRules.validTileIds.has(tileId)) {
+            // Check main tilemap ore
+            if (this.oreManager) {
+                const ore = this.oreManager.getOreAt(tileX, tileY);
+                if (ore && ore.canBeMined()) return true;
+            }
+            // Check forest pocket ore
+            if (this.forestGenerator) {
+                const forestOre = this.forestGenerator.getPocketOreAt(tileX, tileY);
+                if (forestOre && forestOre.canBeMined()) return true;
+            }
             return false;
         }
 
+        // Special handling for axe - requires choppable tree at tile (regular or forest)
+        if (toolRules.requiresTree) {
+            // Check regular trees
+            if (this.treeManager) {
+                const tree = this.treeManager.getTreeAt(tileX, tileY);
+                if (tree && tree.canBeChopped()) return true;
+            }
+            // Check forest trees
+            if (this.forestGenerator) {
+                const forestTree = this.forestGenerator.getTreeAt(tileX, tileY);
+                if (forestTree && forestTree.canBeChopped()) return true;
+            }
+            return false;
+        }
+
+        // Check if tile ID is valid for this tool
+        if (toolRules.validTileIds) {
+            // Check main tilemap tile
+            if (tileId !== null && toolRules.validTileIds.has(tileId)) {
+                // Valid tile in main tilemap
+            } else if (this.forestGenerator) {
+                // Check forest grass tile
+                const forestTileId = this.forestGenerator.getGrassTileAt(tileX, tileY);
+                if (forestTileId === null || !toolRules.validTileIds.has(forestTileId)) {
+                    return false;
+                }
+            } else {
+                return false;
+            }
+        }
+
         // Additional checks to prevent redoing the same action
+        if (this.currentTool.id === 'hoe') {
+            // Can only hoe in farmable areas (procedural maps, grass area below buildings, or forest grass)
+            const inMainFarmableArea = this.tilemap.isInFarmableArea(tileX, tileY);
+            const inForestGrass = this.forestGenerator && this.forestGenerator.isWalkable(tileX, tileY);
+            if (!inMainFarmableArea && !inForestGrass) {
+                return false;
+            }
+            // Can't hoe where there's a weed
+            if (this.flowerManager && this.flowerManager.getWeedAt(tileX, tileY)) {
+                return false;
+            }
+        }
+
         if (this.currentTool.id === 'shovel') {
             // Can't dig a hole where there's already a hole overlay
             if (this.overlayManager && this.overlayManager.hasOverlay(tileX, tileY)) {
@@ -383,7 +469,11 @@ export class TileSelector {
         for (const tile of validTiles) {
             if (tile.multiTileObject) {
                 // Create unique key for this object
-                const objKey = `${tile.multiTileType}_${tile.multiTileObject.tileX}_${tile.multiTileObject.tileY}`;
+                // Forest trees use baseX/baseY, regular trees use tileX/tileY
+                const obj = tile.multiTileObject;
+                const objX = obj.baseX !== undefined ? obj.baseX : obj.tileX;
+                const objY = obj.baseY !== undefined ? obj.baseY : obj.tileY;
+                const objKey = `${tile.multiTileType}_${objX}_${objY}`;
                 if (!seenObjects.has(objKey)) {
                     seenObjects.add(objKey);
                     // Get all base tiles for this object
@@ -393,7 +483,8 @@ export class TileSelector {
                     result.push({
                         x: tile.x,
                         y: tile.y,
-                        multiTileBaseTiles: baseTiles
+                        multiTileBaseTiles: baseTiles,
+                        multiTileType: tile.multiTileType
                     });
                 }
             } else {

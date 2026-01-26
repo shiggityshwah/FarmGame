@@ -434,7 +434,7 @@ export class UIManager {
                     ${activeTab === 'sell' ? 'border-bottom: 3px solid #4a7c59; margin-bottom: -3px;' : ''}
                 ">Sell Items</button>
             </div>
-            <div id="shop-scroll-container" style="padding: 16px; max-height: 60vh; overflow-y: auto;">
+            <div id="shop-scroll-container" style="padding: 16px; height: 60vh; overflow-y: auto;">
         `;
 
         if (activeTab === 'buy') {
