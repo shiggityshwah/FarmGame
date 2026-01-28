@@ -1,4 +1,8 @@
 import { getRandomDirtTile, CONFIG } from './config.js';
+import { Logger } from './Logger.js';
+
+// Create logger for this module
+const log = Logger.create('JobManager');
 
 // Job status constants
 const JOB_STATUS = {
@@ -12,12 +16,70 @@ const JOB_STATUS = {
 export class JobManager {
     constructor(game) {
         this.game = game;
-        this.queue = [];
-        this.currentJob = null;
-        this.isProcessing = false;
         this.jobIdCounter = 0;
-        this.isPausedForCombat = false;
-        this.savedJobState = null; // Save state when paused
+
+        // Multi-queue system: shared queue + private queues per worker
+        this.queues = {
+            all: [],      // Shared queue - any worker can take jobs
+            human: [],    // Private human queue
+            goblin: []    // Private goblin queue
+        };
+
+        // Worker state tracking
+        this.workers = new Map(); // workerId -> { currentJob, isProcessing, isPausedForCombat, savedJobState }
+
+        // Which queue new jobs go to (controlled by UI selector)
+        this.activeQueueTarget = 'all';
+
+        // Callback for UI updates when queue changes
+        this.onQueueChange = null;
+    }
+
+    // Legacy property accessors - delegate to 'human' worker state
+    get currentJob() {
+        const workerState = this.workers.get('human');
+        return workerState ? workerState.currentJob : null;
+    }
+
+    get isProcessing() {
+        const workerState = this.workers.get('human');
+        return workerState ? workerState.isProcessing : false;
+    }
+
+    get isPausedForCombat() {
+        const workerState = this.workers.get('human');
+        return workerState ? workerState.isPausedForCombat : false;
+    }
+
+    // Legacy queue accessor for backward compatibility
+    get queue() {
+        return this.queues.all;
+    }
+
+    // Register a worker (character) that can process jobs
+    registerWorker(workerId) {
+        this.workers.set(workerId, {
+            currentJob: null,
+            isProcessing: false,
+            isPausedForCombat: false,
+            savedJobState: null
+        });
+        log.debug(` Registered worker: ${workerId}`);
+    }
+
+    // Set which queue new jobs should be added to
+    setActiveQueueTarget(target) {
+        if (this.queues.hasOwnProperty(target)) {
+            this.activeQueueTarget = target;
+            log.debug(` Active queue target set to: ${target}`);
+        } else {
+            log.warn(` Invalid queue target: ${target}`);
+        }
+    }
+
+    // Get the active queue target
+    getActiveQueueTarget() {
+        return this.activeQueueTarget;
     }
 
     addJob(tool, tiles) {
@@ -28,62 +90,146 @@ export class JobManager {
             tool: tool,
             tiles: tiles,
             currentTileIndex: 0,
-            status: JOB_STATUS.PENDING
+            status: JOB_STATUS.PENDING,
+            // New multi-queue fields
+            assignedTo: null,                    // 'human' | 'goblin' | null (unassigned)
+            targetQueue: this.activeQueueTarget, // Which queue it was added to
+            createdAt: Date.now()                // For ordering
         };
 
-        this.queue.push(job);
-        console.log(`Job added: ${job.id} - ${tool.name} on ${tiles.length} tiles`);
-
-        // Start processing if not already
-        if (!this.isProcessing) {
-            this.processNextJob();
+        // For sword tool, extract target enemies from tiles
+        if (tool.id === 'sword') {
+            job.targetEnemies = tiles
+                .filter(t => t.targetEnemy)
+                .map(t => t.targetEnemy);
+            log.info(`Job added: ${job.id} - ${tool.name} targeting ${job.targetEnemies.length} enemies to queue: ${this.activeQueueTarget}`);
+        } else {
+            log.info(`Job added: ${job.id} - ${tool.name} on ${tiles.length} tiles to queue: ${this.activeQueueTarget}`);
         }
+
+        // Add to the appropriate queue
+        this.queues[this.activeQueueTarget].push(job);
+
+        // Notify UI of queue change
+        if (this.onQueueChange) {
+            this.onQueueChange();
+        }
+
+        // Try to assign jobs to idle workers
+        this.tryAssignJobs();
 
         return job;
     }
 
-    processNextJob() {
-        if (this.queue.length === 0) {
-            this.isProcessing = false;
-            this.currentJob = null;
-            // Return to idle animation
-            this.game.setAnimation('IDLE');
-            return;
+    // Try to assign jobs to any idle workers
+    tryAssignJobs() {
+        for (const [workerId, workerState] of this.workers) {
+            if (!workerState.isProcessing && !workerState.isPausedForCombat) {
+                this.assignJobToWorker(workerId);
+            }
         }
-
-        this.isProcessing = true;
-        this.currentJob = this.queue.shift();
-        this.currentJob.status = JOB_STATUS.WALKING;
-
-        console.log(`Processing job: ${this.currentJob.id}`);
-
-        // Start walking to first tile
-        this.walkToCurrentTile();
     }
 
-    walkToCurrentTile() {
-        if (!this.currentJob) return;
+    // Assign a job to a specific worker
+    assignJobToWorker(workerId) {
+        const workerState = this.workers.get(workerId);
+        if (!workerState || workerState.isProcessing || workerState.isPausedForCombat) {
+            return false;
+        }
 
-        const tile = this.currentJob.tiles[this.currentJob.currentTileIndex];
-        if (!tile) {
-            this.completeJob();
+        // Check private queue first
+        if (this.queues[workerId] && this.queues[workerId].length > 0) {
+            const job = this.queues[workerId].shift();
+            this.startJobForWorker(workerId, job);
+            return true;
+        }
+
+        // Check shared queue
+        if (this.queues.all.length > 0) {
+            const job = this.queues.all.shift();
+            this.startJobForWorker(workerId, job);
+            return true;
+        }
+
+        return false;
+    }
+
+    // Start a job for a specific worker
+    startJobForWorker(workerId, job) {
+        const workerState = this.workers.get(workerId);
+        if (!workerState) return;
+
+        job.assignedTo = workerId;
+        job.status = JOB_STATUS.WALKING;
+        workerState.currentJob = job;
+        workerState.isProcessing = true;
+
+        log.debug(` Starting job ${job.id} for worker: ${workerId}`);
+
+        // Notify UI of queue change
+        if (this.onQueueChange) {
+            this.onQueueChange();
+        }
+
+        // Start walking to first tile
+        this.walkToCurrentTileForWorker(workerId);
+    }
+
+    // Walk to current tile for a specific worker
+    async walkToCurrentTileForWorker(workerId) {
+        const workerState = this.workers.get(workerId);
+        if (!workerState || !workerState.currentJob) return;
+
+        const job = workerState.currentJob;
+        const tileSize = this.game.tilemap.tileSize;
+
+        // Get worker position
+        const workerPosition = this.getWorkerPosition(workerId);
+        if (!workerPosition) {
+            log.warn(` No position found for worker: ${workerId}`);
             return;
         }
 
-        const tileSize = this.game.tilemap.tileSize;
+        // Special handling for sword - track enemy's current position
+        if (job.tool.id === 'sword' && job.targetEnemies) {
+            const enemy = job.targetEnemies[job.currentTileIndex];
+            if (!enemy || !enemy.isAlive) {
+                log.debug(`[${workerId}] walkToCurrentTile: Enemy dead/gone, setting IDLE`);
+                await this.setWorkerAnimation(workerId, 'IDLE', true);
+                this.moveToNextTileForWorker(workerId);
+                return;
+            }
+
+            const enemyTileX = Math.floor(enemy.x / tileSize);
+            const enemyTileY = Math.floor(enemy.y / tileSize);
+
+            job.currentTargetEnemy = enemy;
+            job.workTileX = enemyTileX;
+            job.workTileY = enemyTileY;
+
+            const targetX = enemyTileX * tileSize + tileSize / 2;
+            const targetY = enemyTileY * tileSize + tileSize / 2;
+
+            this.moveWorkerTo(workerId, targetX, targetY);
+            return;
+        }
+
+        const tile = job.tiles[job.currentTileIndex];
+        if (!tile) {
+            this.completeJobForWorker(workerId);
+            return;
+        }
+
         let targetTileX = tile.x;
         let targetTileY = tile.y;
 
-        // For multi-tile objects, find the closest base tile to walk to
+        // For multi-tile objects, find the closest base tile
         if (tile.multiTileBaseTiles && tile.multiTileBaseTiles.length > 1) {
-            const playerX = this.game.humanPosition.x;
-            const playerY = this.game.humanPosition.y;
-
             let closestDist = Infinity;
             for (const baseTile of tile.multiTileBaseTiles) {
                 const baseCenterX = baseTile.x * tileSize + tileSize / 2;
                 const baseCenterY = baseTile.y * tileSize + tileSize / 2;
-                const dist = Math.abs(playerX - baseCenterX) + Math.abs(playerY - baseCenterY);
+                const dist = Math.abs(workerPosition.x - baseCenterX) + Math.abs(workerPosition.y - baseCenterY);
                 if (dist < closestDist) {
                     closestDist = dist;
                     targetTileX = baseTile.x;
@@ -92,153 +238,307 @@ export class JobManager {
             }
         }
 
-        // Store which tile we're actually working on (for the animation/effect)
-        this.currentJob.workTileX = targetTileX;
-        this.currentJob.workTileY = targetTileY;
+        job.workTileX = targetTileX;
+        job.workTileY = targetTileY;
 
-        // Calculate world position (center of tile)
         const targetX = targetTileX * tileSize + tileSize / 2;
         const targetY = targetTileY * tileSize + tileSize / 2;
 
-        // Tell game to move character to this position
-        this.game.moveCharacterTo(targetX, targetY);
+        this.moveWorkerTo(workerId, targetX, targetY);
     }
 
-    onTileReached() {
-        if (!this.currentJob) return;
+    // Get worker position based on worker ID
+    getWorkerPosition(workerId) {
+        if (workerId === 'human') {
+            return this.game.humanPosition;
+        } else if (workerId === 'goblin') {
+            return this.game.goblinPosition;
+        }
+        return null;
+    }
 
-        // Don't start work if paused for combat
-        if (this.isPausedForCombat) {
-            console.log('JobManager: Tile reached but paused for combat - will resume later');
+    // Move a worker to a target position
+    moveWorkerTo(workerId, targetX, targetY) {
+        if (workerId === 'human') {
+            this.game.moveCharacterTo(targetX, targetY);
+        } else if (workerId === 'goblin') {
+            this.game.moveGoblinTo(targetX, targetY);
+        }
+    }
+
+    // Set animation for a worker
+    async setWorkerAnimation(workerId, animation, loop, onComplete, speedMultiplier) {
+        if (workerId === 'human') {
+            return this.game.setAnimation(animation, loop, onComplete, speedMultiplier);
+        } else if (workerId === 'goblin') {
+            return this.game.setGoblinAnimation(animation, loop, onComplete, speedMultiplier);
+        }
+    }
+
+    // Called when a worker reaches their target tile
+    onTileReachedForWorker(workerId) {
+        const workerState = this.workers.get(workerId);
+        if (!workerState || !workerState.currentJob) return;
+
+        if (workerState.isPausedForCombat) {
+            log.debug(`[${workerId}] Tile reached but paused for combat`);
             return;
         }
 
-        // Start working animation
-        this.currentJob.status = JOB_STATUS.WORKING;
-        const animation = this.currentJob.tool.animation;
-        const toolId = this.currentJob.tool.id;
+        const job = workerState.currentJob;
+        job.status = JOB_STATUS.WORKING;
+        const animation = job.tool.animation;
+        const toolId = job.tool.id;
 
-        // Get animation speed multiplier from upgrades
         const speedMultiplier = this.game.getToolAnimationMultiplier(toolId);
 
-        // Set animation to non-looping and wait for completion
-        this.game.setAnimation(animation, false, () => {
-            this.onAnimationComplete();
+        this.setWorkerAnimation(workerId, animation, false, () => {
+            this.onAnimationCompleteForWorker(workerId);
         }, speedMultiplier);
     }
 
-    onAnimationComplete() {
-        // If paused for combat, don't continue the job
-        if (this.isPausedForCombat) {
-            console.log('JobManager: Animation complete but paused for combat');
+    // Called when a worker's animation completes
+    async onAnimationCompleteForWorker(workerId) {
+        const workerState = this.workers.get(workerId);
+        if (!workerState || !workerState.currentJob) return;
+
+        if (workerState.isPausedForCombat) {
+            log.debug(`[${workerId}] Animation complete but paused for combat`);
             return;
         }
 
-        if (!this.currentJob) return;
+        const job = workerState.currentJob;
+        const tile = job.tiles[job.currentTileIndex];
+        const tool = job.tool;
 
-        const tile = this.currentJob.tiles[this.currentJob.currentTileIndex];
-        const tool = this.currentJob.tool;
+        const workX = job.workTileX !== undefined ? job.workTileX : tile.x;
+        const workY = job.workTileY !== undefined ? job.workTileY : tile.y;
 
-        // Use the actual work tile position (may differ from tile.x/y for multi-tile objects)
-        const workX = this.currentJob.workTileX !== undefined ? this.currentJob.workTileX : tile.x;
-        const workY = this.currentJob.workTileY !== undefined ? this.currentJob.workTileY : tile.y;
-
-        // Get animation speed multiplier for this tool
         const speedMultiplier = this.game.getToolAnimationMultiplier(tool.id);
 
-        // Special handling for plant tool - needs two animation phases
+        // Handle tool-specific logic
         if (tool.id === 'plant') {
-            // Check if we need to do the second phase
-            if (!this.currentJob.plantingPhase) {
-                this.currentJob.plantingPhase = 1;
+            if (!job.plantingPhase) {
+                job.plantingPhase = 1;
             }
 
-            if (this.currentJob.plantingPhase === 1) {
-                // First animation complete - apply phase 1 effect (create crop, half-closed hole)
+            if (job.plantingPhase === 1) {
                 this.applyPlantPhase1(tool, workX, workY);
-                this.currentJob.plantingPhase = 2;
-
-                // Do second animation
-                this.game.setAnimation(tool.animation, false, () => {
-                    this.onAnimationComplete();
+                job.plantingPhase = 2;
+                this.setWorkerAnimation(workerId, tool.animation, false, () => {
+                    this.onAnimationCompleteForWorker(workerId);
                 }, speedMultiplier);
                 return;
             } else {
-                // Second animation complete - apply phase 2 effect (fully planted)
                 this.applyPlantPhase2(workX, workY);
-                this.currentJob.plantingPhase = 0; // Reset for next tile
+                job.plantingPhase = 0;
             }
         } else if (tool.id === 'sword') {
-            // Attack enemy - continue until dead
-            const shouldContinue = this.attackEnemy(workX, workY);
+            const targetEnemy = job.currentTargetEnemy;
+            const shouldContinue = this.attackEnemyTargetForWorker(workerId, targetEnemy);
             if (shouldContinue) {
-                // Enemy still alive, attack again
-                this.game.setAnimation(tool.animation, false, () => {
-                    this.onAnimationComplete();
+                this.setWorkerAnimation(workerId, tool.animation, false, () => {
+                    this.onAnimationCompleteForWorker(workerId);
                 }, speedMultiplier);
                 return;
             }
+            await this.setWorkerAnimation(workerId, 'IDLE', true);
         } else if (tool.id === 'pickaxe') {
-            // Mine ore - continue until depleted
             const shouldContinue = this.mineOre(workX, workY);
             if (shouldContinue) {
-                // Ore still has more to mine, mine again
-                this.game.setAnimation(tool.animation, false, () => {
-                    this.onAnimationComplete();
+                this.setWorkerAnimation(workerId, tool.animation, false, () => {
+                    this.onAnimationCompleteForWorker(workerId);
                 }, speedMultiplier);
                 return;
             }
         } else if (tool.id === 'axe') {
-            // Chop tree - continue until removed
             const shouldContinue = this.chopTree(workX, workY);
             if (shouldContinue) {
-                // Tree still has more to chop, chop again
-                this.game.setAnimation(tool.animation, false, () => {
-                    this.onAnimationComplete();
+                this.setWorkerAnimation(workerId, tool.animation, false, () => {
+                    this.onAnimationCompleteForWorker(workerId);
                 }, speedMultiplier);
                 return;
             }
         } else {
-            // Apply tool effect to tile (other tools)
             this.applyToolEffect(tool, workX, workY);
         }
 
-        // Clear the work tile reference
-        this.game.currentWorkTile = null;
+        // Clear work tile and move to next
+        if (workerId === 'human') {
+            this.game.currentWorkTile = null;
+        } else if (workerId === 'goblin') {
+            this.game.goblinCurrentWorkTile = null;
+        }
 
-        // Move to next tile
-        this.moveToNextTile();
+        this.moveToNextTileForWorker(workerId);
     }
 
-    skipCurrentTile() {
-        if (!this.currentJob) return;
+    // Attack enemy for a specific worker
+    attackEnemyTargetForWorker(workerId, enemy) {
+        if (!enemy || !enemy.isAlive) {
+            return false;
+        }
 
-        console.log(`Skipping tile ${this.currentJob.currentTileIndex + 1}/${this.currentJob.tiles.length}`);
+        const workerPosition = this.getWorkerPosition(workerId);
+        if (workerPosition) {
+            enemy.setFacingLeft(workerPosition.x > enemy.x);
+        }
 
-        // Clear the work tile reference
-        this.game.currentWorkTile = null;
+        const damage = this.game.playerDamage;
+        const enemyDied = enemy.takeDamage(damage);
 
-        // Move to next tile without applying effect
-        this.moveToNextTile();
+        log.debug(`[${workerId}] Attacked ${enemy.type} for ${damage} damage!`);
+
+        if (enemyDied) {
+            log.debug(`[${workerId}] ${enemy.type} has been defeated!`);
+            return false;
+        }
+
+        return true;
     }
 
-    moveToNextTile() {
-        if (!this.currentJob) return;
+    // Move to next tile for a specific worker
+    moveToNextTileForWorker(workerId) {
+        const workerState = this.workers.get(workerId);
+        if (!workerState || !workerState.currentJob) return;
 
-        this.currentJob.currentTileIndex++;
+        const job = workerState.currentJob;
+        job.currentTileIndex++;
 
-        if (this.currentJob.currentTileIndex >= this.currentJob.tiles.length) {
-            // Job complete
-            this.completeJob();
+        const totalTargets = (job.tool.id === 'sword' && job.targetEnemies)
+            ? job.targetEnemies.length
+            : job.tiles.length;
+
+        if (job.currentTileIndex >= totalTargets) {
+            this.completeJobForWorker(workerId);
         } else {
-            // Walk to next tile
-            this.currentJob.status = JOB_STATUS.WALKING;
-            this.walkToCurrentTile();
+            job.status = JOB_STATUS.WALKING;
+            this.walkToCurrentTileForWorker(workerId);
+        }
+
+        // Notify UI
+        if (this.onQueueChange) {
+            this.onQueueChange();
         }
     }
 
+    // Complete job for a specific worker
+    completeJobForWorker(workerId) {
+        const workerState = this.workers.get(workerId);
+        if (!workerState) return;
+
+        if (workerState.currentJob) {
+            workerState.currentJob.status = JOB_STATUS.COMPLETED;
+            log.debug(`[${workerId}] Job completed: ${workerState.currentJob.id}`);
+
+            if (workerState.currentJob.tool.id === 'sword') {
+                workerState.currentJob.currentTargetEnemy = null;
+                workerState.currentJob.targetEnemies = null;
+            }
+        }
+
+        workerState.currentJob = null;
+        workerState.isProcessing = false;
+
+        // Notify UI
+        if (this.onQueueChange) {
+            this.onQueueChange();
+        }
+
+        // Try to get next job
+        if (!this.assignJobToWorker(workerId)) {
+            // No more jobs - set worker to idle
+            this.setWorkerAnimation(workerId, 'IDLE', true);
+        }
+    }
+
+    // Skip current tile for a specific worker
+    skipCurrentTileForWorker(workerId) {
+        const workerState = this.workers.get(workerId);
+        if (!workerState || !workerState.currentJob) return;
+
+        log.debug(`[${workerId}] Skipping tile ${workerState.currentJob.currentTileIndex + 1}`);
+
+        if (workerId === 'human') {
+            this.game.currentWorkTile = null;
+        } else if (workerId === 'goblin') {
+            this.game.goblinCurrentWorkTile = null;
+        }
+
+        this.moveToNextTileForWorker(workerId);
+    }
+
+    // Pause worker for combat
+    pauseWorkerForCombat(workerId) {
+        const workerState = this.workers.get(workerId);
+        if (!workerState || workerState.isPausedForCombat) return;
+
+        workerState.isPausedForCombat = true;
+
+        if (workerState.currentJob) {
+            const status = workerState.currentJob.status;
+            if (status === JOB_STATUS.WALKING || status === JOB_STATUS.WORKING) {
+                workerState.savedJobState = {
+                    status: status,
+                    needsRedo: status === JOB_STATUS.WORKING
+                };
+                workerState.currentJob.status = JOB_STATUS.PAUSED;
+            }
+        }
+
+        log.debug(`[${workerId}] Paused for combat`);
+    }
+
+    // Resume worker from combat
+    resumeWorkerFromCombat(workerId) {
+        const workerState = this.workers.get(workerId);
+        if (!workerState || !workerState.isPausedForCombat) return;
+
+        workerState.isPausedForCombat = false;
+        workerState.savedJobState = null;
+
+        if (workerState.currentJob) {
+            workerState.currentJob.status = JOB_STATUS.WALKING;
+            this.walkToCurrentTileForWorker(workerId);
+        } else if (!this.assignJobToWorker(workerId)) {
+            this.setWorkerAnimation(workerId, 'IDLE', true);
+        }
+
+        log.debug(`[${workerId}] Resumed from combat`);
+    }
+
+    // Legacy method - delegates to worker-based system for 'human'
+    processNextJob() {
+        this.assignJobToWorker('human');
+    }
+
+    // Legacy method - delegates to worker-based system for 'human'
+    walkToCurrentTile() {
+        this.walkToCurrentTileForWorker('human');
+    }
+
+    // Legacy method - delegates to worker-based system for 'human'
+    onTileReached() {
+        this.onTileReachedForWorker('human');
+    }
+
+    // Legacy method - delegates to worker-based system for 'human'
+    onAnimationComplete() {
+        this.onAnimationCompleteForWorker('human');
+    }
+
+    // Legacy method - delegates to worker-based system for 'human'
+    skipCurrentTile() {
+        this.skipCurrentTileForWorker('human');
+    }
+
+    // Legacy method - delegates to worker-based system for 'human'
+    moveToNextTile() {
+        this.moveToNextTileForWorker('human');
+    }
+
     applyToolEffect(tool, tileX, tileY) {
-        console.log(`Applying ${tool.name} effect at (${tileX}, ${tileY})`);
+        log.debug(`Applying ${tool.name} effect at (${tileX}, ${tileY})`);
 
         switch (tool.id) {
             case 'hoe':
@@ -249,7 +549,7 @@ export class JobManager {
                     if (flower) {
                         flower.isHarvested = true; // Mark as gone without yielding
                         flower.isGone = true;
-                        console.log(`Flower destroyed by hoeing at (${tileX}, ${tileY})`);
+                        log.debug(`Flower destroyed by hoeing at (${tileX}, ${tileY})`);
                     }
                 }
 
@@ -283,7 +583,7 @@ export class JobManager {
             case 'plant':
                 // Plant tool is handled separately via applyPlantPhase1/2
                 // This case should not be reached
-                console.log('Plant tool should use phase methods');
+                log.warn('Plant tool should use phase methods');
                 break;
 
             case 'watering_can':
@@ -301,14 +601,14 @@ export class JobManager {
 
             // Other tools can be implemented later
             default:
-                console.log(`No effect implemented for ${tool.name}`);
+                log.warn(`No effect implemented for ${tool.name}`);
                 break;
         }
     }
 
     // Plant phase 1: Remove hole overlay, create crop in PLANTING_PHASE1 stage (shows half-closed hole)
     applyPlantPhase1(tool, tileX, tileY) {
-        console.log(`Planting phase 1 at (${tileX}, ${tileY})`);
+        log.debug(`Planting phase 1 at (${tileX}, ${tileY})`);
 
         // Remove the hole overlay first
         if (this.game.overlayManager) {
@@ -320,7 +620,7 @@ export class JobManager {
             const seedResource = this.game.inventory.getSeedByCropIndex(tool.seedType);
             if (seedResource) {
                 this.game.inventory.useSeed(seedResource);
-                console.log(`Used 1 ${seedResource.name}`);
+                log.debug(`Used 1 ${seedResource.name}`);
             }
         }
 
@@ -332,7 +632,7 @@ export class JobManager {
 
     // Plant phase 2: Advance crop to PLANTED stage (shows closed dry hole)
     applyPlantPhase2(tileX, tileY) {
-        console.log(`Planting phase 2 at (${tileX}, ${tileY})`);
+        log.debug(`Planting phase 2 at (${tileX}, ${tileY})`);
 
         // Get the crop and advance its planting phase
         if (this.game.cropManager) {
@@ -362,14 +662,20 @@ export class JobManager {
         }
     }
 
-    // Attack an enemy at the specified tile
+    // Attack an enemy at the specified tile (legacy method for backwards compatibility)
     // Returns true if enemy is still alive and should continue attacking
     attackEnemy(tileX, tileY) {
         if (!this.game.enemyManager) return false;
 
         const enemy = this.game.enemyManager.getEnemyAt(tileX, tileY);
+        return this.attackEnemyTarget(enemy);
+    }
+
+    // Attack a specific enemy target
+    // Returns true if enemy is still alive and should continue attacking
+    attackEnemyTarget(enemy) {
         if (!enemy || !enemy.isAlive) {
-            console.log(`No alive enemy at (${tileX}, ${tileY})`);
+            log.debug(`No alive enemy to attack`);
             return false;
         }
 
@@ -381,10 +687,10 @@ export class JobManager {
         const damage = this.game.playerDamage;
         const enemyDied = enemy.takeDamage(damage);
 
-        console.log(`Player attacked ${enemy.type} for ${damage} damage!`);
+        log.debug(`Player attacked ${enemy.type} for ${damage} damage!`);
 
         if (enemyDied) {
-            console.log(`${enemy.type} has been defeated!`);
+            log.info(`${enemy.type} has been defeated!`);
             return false; // Stop attacking
         }
 
@@ -406,7 +712,7 @@ export class JobManager {
                     if (this.game.inventory) {
                         this.game.inventory.addOreByName(ore.oreType.name);
                     }
-                    console.log(`Mined ${ore.oreType.name} ore!`);
+                    log.debug(`Mined ${ore.oreType.name} ore!`);
                 }
 
                 // Check if we should continue mining
@@ -414,7 +720,7 @@ export class JobManager {
                     return true; // Continue mining
                 }
 
-                console.log(`${ore.oreType.name} ore vein depleted!`);
+                log.info(`${ore.oreType.name} ore vein depleted!`);
                 return false; // Stop mining
             }
         }
@@ -431,7 +737,7 @@ export class JobManager {
                     if (this.game.inventory) {
                         this.game.inventory.addOreByName(forestOre.oreType.name);
                     }
-                    console.log(`Mined ${forestOre.oreType.name} ore from forest!`);
+                    log.debug(`Mined ${forestOre.oreType.name} ore from forest!`);
                 }
 
                 // Check if we should continue mining
@@ -439,12 +745,12 @@ export class JobManager {
                     return true; // Continue mining
                 }
 
-                console.log(`${forestOre.oreType.name} forest ore vein depleted!`);
+                log.info(`${forestOre.oreType.name} forest ore vein depleted!`);
                 return false; // Stop mining
             }
         }
 
-        console.log(`No mineable ore at (${tileX}, ${tileY})`);
+        log.debug(`No mineable ore at (${tileX}, ${tileY})`);
         return false;
     }
 
@@ -463,7 +769,7 @@ export class JobManager {
                     if (this.game.inventory) {
                         this.game.inventory.addWood();
                     }
-                    console.log(`Chopped ${tree.treeType.name}!`);
+                    log.debug(`Chopped ${tree.treeType.name}!`);
                 }
 
                 // Check if we should continue chopping
@@ -471,7 +777,7 @@ export class JobManager {
                     return true; // Continue chopping
                 }
 
-                console.log(`${tree.treeType.name} removed!`);
+                log.info(`${tree.treeType.name} removed!`);
                 return false; // Stop chopping
             }
         }
@@ -488,7 +794,7 @@ export class JobManager {
                     if (this.game.inventory) {
                         this.game.inventory.addWood();
                     }
-                    console.log(`Chopped forest tree!`);
+                    log.debug(`Chopped forest tree!`);
                 }
 
                 // Check if we should continue chopping
@@ -496,37 +802,47 @@ export class JobManager {
                     return true; // Continue chopping
                 }
 
-                console.log(`Forest tree removed!`);
+                log.info(`Forest tree removed!`);
                 return false; // Stop chopping
             }
         }
 
-        console.log(`No choppable tree at (${tileX}, ${tileY})`);
+        log.debug(`No choppable tree at (${tileX}, ${tileY})`);
         return false;
     }
 
+    // Legacy method - delegates to worker-based system for 'human'
     completeJob() {
-        if (this.currentJob) {
-            this.currentJob.status = JOB_STATUS.COMPLETED;
-            console.log(`Job completed: ${this.currentJob.id}`);
-        }
-
-        // Process next job in queue
-        this.processNextJob();
+        this.completeJobForWorker('human');
     }
 
+    // Legacy method - delegates to worker-based system for 'human'
     cancelCurrentJob() {
-        if (this.currentJob) {
-            console.log(`Job cancelled: ${this.currentJob.id}`);
-            this.currentJob = null;
+        const workerState = this.workers.get('human');
+        if (workerState && workerState.currentJob) {
+            log.info(`Job cancelled: ${workerState.currentJob.id}`);
+            workerState.currentJob = null;
+            workerState.isProcessing = false;
         }
-        this.isProcessing = false;
         this.game.setAnimation('IDLE');
     }
 
+    // Clear all queues and cancel current job
     clearQueue() {
-        this.queue = [];
+        this.queues.all = [];
+        this.queues.human = [];
+        this.queues.goblin = [];
         this.cancelCurrentJob();
+        // Also cancel goblin's current job
+        const goblinState = this.workers.get('goblin');
+        if (goblinState && goblinState.currentJob) {
+            goblinState.currentJob = null;
+            goblinState.isProcessing = false;
+            this.game.setGoblinAnimation('IDLE', true);
+        }
+        if (this.onQueueChange) {
+            this.onQueueChange();
+        }
     }
 
     update(deltaTime) {
@@ -534,25 +850,30 @@ export class JobManager {
         // Movement and animation updates happen in Game.js
     }
 
+    // Legacy method - uses getter which delegates to 'human' worker
     isWorking() {
         return this.isProcessing;
     }
 
+    // Legacy method - uses getter which delegates to 'human' worker
     getCurrentJob() {
         return this.currentJob;
     }
 
+    // Get combined queue length (all queues)
     getQueueLength() {
-        return this.queue.length;
+        return this.queues.all.length + this.queues.human.length + this.queues.goblin.length;
     }
 
     // Get all tiles that are queued or being worked on (for overlay display)
     // For multi-tile objects, this expands to show all base tiles
+    // For sword jobs with enemies, shows enemy's current position
     getAllQueuedTiles() {
         const tiles = [];
+        const tileSize = this.game.tilemap.tileSize;
 
         // Helper to add tile(s) - expands multi-tile objects to all their base tiles
-        const addTileOrExpand = (tile) => {
+        const addTileOrExpand = (tile, job) => {
             if (tile.multiTileBaseTiles && tile.multiTileBaseTiles.length > 0) {
                 // Multi-tile object: add all base tiles for display
                 for (const baseTile of tile.multiTileBaseTiles) {
@@ -564,73 +885,189 @@ export class JobManager {
             }
         };
 
-        // Add tiles from current job (remaining tiles)
+        // Helper to add enemy's current position
+        const addEnemyPosition = (enemy) => {
+            if (enemy && enemy.isAlive) {
+                const enemyTileX = Math.floor(enemy.x / tileSize);
+                const enemyTileY = Math.floor(enemy.y / tileSize);
+                tiles.push({ x: enemyTileX, y: enemyTileY });
+            }
+        };
+
+        // Add tiles from current job (remaining tiles/enemies)
         if (this.currentJob) {
-            for (let i = this.currentJob.currentTileIndex; i < this.currentJob.tiles.length; i++) {
-                addTileOrExpand(this.currentJob.tiles[i]);
+            if (this.currentJob.tool.id === 'sword' && this.currentJob.targetEnemies) {
+                // For sword jobs, show enemy current positions
+                for (let i = this.currentJob.currentTileIndex; i < this.currentJob.targetEnemies.length; i++) {
+                    addEnemyPosition(this.currentJob.targetEnemies[i]);
+                }
+            } else {
+                // Standard job - show tile positions
+                for (let i = this.currentJob.currentTileIndex; i < this.currentJob.tiles.length; i++) {
+                    addTileOrExpand(this.currentJob.tiles[i], this.currentJob);
+                }
             }
         }
 
         // Add tiles from queued jobs
         for (const job of this.queue) {
-            for (const tile of job.tiles) {
-                addTileOrExpand(tile);
+            if (job.tool.id === 'sword' && job.targetEnemies) {
+                // For sword jobs, show enemy current positions
+                for (const enemy of job.targetEnemies) {
+                    addEnemyPosition(enemy);
+                }
+            } else {
+                // Standard job - show tile positions
+                for (const tile of job.tiles) {
+                    addTileOrExpand(tile, job);
+                }
             }
         }
 
         return tiles;
     }
 
-    // Pause job processing for combat - save current state
+    // Legacy method - delegates to worker-based system for 'human'
     pauseForCombat() {
-        if (this.isPausedForCombat) return;
-
-        this.isPausedForCombat = true;
-        console.log('JobManager: Pausing for combat');
-
-        // Save current job state if we're in the middle of something
-        if (this.currentJob) {
-            const status = this.currentJob.status;
-            if (status === JOB_STATUS.WALKING || status === JOB_STATUS.WORKING) {
-                this.savedJobState = {
-                    status: status,
-                    // If working, we'll need to redo this tile
-                    needsRedo: status === JOB_STATUS.WORKING
-                };
-                this.currentJob.status = JOB_STATUS.PAUSED;
-                console.log(`JobManager: Saved state - was ${status}, needsRedo: ${status === JOB_STATUS.WORKING}`);
-            }
-        }
+        this.pauseWorkerForCombat('human');
     }
 
-    // Resume job processing after combat
+    // Legacy method - delegates to worker-based system for 'human'
     resumeFromCombat() {
-        if (!this.isPausedForCombat) return;
-
-        this.isPausedForCombat = false;
-        console.log('JobManager: Resuming from combat');
-
-        // Clear saved state
-        this.savedJobState = null;
-
-        // Restore job state and continue
-        if (this.currentJob) {
-            // Always walk back to the current tile (player may have moved during combat)
-            this.currentJob.status = JOB_STATUS.WALKING;
-            console.log(`JobManager: Resuming - walking to tile ${this.currentJob.currentTileIndex}`);
-            this.walkToCurrentTile();
-        } else if (this.queue.length > 0) {
-            // No current job but queue has items - start next job
-            this.processNextJob();
-        } else {
-            // No jobs - return to idle
-            this.game.setAnimation('IDLE');
-        }
+        this.resumeWorkerFromCombat('human');
     }
 
-    // Check if paused for combat
+    // Legacy method - uses getter which delegates to 'human' worker
     isPaused() {
         return this.isPausedForCombat;
+    }
+
+    // ============ UI Helper Methods ============
+
+    // Get all jobs organized by queue for UI display
+    getAllJobsByQueue() {
+        const result = {
+            human: {
+                active: null,
+                queued: [...this.queues.human]
+            },
+            goblin: {
+                active: null,
+                queued: [...this.queues.goblin]
+            },
+            all: {
+                active: null,
+                queued: [...this.queues.all]
+            }
+        };
+
+        // Add active jobs from workers
+        for (const [workerId, workerState] of this.workers) {
+            if (workerState.currentJob) {
+                result[workerId].active = workerState.currentJob;
+            }
+        }
+
+        return result;
+    }
+
+    // Get total job count across all queues
+    getTotalJobCount() {
+        let count = this.queues.all.length + this.queues.human.length + this.queues.goblin.length;
+
+        // Count active jobs
+        for (const [workerId, workerState] of this.workers) {
+            if (workerState.currentJob) count++;
+        }
+
+        // Legacy active job
+        if (this.currentJob) count++;
+
+        return count;
+    }
+
+    // Cancel a job by ID (from any queue or active job)
+    cancelJob(jobId) {
+        // Check current human job (legacy)
+        if (this.currentJob && this.currentJob.id === jobId) {
+            log.debug(`Cancelling active human job: ${jobId}`);
+            this.currentJob = null;
+            this.isProcessing = false;
+            this.game.setAnimation('IDLE');
+            this.game.currentPath = null;
+            this.game.currentWorkTile = null;
+            if (this.onQueueChange) this.onQueueChange();
+            return true;
+        }
+
+        // Check worker active jobs
+        for (const [workerId, workerState] of this.workers) {
+            if (workerState.currentJob && workerState.currentJob.id === jobId) {
+                log.debug(`Cancelling active job for ${workerId}: ${jobId}`);
+                workerState.currentJob = null;
+                workerState.isProcessing = false;
+                this.setWorkerAnimation(workerId, 'IDLE', true);
+
+                if (workerId === 'human') {
+                    this.game.currentPath = null;
+                    this.game.currentWorkTile = null;
+                } else if (workerId === 'goblin') {
+                    this.game.goblinCurrentPath = null;
+                    this.game.goblinCurrentWorkTile = null;
+                }
+
+                if (this.onQueueChange) this.onQueueChange();
+                return true;
+            }
+        }
+
+        // Check all queues
+        for (const queueName of ['human', 'goblin', 'all']) {
+            const queue = this.queues[queueName];
+            const index = queue.findIndex(job => job.id === jobId);
+            if (index !== -1) {
+                log.debug(`Removing job from ${queueName} queue: ${jobId}`);
+                queue.splice(index, 1);
+                if (this.onQueueChange) this.onQueueChange();
+                return true;
+            }
+        }
+
+        log.warn(`Job not found: ${jobId}`);
+        return false;
+    }
+
+    // Clear all queues
+    clearAllQueues() {
+        this.queues.all = [];
+        this.queues.human = [];
+        this.queues.goblin = [];
+
+        // Cancel all active jobs
+        for (const [workerId, workerState] of this.workers) {
+            if (workerState.currentJob) {
+                workerState.currentJob = null;
+                workerState.isProcessing = false;
+                this.setWorkerAnimation(workerId, 'IDLE', true);
+            }
+        }
+
+        // Legacy
+        this.cancelCurrentJob();
+
+        if (this.onQueueChange) this.onQueueChange();
+    }
+
+    // Check if a specific worker is working
+    isWorkerWorking(workerId) {
+        const workerState = this.workers.get(workerId);
+        return workerState ? workerState.isProcessing : false;
+    }
+
+    // Get current job for a specific worker
+    getWorkerCurrentJob(workerId) {
+        const workerState = this.workers.get(workerId);
+        return workerState ? workerState.currentJob : null;
     }
 }
 

@@ -42,6 +42,8 @@ export class Enemy {
         this.moveSpeed = stats.moveSpeed;
         this.currentPath = null;
         this.pathfinder = null; // Set by EnemyManager
+        this.lastPathfindTime = 0;
+        this.pathfindCooldown = stats.pathfindCooldown;
 
         // Sprite
         this.sprite = null;
@@ -81,6 +83,13 @@ export class Enemy {
         const animData = animations[animationName];
         this.currentAnimation = animationName;
 
+        // CRITICAL FIX: If we're changing animations while attacking, reset the attack flag
+        // This prevents isAttacking from getting stuck when attack animation is interrupted
+        // (e.g., enemy takes damage during attack and switches to HURT animation)
+        if (this.isAttacking && animationName !== 'ATTACK') {
+            this.isAttacking = false;
+        }
+
         // Dispose of old sprite to prevent memory leaks and stale callbacks
         if (this.sprite) {
             this.sprite.setOnComplete(null);
@@ -118,7 +127,8 @@ export class Enemy {
 
         this.health -= amount;
         this.isDamageFlashing = true;
-        this.damageFlashTimer = 200; // Flash for 200ms
+        const stats = CONFIG.enemy[this.type] || CONFIG.enemy.skeleton;
+        this.damageFlashTimer = stats.damageFlashDuration;
 
         console.log(`${this.type} took ${amount} damage! Health: ${this.health}/${this.maxHealth}`);
 
@@ -203,13 +213,20 @@ export class Enemy {
     moveTowardsTarget(tileSize, deltaTime) {
         if (!this.target || !this.pathfinder || this.isDying || this.isAttacking) return;
 
+        const currentTime = performance.now();
         const targetTileX = Math.floor(this.target.x / tileSize);
         const targetTileY = Math.floor(this.target.y / tileSize);
         const myTileX = Math.floor(this.x / tileSize);
         const myTileY = Math.floor(this.y / tileSize);
 
-        // Check if we need a new path
+        // Check if we need a new path (with cooldown to prevent excessive pathfinding)
         if (!this.currentPath || this.currentPath.length === 0) {
+            // Only recalculate path if cooldown has passed
+            if (currentTime - this.lastPathfindTime < this.pathfindCooldown) {
+                return; // Wait for cooldown
+            }
+            this.lastPathfindTime = currentTime;
+
             // Find path to adjacent tile of target
             const adjacentTile = this.findAdjacentTile(myTileX, myTileY, targetTileX, targetTileY);
             if (adjacentTile) {
@@ -236,7 +253,7 @@ export class Enemy {
             const dy = targetWorldY - this.y;
             const distance = Math.sqrt(dx * dx + dy * dy);
 
-            if (distance < 2) {
+            if (distance < CONFIG.movement.waypointThreshold) {
                 // Reached waypoint
                 this.currentPath.shift();
                 // Update tile position

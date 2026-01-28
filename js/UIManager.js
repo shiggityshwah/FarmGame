@@ -57,21 +57,45 @@ export class UIManager {
         this.menuContainer = null;
         this.purchasedUpgrades = new Set();
 
+        // Store bound event handlers for proper cleanup
+        this._boundHandlers = {
+            onKeyDown: this._handleKeyDown.bind(this),
+            onContainerClick: this._handleContainerClick.bind(this),
+            onInventoryChange: this._handleInventoryChange.bind(this)
+        };
+
         this.createMenuContainer();
         this.subscribeToInventory();
     }
 
+    // Internal handler for keydown events
+    _handleKeyDown(e) {
+        if (e.key === 'Escape' && this.activeMenu) {
+            this.closeMenu();
+        }
+    }
+
+    // Internal handler for container click events
+    _handleContainerClick(e) {
+        if (e.target === this.menuContainer) {
+            this.closeMenu();
+        }
+    }
+
+    // Internal handler for inventory changes
+    _handleInventoryChange() {
+        if (this.activeMenu === 'storage') {
+            this.renderStorageMenu();
+        } else if (this.activeMenu === 'crafting') {
+            this.renderCraftingMenu();
+        } else if (this.activeMenu === 'shop') {
+            this.renderShopMenu(this.shopActiveTab || 'buy');
+        }
+    }
+
     subscribeToInventory() {
         // Re-render active menu when inventory changes
-        this.game.inventory.onChange(() => {
-            if (this.activeMenu === 'storage') {
-                this.renderStorageMenu();
-            } else if (this.activeMenu === 'crafting') {
-                this.renderCraftingMenu();
-            } else if (this.activeMenu === 'shop') {
-                this.renderShopMenu(this.shopActiveTab || 'buy');
-            }
-        });
+        this.game.inventory.onChange(this._boundHandlers.onInventoryChange);
     }
 
     createMenuContainer() {
@@ -108,19 +132,36 @@ export class UIManager {
         this.menuContainer.appendChild(this.menuPanel);
         document.body.appendChild(this.menuContainer);
 
-        // Close menu when clicking outside
-        this.menuContainer.addEventListener('click', (e) => {
-            if (e.target === this.menuContainer) {
-                this.closeMenu();
-            }
-        });
+        // Close menu when clicking outside (use stored bound handler)
+        this.menuContainer.addEventListener('click', this._boundHandlers.onContainerClick);
 
-        // Close menu with Escape key
-        document.addEventListener('keydown', (e) => {
-            if (e.key === 'Escape' && this.activeMenu) {
-                this.closeMenu();
+        // Close menu with Escape key (use stored bound handler)
+        document.addEventListener('keydown', this._boundHandlers.onKeyDown);
+    }
+
+    // Clean up event listeners and DOM elements
+    destroy() {
+        // Remove document-level event listener
+        document.removeEventListener('keydown', this._boundHandlers.onKeyDown);
+
+        // Remove container event listener
+        if (this.menuContainer) {
+            this.menuContainer.removeEventListener('click', this._boundHandlers.onContainerClick);
+            // Remove from DOM
+            if (this.menuContainer.parentNode) {
+                this.menuContainer.parentNode.removeChild(this.menuContainer);
             }
-        });
+        }
+
+        // Clear inventory callback
+        if (this.game.inventory) {
+            this.game.inventory.onChange(null);
+        }
+
+        // Clear references
+        this.menuContainer = null;
+        this.menuPanel = null;
+        this._boundHandlers = null;
     }
 
     openStorage() {

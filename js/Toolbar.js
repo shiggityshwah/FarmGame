@@ -36,9 +36,44 @@ export class Toolbar {
         this.cursorDataUrls = new Map();
         this.seedCursorDataUrls = new Map();
         this.plantSubmenu = null;
+        this.queueSelector = null;
+        this.selectedQueue = 'all'; // 'all' | 'human' | 'goblin'
 
+        this.createQueueSelector();
         this.createToolbar();
         this.createPlantSubmenu();
+    }
+
+    createQueueSelector() {
+        const selector = document.createElement('div');
+        selector.id = 'queue-selector';
+        selector.innerHTML = `
+            <button class="queue-btn active" data-queue="all" title="Jobs go to shared queue">All</button>
+            <button class="queue-btn" data-queue="human" title="Jobs go to human only">Human</button>
+            <button class="queue-btn" data-queue="goblin" title="Jobs go to goblin only">Goblin</button>
+        `;
+        document.body.appendChild(selector);
+        this.queueSelector = selector;
+
+        // Add event listeners
+        const buttons = selector.querySelectorAll('.queue-btn');
+        buttons.forEach(btn => {
+            btn.addEventListener('click', () => {
+                // Update visual state
+                buttons.forEach(b => b.classList.remove('active'));
+                btn.classList.add('active');
+
+                // Update selected queue
+                this.selectedQueue = btn.dataset.queue;
+
+                // Notify job manager
+                if (this.game.jobManager) {
+                    this.game.jobManager.setActiveQueueTarget(this.selectedQueue);
+                }
+
+                console.log(`Queue target changed to: ${this.selectedQueue}`);
+            });
+        });
     }
 
     createToolbar() {

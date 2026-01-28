@@ -18,6 +18,7 @@ import { UIManager } from './UIManager.js';
 import { ORE_TYPES } from './OreVein.js';
 import { CONFIG } from './config.js';
 import { ForestGenerator } from './ForestGenerator.js';
+import { JobQueueUI } from './JobQueueUI.js';
 
 // Animation frame counts for human character
 const ANIMATION_DATA = {
@@ -41,6 +42,31 @@ const ANIMATION_DATA = {
     WAITING: 9,
     WALKING: 8,
     WATERING: 5
+};
+
+// Animation frame counts for goblin character
+// Some sprites have incorrect frame counts in filenames or use multi-row layouts
+const GOBLIN_ANIMATION_DATA = {
+    ATTACK: { frames: 9, framesPerRow: null },      // Filename says 10, actual is 9
+    AXE: { frames: 10, framesPerRow: null },
+    CARRY: { frames: 8, framesPerRow: null },
+    CASTING: { frames: 15, framesPerRow: 10 },      // Multi-row: 960x128
+    CAUGHT: { frames: 10, framesPerRow: null },
+    DEATH: { frames: 9, framesPerRow: null },       // Filename says 13, actual is 9
+    DIG: { frames: 13, framesPerRow: 10 },          // Multi-row: 960x128
+    DOING: { frames: 8, framesPerRow: null },
+    HAMMERING: { frames: 23, framesPerRow: 10 },    // Multi-row: 960x192
+    HURT: { frames: 8, framesPerRow: null },
+    IDLE: { frames: 8, framesPerRow: null },        // Filename says 9, actual is 8
+    JUMP: { frames: 9, framesPerRow: null },
+    MINING: { frames: 10, framesPerRow: null },
+    REELING: { frames: 13, framesPerRow: 10 },      // Multi-row: 960x128
+    ROLL: { frames: 10, framesPerRow: null },
+    RUN: { frames: 8, framesPerRow: null },
+    SWIMMING: { frames: 12, framesPerRow: null },   // 32px wide frames
+    WAITING: { frames: 8, framesPerRow: null },     // Filename says 9, actual is 8
+    WALKING: { frames: 8, framesPerRow: null },
+    WATERING: { frames: 5, framesPerRow: null }
 };
 
 export class Game {
@@ -67,6 +93,17 @@ export class Game {
         this.currentHairStyle = 'curly';
         this.currentAnimation = 'IDLE';
 
+        // Goblin character state
+        this.goblinSprite = null;
+        this.goblinPosition = null;
+        this.goblinAnimation = 'IDLE';
+        this.goblinFacingLeft = false;
+
+        // Goblin movement state
+        this.goblinCurrentPath = null;
+        this.goblinCurrentWorkTile = null;
+        this.goblinAnimationSession = 0; // For callback invalidation
+
         // New systems
         this.toolbar = null;
         this.tileSelector = null;
@@ -82,6 +119,7 @@ export class Game {
         // Inventory and UI
         this.inventory = null;
         this.uiManager = null;
+        this.jobQueueUI = null;
 
         // Tool animation speed multipliers (modified by upgrades)
         this.toolAnimationMultipliers = {};
@@ -233,7 +271,13 @@ export class Game {
             this.tileSelector.setOreManager(this.oreManager);
             this.tileSelector.setTreeManager(this.treeManager);
             this.jobManager = new JobManager(this);
+            // Register workers (characters that can process jobs)
+            this.jobManager.registerWorker('human');
+            this.jobManager.registerWorker('goblin');
             this.toolbar = new Toolbar(this, this.tilemap);
+
+            // Initialize job queue UI panel
+            this.jobQueueUI = new JobQueueUI(this);
 
             // Initialize flower manager (spawns flowers on grass tiles over time)
             this.flowerManager = new FlowerManager(this.tilemap, this.overlayManager);
@@ -298,6 +342,18 @@ export class Game {
         occupiedBaseTiles.add(`${spawnPos.tileX},${spawnPos.tileY}`);
         await this.loadHumanSprites();
         console.log(`Human placed at tile (${spawnPos.tileX}, ${spawnPos.tileY})`);
+
+        // Create Goblin NPC 2 tiles to the right of the human
+        const goblinTileX = spawnPos.tileX + 2;
+        const goblinTileY = spawnPos.tileY;
+        const tileSize = this.tilemap.tileSize;
+        this.goblinPosition = {
+            x: goblinTileX * tileSize + tileSize / 2,
+            y: goblinTileY * tileSize + tileSize / 2
+        };
+        occupiedBaseTiles.add(`${goblinTileX},${goblinTileY}`);
+        await this.loadGoblinSprite();
+        console.log(`Goblin placed at tile (${goblinTileX}, ${goblinTileY})`);
 
         // Create Skeleton enemy in the grass area via EnemyManager
         let position;
@@ -391,22 +447,24 @@ export class Game {
         console.log(`Spawned ${this.oreManager.oreVeins.length} ore veins`);
     }
 
-    async loadHumanSprites() {
-        const frameCount = ANIMATION_DATA[this.currentAnimation];
+    async loadHumanSprites(expectedSession = null, animationToLoad = null) {
+        // Use passed animation name, or fall back to currentAnimation for backwards compatibility
+        const animation = animationToLoad || this.currentAnimation;
+        const frameCount = ANIMATION_DATA[animation];
 
         // Handle filename variations in asset files
         let animLower;
-        if (this.currentAnimation === 'HAMMERING') {
+        if (animation === 'HAMMERING') {
             animLower = 'hamering'; // Misspelling in assets
-        } else if (this.currentAnimation === 'WALKING') {
+        } else if (animation === 'WALKING') {
             animLower = 'walk'; // Uses "walk" not "walking"
         } else {
-            animLower = this.currentAnimation.toLowerCase();
+            animLower = animation.toLowerCase();
         }
 
-        const basePath = `Characters/Human/${this.currentAnimation}/base_${animLower}_strip${frameCount}.png`;
-        const hairPath = `Characters/Human/${this.currentAnimation}/${this.currentHairStyle}hair_${animLower}_strip${frameCount}.png`;
-        const toolsPath = `Characters/Human/${this.currentAnimation}/tools_${animLower}_strip${frameCount}.png`;
+        const basePath = `Characters/Human/${animation}/base_${animLower}_strip${frameCount}.png`;
+        const hairPath = `Characters/Human/${animation}/${this.currentHairStyle}hair_${animLower}_strip${frameCount}.png`;
+        const toolsPath = `Characters/Human/${animation}/tools_${animLower}_strip${frameCount}.png`;
 
         const baseSprite = new SpriteAnimator(this.humanPosition.x, this.humanPosition.y, frameCount, 8);
         const hairSprite = new SpriteAnimator(this.humanPosition.x, this.humanPosition.y, frameCount, 8);
@@ -416,7 +474,54 @@ export class Game {
         await hairSprite.load(hairPath);
         await toolsSprite.load(toolsPath);
 
+        // CRITICAL FIX: Only assign sprites if session hasn't changed during loading
+        // This prevents a race condition where a slower-loading animation overwrites
+        // a faster-loading one that was started later
+        if (expectedSession !== null && this.animationSession !== expectedSession) {
+            return false; // Indicate sprites were not assigned (superseded by newer animation)
+        }
+
         this.humanSprites = [baseSprite, hairSprite, toolsSprite];
+        return true; // Indicate sprites were assigned
+    }
+
+    async loadGoblinSprite(animationToLoad = null) {
+        const animation = animationToLoad || this.goblinAnimation;
+        const animData = GOBLIN_ANIMATION_DATA[animation];
+        const frameCount = animData.frames;
+        const framesPerRow = animData.framesPerRow;
+
+        // Handle filename variations (same as human assets)
+        let animLower;
+        if (animation === 'HAMMERING') {
+            animLower = 'hammering';
+        } else if (animation === 'WALKING') {
+            animLower = 'walk';
+        } else {
+            animLower = animation.toLowerCase();
+        }
+
+        // Get the original filename frame count (may differ from actual frames)
+        const filenameFrameCount = this.getGoblinFilenameFrameCount(animation);
+        const spritePath = `Characters/Goblin/PNG/spr_${animLower}_strip${filenameFrameCount}.png`;
+
+        const sprite = new SpriteAnimator(this.goblinPosition.x, this.goblinPosition.y, frameCount, 8, framesPerRow);
+        await sprite.load(spritePath);
+
+        this.goblinSprite = sprite;
+        this.goblinSprite.setFacingLeft(this.goblinFacingLeft);
+        return true;
+    }
+
+    // Get the frame count used in the filename (may differ from actual frame count)
+    getGoblinFilenameFrameCount(animation) {
+        const filenameFrameCounts = {
+            ATTACK: 10, AXE: 10, CARRY: 8, CASTING: 15, CAUGHT: 10,
+            DEATH: 13, DIG: 13, DOING: 8, HAMMERING: 23, HURT: 8,
+            IDLE: 9, JUMP: 9, MINING: 10, REELING: 13, ROLL: 10,
+            RUN: 8, SWIMMING: 12, WAITING: 9, WALKING: 8, WATERING: 5
+        };
+        return filenameFrameCounts[animation] || GOBLIN_ANIMATION_DATA[animation].frames;
     }
 
     async setHairStyle(hairStyle) {
@@ -426,6 +531,8 @@ export class Game {
     }
 
     async setAnimation(animation, loop = true, onComplete = null, speedMultiplier = 1.0) {
+        console.log(`[Game.setAnimation] Called with animation=${animation}, loop=${loop}, hasCallback=${!!onComplete}`);
+
         // COMBAT GUARD: Prevent work animations during combat
         // This is a fail-safe in case something tries to start a work animation
         if (this.isInCombat && !['IDLE', 'WALKING', 'ATTACK', 'HURT', 'DEATH'].includes(animation)) {
@@ -433,21 +540,43 @@ export class Game {
             return;
         }
 
+        // CRITICAL FIX: If we're changing animations while player is attacking, reset the attack flag
+        // This prevents isPlayerAttacking from getting stuck when attack animation is interrupted
+        if (this.isPlayerAttacking && animation !== 'ATTACK') {
+            console.log('[Game.setAnimation] Resetting isPlayerAttacking flag');
+            this.isPlayerAttacking = false;
+        }
+
         // Increment session counter - this invalidates any pending callbacks
         this.animationSession++;
         const sessionAtStart = this.animationSession;
+        console.log(`[Game.setAnimation] Session: ${sessionAtStart}, currentAnimation: ${this.currentAnimation}`);
 
         // Allow re-triggering same animation with different loop settings
         const forceReload = this.currentAnimation === animation && !loop;
 
         if (this.currentAnimation !== animation || forceReload) {
+            console.log(`[Game.setAnimation] Loading sprites for ${animation} (forceReload=${forceReload})`);
+            // Pass session and animation name so loadHumanSprites knows what to load
+            const spritesAssigned = await this.loadHumanSprites(sessionAtStart, animation);
+            if (!spritesAssigned) {
+                // Sprites were discarded because session changed - abort
+                // IMPORTANT: Don't set currentAnimation here - sprites weren't actually assigned
+                console.log(`[Game.setAnimation] Sprites not assigned (session changed), aborting`);
+                return;
+            }
+            // Only set currentAnimation AFTER sprites are successfully loaded
+            // This prevents subsequent calls from skipping sprite load while we're still loading
             this.currentAnimation = animation;
-            await this.loadHumanSprites();
+            console.log(`[Game.setAnimation] Sprites loaded and assigned for ${animation}`);
+        } else {
+            console.log(`[Game.setAnimation] Skipping sprite load (already ${animation})`);
         }
 
         // Check if animation was changed while we were loading
         if (this.animationSession !== sessionAtStart) {
             // Another animation was started, don't configure this one
+            console.log(`[Game.setAnimation] Session changed during load (${sessionAtStart} -> ${this.animationSession}), aborting`);
             return;
         }
 
@@ -457,6 +586,7 @@ export class Game {
             if (this.animationSession === sessionAtStart) {
                 onComplete();
             }
+            // Callback silently ignored if session changed (animation was superseded)
         } : null;
 
         // Configure animation settings
@@ -471,6 +601,9 @@ export class Game {
                 // Apply speed multiplier
                 sprite.setSpeedMultiplier(speedMultiplier);
             }
+            console.log(`[Game.setAnimation] Animation ${animation} configured successfully, loop=${loop}`);
+        } else {
+            console.log(`[Game.setAnimation] WARNING: humanSprites is null/undefined!`);
         }
     }
 
@@ -494,6 +627,50 @@ export class Game {
 
     getAnimation() {
         return this.currentAnimation;
+    }
+
+    async setGoblinAnimation(animation, loop = true, onComplete = null, speedMultiplier = 1.0) {
+        // Increment session counter to invalidate pending callbacks
+        this.goblinAnimationSession++;
+        const sessionAtStart = this.goblinAnimationSession;
+
+        // Allow re-triggering same animation with different loop settings
+        const forceReload = this.goblinAnimation === animation && !loop;
+
+        if (this.goblinAnimation !== animation || forceReload) {
+            await this.loadGoblinSprite(animation);
+            // Check if session changed during load
+            if (this.goblinAnimationSession !== sessionAtStart) {
+                return; // Another animation was started
+            }
+            this.goblinAnimation = animation;
+        }
+
+        // Wrap callback to check session validity
+        const wrappedCallback = onComplete ? () => {
+            if (this.goblinAnimationSession === sessionAtStart) {
+                onComplete();
+            }
+        } : null;
+
+        if (this.goblinSprite) {
+            this.goblinSprite.setLooping(loop);
+            this.goblinSprite.setOnComplete(wrappedCallback);
+            this.goblinSprite.resetAnimation();
+            this.goblinSprite.setFacingLeft(this.goblinFacingLeft);
+            this.goblinSprite.setSpeedMultiplier(speedMultiplier);
+        }
+    }
+
+    setGoblinFacingDirection(facingLeft) {
+        this.goblinFacingLeft = facingLeft;
+        if (this.goblinSprite) {
+            this.goblinSprite.setFacingLeft(facingLeft);
+        }
+    }
+
+    getGoblinAnimation() {
+        return this.goblinAnimation;
     }
 
     onWorldClick(worldX, worldY) {
@@ -681,14 +858,32 @@ export class Game {
     exitCombat() {
         if (!this.isInCombat) return;
 
+        console.log('Exiting combat mode - resuming work');
+
+        // CRITICAL: Reset ALL combat state to prevent any stuck flags
         this.isInCombat = false;
         this.combatTarget = null;
         this.isPlayerAttacking = false;
-        console.log('Exiting combat mode - resuming work');
 
-        // Resume job processing
+        // Clear any combat-related movement path
+        // (but only if not mid-movement - let movement complete)
+        if (this.currentPath && this.currentPath.length === 0) {
+            this.currentPath = null;
+        }
+
+        // Ensure engaged enemies set is cleared
+        this.engagedEnemies.clear();
+
+        // Resume job processing - the job manager will handle setting IDLE when appropriate
         if (this.jobManager) {
             this.jobManager.resumeFromCombat();
+            // Don't set IDLE here - let the job manager handle animation after resuming
+            // This prevents race conditions with async setAnimation calls
+        } else {
+            // No job manager - set IDLE directly
+            if (this.currentAnimation !== 'IDLE' && !this.currentPath) {
+                this.setAnimation('IDLE', true);
+            }
         }
     }
 
@@ -708,6 +903,16 @@ export class Game {
 
     onPlayerDeath() {
         console.log('Player died!');
+
+        // CRITICAL FIX: Reset attack flag before changing animation
+        // This prevents isPlayerAttacking from getting stuck when death interrupts attack
+        this.isPlayerAttacking = false;
+
+        // Exit combat since player is dead
+        this.isInCombat = false;
+        this.combatTarget = null;
+        this.engagedEnemies.clear();
+
         // Could implement respawn logic here
         this.setAnimation('DEATH', false);
     }
@@ -944,7 +1149,7 @@ export class Game {
         const dy = targetWorldY - this.humanPosition.y;
         const distance = Math.sqrt(dx * dx + dy * dy);
 
-        if (distance < 2) {
+        if (distance < CONFIG.movement.waypointThreshold) {
             // Reached waypoint
             this.currentPath.shift();
 
@@ -981,6 +1186,99 @@ export class Game {
                 for (const sprite of this.humanSprites) {
                     sprite.setPosition(this.humanPosition.x, this.humanPosition.y);
                 }
+            }
+        }
+    }
+
+    // Goblin movement for job system
+    moveGoblinTo(targetX, targetY) {
+        const tileSize = this.tilemap.tileSize;
+        const startTileX = Math.floor(this.goblinPosition.x / tileSize);
+        const startTileY = Math.floor(this.goblinPosition.y / tileSize);
+        const workTileX = Math.floor(targetX / tileSize);
+        const workTileY = Math.floor(targetY / tileSize);
+
+        // Check if goblin is already in a valid working position
+        const isDirectlyLeft = (startTileX === workTileX - 1) && (startTileY === workTileY);
+        const isDirectlyRight = (startTileX === workTileX + 1) && (startTileY === workTileY);
+
+        if (isDirectlyLeft || isDirectlyRight) {
+            // Already in position
+            this.goblinCurrentWorkTile = { x: workTileX, y: workTileY };
+            this.setGoblinFacingDirection(isDirectlyRight);
+            this.jobManager.onTileReachedForWorker('goblin');
+            return;
+        }
+
+        // Find adjacent tile to stand on
+        const adjacentTile = this.findAdjacentStandingTile(startTileX, startTileY, workTileX, workTileY);
+
+        if (!adjacentTile) {
+            console.log(`[Goblin] Cannot reach valid position for tile (${workTileX}, ${workTileY}) - skipping`);
+            this.jobManager.skipCurrentTileForWorker('goblin');
+            return;
+        }
+
+        this.goblinCurrentWorkTile = { x: workTileX, y: workTileY };
+
+        // Find path
+        this.goblinCurrentPath = this.pathfinder.findPath(startTileX, startTileY, adjacentTile.x, adjacentTile.y);
+
+        if (this.goblinCurrentPath && this.goblinCurrentPath.length > 0) {
+            if (this.goblinCurrentPath.length > 1) {
+                const firstTile = this.goblinCurrentPath[0];
+                if (firstTile.x === startTileX && firstTile.y === startTileY) {
+                    this.goblinCurrentPath.shift();
+                }
+            }
+            this.setGoblinAnimation('WALKING', true, null);
+        } else {
+            console.log(`[Goblin] No path to tile (${workTileX}, ${workTileY}) - skipping`);
+            this.goblinCurrentWorkTile = null;
+            this.jobManager.skipCurrentTileForWorker('goblin');
+        }
+    }
+
+    updateGoblinMovement(deltaTime) {
+        if (!this.goblinCurrentPath || this.goblinCurrentPath.length === 0) return;
+
+        const tileSize = this.tilemap.tileSize;
+        const target = this.goblinCurrentPath[0];
+        const targetWorldX = target.x * tileSize + tileSize / 2;
+        const targetWorldY = target.y * tileSize + tileSize / 2;
+
+        const dx = targetWorldX - this.goblinPosition.x;
+        const dy = targetWorldY - this.goblinPosition.y;
+        const distance = Math.sqrt(dx * dx + dy * dy);
+
+        if (distance < CONFIG.movement.waypointThreshold) {
+            // Reached waypoint
+            this.goblinCurrentPath.shift();
+
+            if (this.goblinCurrentPath.length === 0) {
+                // Reached final destination - face work tile and notify
+                if (this.goblinCurrentWorkTile) {
+                    const workTileWorldX = this.goblinCurrentWorkTile.x * tileSize + tileSize / 2;
+                    this.setGoblinFacingDirection(workTileWorldX < this.goblinPosition.x);
+                }
+                this.jobManager.onTileReachedForWorker('goblin');
+            }
+        } else {
+            // Update facing direction
+            if (Math.abs(dx) > 1) {
+                this.setGoblinFacingDirection(dx < 0);
+            }
+
+            // Move toward waypoint
+            const moveDistance = this.moveSpeed * deltaTime / 1000;
+            const ratio = Math.min(moveDistance, distance) / distance;
+
+            this.goblinPosition.x += dx * ratio;
+            this.goblinPosition.y += dy * ratio;
+
+            // Update sprite position
+            if (this.goblinSprite) {
+                this.goblinSprite.setPosition(this.goblinPosition.x, this.goblinPosition.y);
             }
         }
     }
@@ -1037,8 +1335,11 @@ export class Game {
             this.jobManager.update(deltaTime);
         }
 
-        // Update character movement
+        // Update character movement (human)
         this.updateCharacterMovement(deltaTime);
+
+        // Update goblin movement
+        this.updateGoblinMovement(deltaTime);
 
         // Update human character animations
         // Note: Animation callbacks fire here - combat state must be set before this
@@ -1046,6 +1347,11 @@ export class Game {
             for (const sprite of this.humanSprites) {
                 sprite.update(deltaTime);
             }
+        }
+
+        // Update goblin character animation
+        if (this.goblinSprite) {
+            this.goblinSprite.update(deltaTime);
         }
 
         // Update player damage flash
@@ -1227,6 +1533,15 @@ export class Game {
             });
         }
 
+        // Add goblin character
+        if (this.goblinPosition && this.goblinSprite) {
+            depthEntities.push({
+                type: 'goblin',
+                entity: this.goblinSprite,
+                sortY: this.goblinPosition.y
+            });
+        }
+
         // Add other characters (non-enemy NPCs)
         for (const character of this.characters) {
             depthEntities.push({
@@ -1268,6 +1583,9 @@ export class Game {
                     break;
                 case 'human':
                     this.renderHuman();
+                    break;
+                case 'goblin':
+                    this.renderGoblin();
                     break;
                 case 'character':
                     item.entity.render(this.ctx, this.camera);
@@ -1315,6 +1633,13 @@ export class Game {
             for (const sprite of this.humanSprites) {
                 sprite.render(this.ctx, this.camera);
             }
+        }
+    }
+
+    // Render the goblin character (extracted for depth-sorted rendering)
+    renderGoblin() {
+        if (this.goblinSprite) {
+            this.goblinSprite.render(this.ctx, this.camera);
         }
     }
 

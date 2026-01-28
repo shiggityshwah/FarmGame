@@ -22,6 +22,7 @@
 
 import { OreVein, ORE_TYPES } from './OreVein.js';
 import { Crop, CROP_TYPES } from './Crop.js';
+import { CONFIG } from './config.js';
 
 // Pocket types for forest clearings
 export const POCKET_TYPES = {
@@ -97,7 +98,7 @@ export class ForestTree {
         this.isGone = false;
         this.alpha = 1;
         this.fadeTimer = 0;
-        this.fadeDuration = 500;
+        this.fadeDuration = CONFIG.resourceFade.duration;
     }
 
     /**

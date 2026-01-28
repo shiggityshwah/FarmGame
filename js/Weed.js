@@ -93,7 +93,7 @@ export class Weed {
             this.stage++;
             this.clicksRemaining = this.stage; // Update clicks needed based on new stage
             this.tileData = WEED_TILES[this.stage]; // Update tile data
-            console.log(`Weed at (${this.tileX}, ${this.tileY}) grew to stage ${this.stage}`);
+            //console.log(`Weed at (${this.tileX}, ${this.tileY}) grew to stage ${this.stage}`);
         }
     }
 

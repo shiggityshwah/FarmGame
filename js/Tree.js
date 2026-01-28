@@ -2,6 +2,8 @@
 // Thin tree: 1x3 tiles (single column, 3 rows high)
 // Thick tree: 2x3 tiles (2 columns, 3 rows high)
 
+import { CONFIG } from './config.js';
+
 // Wood icon tile ID for "+1 wood" effect
 const WOOD_ICON_TILE_ID = 753;
 
@@ -51,7 +53,7 @@ export class Tree {
         this.isGone = false;
         this.alpha = 1;
         this.fadeTimer = 0;
-        this.fadeDuration = 500; // ms to fade out after depletion
+        this.fadeDuration = CONFIG.resourceFade.duration;
     }
 
     // Get the tile positions this tree occupies (base tiles at bottom)

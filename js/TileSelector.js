@@ -236,13 +236,19 @@ export class TileSelector {
             for (let y = minY; y <= maxY; y++) {
                 for (let x = minX; x <= maxX; x++) {
                     const tileId = this.tilemap.getTileAt(x, y);
+                    this._lastFoundEnemy = null; // Reset before checking
                     const isValid = this.isAcceptableTile(x, y, tileId);
-                    this.selectedTiles.push({
+                    const tileData = {
                         x: x,
                         y: y,
                         tileId: tileId,
                         valid: isValid
-                    });
+                    };
+                    // Include enemy reference for sword tool
+                    if (this._lastFoundEnemy && isValid) {
+                        tileData.targetEnemy = this._lastFoundEnemy;
+                    }
+                    this.selectedTiles.push(tileData);
                 }
             }
         }
@@ -362,6 +368,8 @@ export class TileSelector {
             const enemy = this.enemyManager.getEnemyAt(tileX, tileY);
             // Check if there's an alive enemy at this tile
             if (!enemy || !enemy.isAlive) return false;
+            // Store enemy reference for later use
+            this._lastFoundEnemy = enemy;
             return true;
         }
 
@@ -456,8 +464,14 @@ export class TileSelector {
         const isMultiTileTool = toolRules && toolRules.isMultiTile;
 
         if (!isMultiTileTool) {
-            // Standard tiles - return all valid tiles
-            return validTiles.map(t => ({ x: t.x, y: t.y }));
+            // Standard tiles - return all valid tiles, including enemy reference if present
+            return validTiles.map(t => {
+                const result = { x: t.x, y: t.y };
+                if (t.targetEnemy) {
+                    result.targetEnemy = t.targetEnemy;
+                }
+                return result;
+            });
         }
 
         // For multi-tile tools, return only one tile per unique object

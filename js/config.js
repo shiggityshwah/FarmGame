@@ -2,6 +2,13 @@
 // Extracted from various files to enable easy balancing and adjustment
 
 export const CONFIG = {
+    // === DEBUG ===
+    debug: {
+        logLevel: 'info',           // 'debug', 'info', 'warn', 'error', 'none'
+        showFps: false,             // Show FPS counter
+        showPathfinding: false      // Visualize pathfinding
+    },
+
     // === PLAYER STATS ===
     player: {
         maxHealth: 100,
@@ -22,7 +29,9 @@ export const CONFIG = {
             visionRange: 5,         // tiles
             attackRange: 1,         // tiles
             attackCooldown: 1000,   // ms
-            fadeDuration: 1500      // ms after death
+            fadeDuration: 1500,     // ms after death
+            pathfindCooldown: 500,  // ms between path recalculations
+            damageFlashDuration: 200 // ms for damage flash effect
         }
     },
 
@@ -42,6 +51,16 @@ export const CONFIG = {
     // === ANIMATION ===
     animation: {
         defaultFps: 8
+    },
+
+    // === MOVEMENT ===
+    movement: {
+        waypointThreshold: 2        // pixels - distance to consider waypoint reached
+    },
+
+    // === RESOURCE FADE ===
+    resourceFade: {
+        duration: 500               // ms for resources to fade out after depletion
     },
 
     // === CROPS ===

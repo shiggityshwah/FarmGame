@@ -7,6 +7,7 @@ export class CharacterCustomizer {
         this.customizeMenu = document.getElementById('customize-menu');
         this.hairOptions = document.getElementById('hair-options');
         this.animOptions = document.getElementById('anim-options');
+        this.goblinAnimOptions = document.getElementById('goblin-anim-options');
 
         this.init();
     }
@@ -35,10 +36,17 @@ export class CharacterCustomizer {
             btn.addEventListener('click', () => this.onHairClick(btn));
         });
 
-        // Animation buttons
+        // Animation buttons (human)
         this.animOptions.querySelectorAll('.anim-btn').forEach(btn => {
             btn.addEventListener('click', () => this.onAnimClick(btn));
         });
+
+        // Goblin animation buttons
+        if (this.goblinAnimOptions) {
+            this.goblinAnimOptions.querySelectorAll('.anim-btn').forEach(btn => {
+                btn.addEventListener('click', () => this.onGoblinAnimClick(btn));
+            });
+        }
     }
 
     toggleMenu() {
@@ -71,5 +79,16 @@ export class CharacterCustomizer {
 
         // Update game
         await this.game.setAnimation(animation);
+    }
+
+    async onGoblinAnimClick(btn) {
+        const animation = btn.dataset.anim;
+
+        // Update active state
+        this.goblinAnimOptions.querySelectorAll('.anim-btn').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+
+        // Update game
+        await this.game.setGoblinAnimation(animation);
     }
 }

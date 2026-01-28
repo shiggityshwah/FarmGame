@@ -1,6 +1,9 @@
 // Ore vein types with their tile IDs
 // Each ore has 4 tiles arranged in a 2x2 grid (top-left, top-right, bottom-left, bottom-right)
 // Visual stages: full (100-75%) -> partial (75-50%) -> depleted (50-25%) -> near-gone (25-0%)
+
+import { CONFIG } from './config.js';
+
 export const ORE_TYPES = {
     IRON: {
         name: 'Iron',
@@ -86,7 +89,7 @@ export class OreVein {
         this.isGone = false;
         this.alpha = 1;
         this.fadeTimer = 0;
-        this.fadeDuration = 500; // ms to fade out after depleted
+        this.fadeDuration = CONFIG.resourceFade.duration;
     }
 
     // Calculate visual stage based on remaining resources percentage

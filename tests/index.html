@@ -1,0 +1,388 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FarmGame Tests</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+            min-height: 100vh;
+            padding: 40px;
+            color: #eee;
+        }
+
+        .container {
+            max-width: 900px;
+            margin: 0 auto;
+        }
+
+        h1 {
+            text-align: center;
+            margin-bottom: 10px;
+            font-size: 2.5rem;
+            color: #4a90d9;
+        }
+
+        .subtitle {
+            text-align: center;
+            color: #888;
+            margin-bottom: 30px;
+        }
+
+        .controls {
+            display: flex;
+            gap: 15px;
+            justify-content: center;
+            margin-bottom: 30px;
+        }
+
+        button {
+            padding: 12px 24px;
+            font-size: 1rem;
+            font-weight: bold;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+
+        .btn-primary {
+            background: linear-gradient(135deg, #27ae60 0%, #1e8449 100%);
+            color: white;
+        }
+
+        .btn-primary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(39, 174, 96, 0.4);
+        }
+
+        .btn-secondary {
+            background: linear-gradient(135deg, #34495e 0%, #2c3e50 100%);
+            color: white;
+        }
+
+        .btn-secondary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(52, 73, 94, 0.4);
+        }
+
+        .results-container {
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 12px;
+            padding: 30px;
+            backdrop-filter: blur(10px);
+        }
+
+        .summary {
+            display: flex;
+            gap: 20px;
+            justify-content: center;
+            margin-bottom: 30px;
+        }
+
+        .stat-card {
+            background: rgba(0, 0, 0, 0.2);
+            padding: 20px 40px;
+            border-radius: 8px;
+            text-align: center;
+        }
+
+        .stat-card.passed {
+            border-left: 4px solid #27ae60;
+        }
+
+        .stat-card.failed {
+            border-left: 4px solid #e74c3c;
+        }
+
+        .stat-card.time {
+            border-left: 4px solid #4a90d9;
+        }
+
+        .stat-number {
+            font-size: 2.5rem;
+            font-weight: bold;
+        }
+
+        .stat-label {
+            color: #888;
+            font-size: 0.9rem;
+            text-transform: uppercase;
+        }
+
+        .passed .stat-number {
+            color: #27ae60;
+        }
+
+        .failed .stat-number {
+            color: #e74c3c;
+        }
+
+        .time .stat-number {
+            color: #4a90d9;
+        }
+
+        .test-results {
+            margin-top: 20px;
+        }
+
+        .suite {
+            margin-bottom: 20px;
+        }
+
+        .suite-name {
+            font-size: 1.1rem;
+            font-weight: bold;
+            color: #4a90d9;
+            margin-bottom: 10px;
+            padding-bottom: 5px;
+            border-bottom: 1px solid rgba(74, 144, 217, 0.3);
+        }
+
+        .test {
+            display: flex;
+            align-items: center;
+            padding: 8px 12px;
+            margin: 4px 0;
+            background: rgba(0, 0, 0, 0.2);
+            border-radius: 4px;
+            font-size: 0.9rem;
+        }
+
+        .test-passed {
+            border-left: 3px solid #27ae60;
+        }
+
+        .test-failed {
+            border-left: 3px solid #e74c3c;
+        }
+
+        .test-icon {
+            margin-right: 10px;
+            font-size: 1.1rem;
+        }
+
+        .test-passed .test-icon {
+            color: #27ae60;
+        }
+
+        .test-failed .test-icon {
+            color: #e74c3c;
+        }
+
+        .test-name {
+            flex: 1;
+        }
+
+        .test-error {
+            color: #e74c3c;
+            font-size: 0.85rem;
+            margin-top: 5px;
+            padding-left: 30px;
+        }
+
+        .loading {
+            text-align: center;
+            padding: 40px;
+            color: #888;
+        }
+
+        .spinner {
+            display: inline-block;
+            width: 30px;
+            height: 30px;
+            border: 3px solid rgba(74, 144, 217, 0.3);
+            border-radius: 50%;
+            border-top-color: #4a90d9;
+            animation: spin 1s ease-in-out infinite;
+            margin-bottom: 15px;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        .console-hint {
+            text-align: center;
+            color: #666;
+            font-size: 0.85rem;
+            margin-top: 20px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>FarmGame Test Suite</h1>
+        <p class="subtitle">Unit & Integration Tests</p>
+
+        <div class="controls">
+            <button class="btn-primary" onclick="runTests()">Run All Tests</button>
+            <button class="btn-secondary" onclick="clearResults()">Clear Results</button>
+        </div>
+
+        <div id="results" class="results-container">
+            <div class="loading">
+                <p>Click "Run All Tests" to start testing</p>
+            </div>
+        </div>
+
+        <p class="console-hint">Open browser console (F12) for detailed output</p>
+    </div>
+
+    <script type="module">
+        import { TestRunner, describe, it, expect, beforeEach } from './TestRunner.js';
+
+        // Import test files - they register themselves with describe()
+        import './Inventory.test.js';
+        import './Pathfinder.test.js';
+        import './Integration.test.js';
+
+        // Store results for display
+        let testResults = [];
+        let suiteResults = new Map();
+
+        // Override console methods to capture output
+        const originalLog = console.log;
+        const originalInfo = console.info;
+        const originalWarn = console.warn;
+        const originalError = console.error;
+
+        function captureOutput() {
+            testResults = [];
+            suiteResults = new Map();
+            let currentSuite = null;
+
+            console.log = function(...args) {
+                originalLog.apply(console, args);
+                const text = args.map(a => typeof a === 'string' ? a : JSON.stringify(a)).join(' ');
+
+                // Parse test output
+                if (text.includes('▶')) {
+                    currentSuite = text.replace('▶', '').trim();
+                    suiteResults.set(currentSuite, []);
+                } else if (text.includes('✓')) {
+                    const testName = text.replace('✓', '').trim();
+                    if (currentSuite) {
+                        suiteResults.get(currentSuite).push({ name: testName, passed: true });
+                    }
+                } else if (text.includes('✗')) {
+                    const testName = text.replace('✗', '').trim();
+                    if (currentSuite) {
+                        suiteResults.get(currentSuite).push({ name: testName, passed: false, error: '' });
+                    }
+                } else if (currentSuite && suiteResults.get(currentSuite).length > 0) {
+                    // Error message for failed test
+                    const tests = suiteResults.get(currentSuite);
+                    const lastTest = tests[tests.length - 1];
+                    if (!lastTest.passed && text.trim()) {
+                        lastTest.error = text.trim();
+                    }
+                }
+            };
+        }
+
+        function restoreOutput() {
+            console.log = originalLog;
+            console.info = originalInfo;
+            console.warn = originalWarn;
+            console.error = originalError;
+        }
+
+        // Expose to window for button onclick
+        window.runTests = async function() {
+            const resultsDiv = document.getElementById('results');
+            resultsDiv.innerHTML = `
+                <div class="loading">
+                    <div class="spinner"></div>
+                    <p>Running tests...</p>
+                </div>
+            `;
+
+            // Clear previous test registrations
+            TestRunner.clear();
+
+            // Re-import tests (they auto-register)
+            await import('./Inventory.test.js?' + Date.now());
+            await import('./Pathfinder.test.js?' + Date.now());
+            await import('./Integration.test.js?' + Date.now());
+
+            captureOutput();
+
+            try {
+                const results = await TestRunner.run();
+                displayResults(results);
+            } finally {
+                restoreOutput();
+            }
+        };
+
+        window.clearResults = function() {
+            const resultsDiv = document.getElementById('results');
+            resultsDiv.innerHTML = `
+                <div class="loading">
+                    <p>Click "Run All Tests" to start testing</p>
+                </div>
+            `;
+        };
+
+        function displayResults(results) {
+            const resultsDiv = document.getElementById('results');
+            const duration = (results.endTime - results.startTime).toFixed(2);
+
+            let html = `
+                <div class="summary">
+                    <div class="stat-card passed">
+                        <div class="stat-number">${results.passed}</div>
+                        <div class="stat-label">Passed</div>
+                    </div>
+                    <div class="stat-card failed">
+                        <div class="stat-number">${results.failed}</div>
+                        <div class="stat-label">Failed</div>
+                    </div>
+                    <div class="stat-card time">
+                        <div class="stat-number">${duration}</div>
+                        <div class="stat-label">ms</div>
+                    </div>
+                </div>
+                <div class="test-results">
+            `;
+
+            for (const [suiteName, tests] of suiteResults) {
+                html += `
+                    <div class="suite">
+                        <div class="suite-name">${suiteName}</div>
+                `;
+
+                for (const test of tests) {
+                    const statusClass = test.passed ? 'test-passed' : 'test-failed';
+                    const icon = test.passed ? '✓' : '✗';
+
+                    html += `
+                        <div class="test ${statusClass}">
+                            <span class="test-icon">${icon}</span>
+                            <span class="test-name">${test.name}</span>
+                        </div>
+                    `;
+
+                    if (!test.passed && test.error) {
+                        html += `<div class="test-error">${test.error}</div>`;
+                    }
+                }
+
+                html += `</div>`;
+            }
+
+            html += `</div>`;
+            resultsDiv.innerHTML = html;
+        }
+    </script>
+</body>
+</html>

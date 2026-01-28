@@ -271,8 +271,6 @@ export class FlowerManager {
 
         const flower = new Flower(tileX, tileY, flowerType, tileId);
         this.flowers.push(flower);
-
-        console.log(`${flowerType.name} spawned at (${tileX}, ${tileY})${flower.isDouble ? ' (double!)' : ''}`);
         return flower;
     }
 
@@ -280,8 +278,6 @@ export class FlowerManager {
     spawnWeed(tileX, tileY) {
         const weed = new Weed(tileX, tileY); // Always starts at stage 1
         this.weeds.push(weed);
-
-        console.log(`[WEED] Weed spawned at (${tileX}, ${tileY}) - starting at stage 1`);
         return weed;
     }
 
@@ -329,7 +325,6 @@ export class FlowerManager {
             });
         }
 
-        console.log(`Harvested ${flower.flowerType.name} x${yield_}!`);
         return { flowerType: flower.flowerType, yield: yield_ };
     }
 
@@ -367,11 +362,9 @@ export class FlowerManager {
                     // 75% chance to spawn weed, 25% chance to spawn flower
                     const rand = Math.random();
                     if (rand < 0.75) {
-                        const result = this.spawnRandomWeed();
-                        if (result) console.log(`[SPAWN] Attempted to spawn weed, result:`, result ? 'success' : 'failed');
+                        this.spawnRandomWeed();
                     } else {
-                        const result = this.spawnRandomFlower();
-                        if (result) console.log(`[SPAWN] Attempted to spawn flower, result:`, result ? 'success' : 'failed');
+                        this.spawnRandomFlower();
                     }
                 }
             }
@@ -628,12 +621,6 @@ export class FlowerManager {
         
         // Create leaf splash effect
         this.createLeafSplashEffect(tileX, tileY);
-        
-        if (wasRemoved) {
-            console.log(`Removed weed at (${tileX}, ${tileY})`);
-        } else {
-            console.log(`Weed at (${tileX}, ${tileY}) regressed from stage ${oldStage} to stage ${weed.stage}`);
-        }
         
         return { removed: wasRemoved, stage: weed.stage };
     }
