@@ -1,4 +1,7 @@
 import { OreVein, ORE_TYPES, MINING_STAGE, getRandomOreType } from './OreVein.js';
+import { Logger } from './Logger.js';
+
+const log = Logger.create('OreManager');
 
 export class OreManager {
     constructor(tilemap) {
@@ -17,7 +20,7 @@ export class OreManager {
         const ore = new OreVein(tileX, tileY, oreType);
         this.oreVeins.push(ore);
 
-        console.log(`Spawned ${oreType.name} ore at (${tileX}, ${tileY})`);
+        log.debug(`Spawned ${oreType.name} ore at (${tileX}, ${tileY})`);
         return ore;
     }
 
@@ -57,7 +60,7 @@ export class OreManager {
             this.spawnOre(tileX, tileY);
         }
 
-        console.log(`Spawned ${this.oreVeins.length} ore veins`);
+        log.debug(`Spawned ${this.oreVeins.length} ore veins`);
     }
 
     // Get ore vein at a tile position (checks all 4 tiles of each ore)
@@ -105,7 +108,7 @@ export class OreManager {
             oreName: ore.oreType.name
         });
 
-        console.log(`+1 ${ore.oreType.name} ore!`);
+        log.debug(`+1 ${ore.oreType.name} ore!`);
     }
 
     update(deltaTime) {

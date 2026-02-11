@@ -19,6 +19,9 @@ import { ORE_TYPES } from './OreVein.js';
 import { CONFIG } from './config.js';
 import { ForestGenerator } from './ForestGenerator.js';
 import { JobQueueUI } from './JobQueueUI.js';
+import { Logger } from './Logger.js';
+
+const log = Logger.create('Game');
 
 // Animation frame counts for human character
 const ANIMATION_DATA = {
@@ -104,6 +107,13 @@ export class Game {
         this.goblinCurrentWorkTile = null;
         this.goblinAnimationSession = 0; // For callback invalidation
 
+        // Goblin health (from config)
+        this.goblinMaxHealth = CONFIG.goblin.maxHealth;
+        this.goblinHealth = this.goblinMaxHealth;
+        this.goblinLastDamageTime = 0; // For regen delay tracking
+        this.goblinDamageFlashing = false;
+        this.goblinDamageFlashTimer = 0;
+
         // New systems
         this.toolbar = null;
         this.tileSelector = null;
@@ -142,6 +152,7 @@ export class Game {
         // Damage flash effect for player
         this.playerDamageFlashing = false;
         this.playerDamageFlashTimer = 0;
+        this.playerLastDamageTime = 0; // For health regen delay tracking
 
         // Animation session counter - incremented each time animation changes
         // Used to invalidate stale callbacks from previous animations
@@ -183,7 +194,7 @@ export class Game {
 
     async init() {
         try {
-            console.log('Initializing game...');
+            log.info('Initializing game...');
 
             // Initialize camera
             this.camera = new Camera(this.canvas.width, this.canvas.height);
@@ -258,7 +269,7 @@ export class Game {
                 try {
                     this.onWorldClick(worldX, worldY);
                 } catch (error) {
-                    console.error('Error in click handler:', error);
+                    log.error('Error in click handler:', error);
                 }
             });
 
@@ -278,6 +289,9 @@ export class Game {
 
             // Initialize job queue UI panel
             this.jobQueueUI = new JobQueueUI(this);
+
+            // Spawn enemies from forest pockets
+            await this.spawnForestPocketEnemies();
 
             // Initialize flower manager (spawns flowers on grass tiles over time)
             this.flowerManager = new FlowerManager(this.tilemap, this.overlayManager);
@@ -304,7 +318,7 @@ export class Game {
                         this.tileSelector.startSelection(worldX, worldY);
                     }
                 } catch (error) {
-                    console.error('Error in drag start handler:', error);
+                    log.error('Error in drag start handler:', error);
                 }
             });
 
@@ -314,7 +328,7 @@ export class Game {
                         this.tileSelector.updateSelection(worldX, worldY);
                     }
                 } catch (error) {
-                    console.error('Error in drag move handler:', error);
+                    log.error('Error in drag move handler:', error);
                 }
             });
 
@@ -324,13 +338,13 @@ export class Game {
                         this.onTileSelectionComplete();
                     }
                 } catch (error) {
-                    console.error('Error in drag end handler:', error);
+                    log.error('Error in drag end handler:', error);
                 }
             });
 
-            console.log('Game initialized successfully!');
+            log.info('Game initialized successfully!');
         } catch (error) {
-            console.error('Failed to initialize game:', error);
+            log.error('Failed to initialize game:', error);
             throw error;
         }
     }
@@ -341,7 +355,7 @@ export class Game {
         this.humanPosition = { x: spawnPos.x, y: spawnPos.y };
         occupiedBaseTiles.add(`${spawnPos.tileX},${spawnPos.tileY}`);
         await this.loadHumanSprites();
-        console.log(`Human placed at tile (${spawnPos.tileX}, ${spawnPos.tileY})`);
+        log.debug(`Human placed at tile (${spawnPos.tileX}, ${spawnPos.tileY})`);
 
         // Create Goblin NPC 2 tiles to the right of the human
         const goblinTileX = spawnPos.tileX + 2;
@@ -353,7 +367,7 @@ export class Game {
         };
         occupiedBaseTiles.add(`${goblinTileX},${goblinTileY}`);
         await this.loadGoblinSprite();
-        console.log(`Goblin placed at tile (${goblinTileX}, ${goblinTileY})`);
+        log.debug(`Goblin placed at tile (${goblinTileX}, ${goblinTileY})`);
 
         // Create Skeleton enemy in the grass area via EnemyManager
         let position;
@@ -365,7 +379,7 @@ export class Game {
         occupiedBaseTiles.add(positionKey);
 
         await this.enemyManager.spawnEnemyAtWorld(position.x, position.y, 'skeleton');
-        console.log(`Skeleton placed at tile (${position.tileX}, ${position.tileY})`);
+        log.debug(`Skeleton placed at tile (${position.tileX}, ${position.tileY})`);
     }
 
     // Spawn crops avoiding occupied base tiles
@@ -394,7 +408,7 @@ export class Game {
             this.cropManager.crops.push(crop);
         }
 
-        console.log(`Spawned ${this.cropManager.crops.length} crops`);
+        log.debug(`Spawned ${this.cropManager.crops.length} crops`);
     }
 
     // Spawn ore veins avoiding occupied base tiles
@@ -444,7 +458,21 @@ export class Game {
             this.oreManager.spawnOre(tileX, tileY, oreType);
         }
 
-        console.log(`Spawned ${this.oreManager.oreVeins.length} ore veins`);
+        log.debug(`Spawned ${this.oreManager.oreVeins.length} ore veins`);
+    }
+
+    // Spawn enemies from forest pockets
+    async spawnForestPocketEnemies() {
+        if (!this.forestGenerator || !this.enemyManager) return;
+
+        const pendingSpawns = this.forestGenerator.getPendingEnemySpawns();
+        for (const spawn of pendingSpawns) {
+            await this.enemyManager.spawnEnemy(spawn.tileX, spawn.tileY, spawn.type);
+        }
+
+        if (pendingSpawns.length > 0) {
+            log.debug(`Spawned ${pendingSpawns.length} enemies in forest pockets`);
+        }
     }
 
     async loadHumanSprites(expectedSession = null, animationToLoad = null) {
@@ -531,52 +559,52 @@ export class Game {
     }
 
     async setAnimation(animation, loop = true, onComplete = null, speedMultiplier = 1.0) {
-        console.log(`[Game.setAnimation] Called with animation=${animation}, loop=${loop}, hasCallback=${!!onComplete}`);
+        log.debug(`[setAnimation] Called with animation=${animation}, loop=${loop}, hasCallback=${!!onComplete}`);
 
         // COMBAT GUARD: Prevent work animations during combat
         // This is a fail-safe in case something tries to start a work animation
         if (this.isInCombat && !['IDLE', 'WALKING', 'ATTACK', 'HURT', 'DEATH'].includes(animation)) {
-            console.warn(`Blocked work animation "${animation}" during combat!`);
+            log.warn(`Blocked work animation "${animation}" during combat!`);
             return;
         }
 
         // CRITICAL FIX: If we're changing animations while player is attacking, reset the attack flag
         // This prevents isPlayerAttacking from getting stuck when attack animation is interrupted
         if (this.isPlayerAttacking && animation !== 'ATTACK') {
-            console.log('[Game.setAnimation] Resetting isPlayerAttacking flag');
+            log.debug('[setAnimation] Resetting isPlayerAttacking flag');
             this.isPlayerAttacking = false;
         }
 
         // Increment session counter - this invalidates any pending callbacks
         this.animationSession++;
         const sessionAtStart = this.animationSession;
-        console.log(`[Game.setAnimation] Session: ${sessionAtStart}, currentAnimation: ${this.currentAnimation}`);
+        log.debug(`[setAnimation] Session: ${sessionAtStart}, currentAnimation: ${this.currentAnimation}`);
 
         // Allow re-triggering same animation with different loop settings
         const forceReload = this.currentAnimation === animation && !loop;
 
         if (this.currentAnimation !== animation || forceReload) {
-            console.log(`[Game.setAnimation] Loading sprites for ${animation} (forceReload=${forceReload})`);
+            log.debug(`[setAnimation] Loading sprites for ${animation} (forceReload=${forceReload})`);
             // Pass session and animation name so loadHumanSprites knows what to load
             const spritesAssigned = await this.loadHumanSprites(sessionAtStart, animation);
             if (!spritesAssigned) {
                 // Sprites were discarded because session changed - abort
                 // IMPORTANT: Don't set currentAnimation here - sprites weren't actually assigned
-                console.log(`[Game.setAnimation] Sprites not assigned (session changed), aborting`);
+                log.debug(`[setAnimation] Sprites not assigned (session changed), aborting`);
                 return;
             }
             // Only set currentAnimation AFTER sprites are successfully loaded
             // This prevents subsequent calls from skipping sprite load while we're still loading
             this.currentAnimation = animation;
-            console.log(`[Game.setAnimation] Sprites loaded and assigned for ${animation}`);
+            log.debug(`[setAnimation] Sprites loaded and assigned for ${animation}`);
         } else {
-            console.log(`[Game.setAnimation] Skipping sprite load (already ${animation})`);
+            log.debug(`[setAnimation] Skipping sprite load (already ${animation})`);
         }
 
         // Check if animation was changed while we were loading
         if (this.animationSession !== sessionAtStart) {
             // Another animation was started, don't configure this one
-            console.log(`[Game.setAnimation] Session changed during load (${sessionAtStart} -> ${this.animationSession}), aborting`);
+            log.debug(`[setAnimation] Session changed during load (${sessionAtStart} -> ${this.animationSession}), aborting`);
             return;
         }
 
@@ -601,9 +629,9 @@ export class Game {
                 // Apply speed multiplier
                 sprite.setSpeedMultiplier(speedMultiplier);
             }
-            console.log(`[Game.setAnimation] Animation ${animation} configured successfully, loop=${loop}`);
+            log.debug(`[setAnimation] Animation ${animation} configured successfully, loop=${loop}`);
         } else {
-            console.log(`[Game.setAnimation] WARNING: humanSprites is null/undefined!`);
+            log.warn(`[setAnimation] humanSprites is null/undefined!`);
         }
     }
 
@@ -695,7 +723,7 @@ export class Game {
             if (this.inventory) {
                 this.inventory.addCropByIndex(harvested.index);
             }
-            console.log(`Collected: ${harvested.name}`);
+            log.debug(`Collected: ${harvested.name}`);
             return;
         }
 
@@ -707,7 +735,7 @@ export class Game {
                 if (this.inventory) {
                     this.inventory.add(RESOURCE_TYPES.FLOWER, flowerHarvest.yield);
                 }
-                console.log(`Collected: ${flowerHarvest.flowerType.name} x${flowerHarvest.yield}`);
+                log.debug(`Collected: ${flowerHarvest.flowerType.name} x${flowerHarvest.yield}`);
                 return;
             }
 
@@ -726,14 +754,14 @@ export class Game {
                 if (this.inventory) {
                     this.inventory.addCropByIndex(forestCropHarvest.index);
                 }
-                console.log(`Collected from forest: ${forestCropHarvest.name}`);
+                log.debug(`Collected from forest: ${forestCropHarvest.name}`);
                 return;
             }
         }
     }
 
     handleInteractableAction(action) {
-        console.log(`Interactable action: ${action}`);
+        log.debug(`Interactable action: ${action}`);
 
         switch (action) {
             case 'openStorage':
@@ -755,7 +783,7 @@ export class Game {
                 break;
 
             default:
-                console.warn('Unknown interactable action:', action);
+                log.warn('Unknown interactable action:', action);
         }
     }
 
@@ -765,7 +793,7 @@ export class Game {
         this.currentTool = tool;
         this.tileSelector.setTool(tool);
         this.inputManager.setPanningEnabled(false);
-        console.log(`Tool selected: ${tool.name}`);
+        log.debug(`Tool selected: ${tool.name}`);
     }
 
     onToolDeselected() {
@@ -774,7 +802,7 @@ export class Game {
         this.tileSelector.setTool(null);
         this.tileSelector.cancelSelection();
         this.inputManager.setPanningEnabled(true);
-        console.log('Tool deselected');
+        log.debug('Tool deselected');
     }
 
     onTileSelectionComplete() {
@@ -796,7 +824,7 @@ export class Game {
     onEnemyEngaged(enemy) {
         if (!this.engagedEnemies.has(enemy)) {
             this.engagedEnemies.add(enemy);
-            console.log(`Enemy engaged! ${this.engagedEnemies.size} enemies in combat`);
+            log.debug(`Enemy engaged! ${this.engagedEnemies.size} enemies in combat`);
         }
 
         // If not already in combat, enter combat mode
@@ -813,7 +841,7 @@ export class Game {
         if (!enemy.isAlive) {
             if (this.engagedEnemies.has(enemy)) {
                 this.engagedEnemies.delete(enemy);
-                console.log(`Enemy died and disengaged! ${this.engagedEnemies.size} enemies remaining`);
+                log.debug(`Enemy died and disengaged! ${this.engagedEnemies.size} enemies remaining`);
             }
 
             // If no more enemies, exit combat
@@ -830,7 +858,7 @@ export class Game {
         if (this.isInCombat) return;
 
         this.isInCombat = true;
-        console.log('Entering combat mode!');
+        log.debug('Entering combat mode!');
 
         // Pause current job processing (will resume after combat)
         if (this.jobManager) {
@@ -858,7 +886,7 @@ export class Game {
     exitCombat() {
         if (!this.isInCombat) return;
 
-        console.log('Exiting combat mode - resuming work');
+        log.debug('Exiting combat mode - resuming work');
 
         // CRITICAL: Reset ALL combat state to prevent any stuck flags
         this.isInCombat = false;
@@ -892,8 +920,9 @@ export class Game {
         this.playerHealth -= amount;
         this.playerDamageFlashing = true;
         this.playerDamageFlashTimer = CONFIG.player.damageFlashDuration;
+        this.playerLastDamageTime = performance.now(); // Track for regen delay
 
-        console.log(`Player took ${amount} damage from ${source.type}! Health: ${this.playerHealth}/${this.playerMaxHealth}`);
+        log.debug(`Player took ${amount} damage from ${source.type}! Health: ${this.playerHealth}/${this.playerMaxHealth}`);
 
         if (this.playerHealth <= 0) {
             this.playerHealth = 0;
@@ -901,8 +930,29 @@ export class Game {
         }
     }
 
+    // Goblin takes damage from an enemy
+    takeGoblinDamage(amount, source) {
+        this.goblinHealth -= amount;
+        this.goblinLastDamageTime = performance.now(); // Track for regen delay
+        this.goblinDamageFlashing = true;
+        this.goblinDamageFlashTimer = CONFIG.player.damageFlashDuration; // Reuse player flash duration
+
+        log.debug(`Goblin took ${amount} damage from ${source.type}! Health: ${this.goblinHealth}/${this.goblinMaxHealth}`);
+
+        if (this.goblinHealth <= 0) {
+            this.goblinHealth = 0;
+            this.onGoblinDeath();
+        }
+    }
+
+    onGoblinDeath() {
+        log.info('Goblin died!');
+        // Could implement respawn logic here
+        this.setGoblinAnimation('DEATH', false);
+    }
+
     onPlayerDeath() {
-        console.log('Player died!');
+        log.info('Player died!');
 
         // CRITICAL FIX: Reset attack flag before changing animation
         // This prevents isPlayerAttacking from getting stuck when death interrupts attack
@@ -915,6 +965,29 @@ export class Game {
 
         // Could implement respawn logic here
         this.setAnimation('DEATH', false);
+    }
+
+    // Update health regeneration for player and goblin
+    updateHealthRegen(deltaTime) {
+        const currentTime = performance.now();
+
+        // Player health regeneration (only when out of combat and after delay)
+        if (!this.isInCombat && this.playerHealth > 0 && this.playerHealth < this.playerMaxHealth) {
+            const timeSinceDamage = currentTime - this.playerLastDamageTime;
+            if (timeSinceDamage >= CONFIG.player.healthRegenDelay) {
+                const regenAmount = CONFIG.player.healthRegen * (deltaTime / 1000);
+                this.playerHealth = Math.min(this.playerMaxHealth, this.playerHealth + regenAmount);
+            }
+        }
+
+        // Goblin health regeneration (always regenerates after delay)
+        if (this.goblinHealth > 0 && this.goblinHealth < this.goblinMaxHealth) {
+            const timeSinceDamage = currentTime - this.goblinLastDamageTime;
+            if (timeSinceDamage >= CONFIG.goblin.healthRegenDelay) {
+                const regenAmount = CONFIG.goblin.healthRegen * (deltaTime / 1000);
+                this.goblinHealth = Math.min(this.goblinMaxHealth, this.goblinHealth + regenAmount);
+            }
+        }
     }
 
     // Update combat - check for enemies in range and attack
@@ -1014,12 +1087,12 @@ export class Game {
             // Deal damage at end of animation
             if (enemy.isAlive) {
                 const died = enemy.takeDamage(this.playerDamage);
-                console.log(`Player attacked ${enemy.type} for ${this.playerDamage} damage!`);
+                log.debug(`Player attacked ${enemy.type} for ${this.playerDamage} damage!`);
 
                 if (died) {
                     // Remove from engaged set
                     this.engagedEnemies.delete(enemy);
-                    console.log(`${enemy.type} defeated!`);
+                    log.info(`${enemy.type} defeated!`);
                 }
             }
 
@@ -1065,15 +1138,18 @@ export class Game {
         const workTileX = Math.floor(targetX / tileSize);
         const workTileY = Math.floor(targetY / tileSize);
 
-        // Character can ONLY work on a tile if standing directly to its LEFT or RIGHT
+        // Character can work on a tile if standing directly adjacent (left, right, above, or below)
         // Check if character is already in a valid working position
         const isDirectlyLeft = (startTileX === workTileX - 1) && (startTileY === workTileY);
         const isDirectlyRight = (startTileX === workTileX + 1) && (startTileY === workTileY);
+        const isDirectlyAbove = (startTileX === workTileX) && (startTileY === workTileY - 1);
+        const isDirectlyBelow = (startTileX === workTileX) && (startTileY === workTileY + 1);
 
-        if (isDirectlyLeft || isDirectlyRight) {
+        if (isDirectlyLeft || isDirectlyRight || isDirectlyAbove || isDirectlyBelow) {
             // Already in position - face the work tile and work
             this.currentWorkTile = { x: workTileX, y: workTileY };
-            this.setFacingDirection(isDirectlyRight); // face left if standing to the right
+            // Face left if work tile is to the left, otherwise face right
+            this.setFacingDirection(workTileX < startTileX);
             this.jobManager.onTileReached();
             return;
         }
@@ -1083,7 +1159,7 @@ export class Game {
 
         if (!adjacentTile) {
             // No valid position to work from - skip this tile
-            console.log(`Cannot reach valid position for tile (${workTileX}, ${workTileY}) - skipping`);
+            log.debug(`Cannot reach valid position for tile (${workTileX}, ${workTileY}) - skipping`);
             this.jobManager.skipCurrentTile();
             return;
         }
@@ -1105,19 +1181,21 @@ export class Game {
             this.setAnimation('WALKING', true, null);
         } else {
             // No path found - skip this tile
-            console.log(`No path to tile (${workTileX}, ${workTileY}) - skipping`);
+            log.debug(`No path to tile (${workTileX}, ${workTileY}) - skipping`);
             this.currentWorkTile = null;
             this.jobManager.skipCurrentTile();
         }
     }
 
     // Find best adjacent tile to stand on while working on workTile
-    // Only allows standing to the LEFT or RIGHT of the work tile (not above/below)
+    // Allows standing to the LEFT, RIGHT, ABOVE, or BELOW the work tile
     findAdjacentStandingTile(startX, startY, workTileX, workTileY) {
-        // Only horizontal positions - character must stand to left or right of work tile
+        // All four cardinal directions around work tile
         const adjacentPositions = [
-            { x: workTileX - 1, y: workTileY },  // left of work tile (character faces right)
-            { x: workTileX + 1, y: workTileY },  // right of work tile (character faces left)
+            { x: workTileX - 1, y: workTileY },  // left of work tile
+            { x: workTileX + 1, y: workTileY },  // right of work tile
+            { x: workTileX, y: workTileY - 1 },  // above work tile
+            { x: workTileX, y: workTileY + 1 },  // below work tile
         ];
 
         // Sort by distance to current position (prefer closer tile)
@@ -1198,14 +1276,17 @@ export class Game {
         const workTileX = Math.floor(targetX / tileSize);
         const workTileY = Math.floor(targetY / tileSize);
 
-        // Check if goblin is already in a valid working position
+        // Check if goblin is already in a valid working position (left, right, above, or below)
         const isDirectlyLeft = (startTileX === workTileX - 1) && (startTileY === workTileY);
         const isDirectlyRight = (startTileX === workTileX + 1) && (startTileY === workTileY);
+        const isDirectlyAbove = (startTileX === workTileX) && (startTileY === workTileY - 1);
+        const isDirectlyBelow = (startTileX === workTileX) && (startTileY === workTileY + 1);
 
-        if (isDirectlyLeft || isDirectlyRight) {
+        if (isDirectlyLeft || isDirectlyRight || isDirectlyAbove || isDirectlyBelow) {
             // Already in position
             this.goblinCurrentWorkTile = { x: workTileX, y: workTileY };
-            this.setGoblinFacingDirection(isDirectlyRight);
+            // Face left if work tile is to the left, otherwise face right
+            this.setGoblinFacingDirection(workTileX < startTileX);
             this.jobManager.onTileReachedForWorker('goblin');
             return;
         }
@@ -1214,7 +1295,7 @@ export class Game {
         const adjacentTile = this.findAdjacentStandingTile(startTileX, startTileY, workTileX, workTileY);
 
         if (!adjacentTile) {
-            console.log(`[Goblin] Cannot reach valid position for tile (${workTileX}, ${workTileY}) - skipping`);
+            log.debug(`[Goblin] Cannot reach valid position for tile (${workTileX}, ${workTileY}) - skipping`);
             this.jobManager.skipCurrentTileForWorker('goblin');
             return;
         }
@@ -1233,7 +1314,7 @@ export class Game {
             }
             this.setGoblinAnimation('WALKING', true, null);
         } else {
-            console.log(`[Goblin] No path to tile (${workTileX}, ${workTileY}) - skipping`);
+            log.debug(`[Goblin] No path to tile (${workTileX}, ${workTileY}) - skipping`);
             this.goblinCurrentWorkTile = null;
             this.jobManager.skipCurrentTileForWorker('goblin');
         }
@@ -1320,6 +1401,9 @@ export class Game {
         // Update combat system (takes priority over jobs)
         this.updateCombat(deltaTime);
 
+        // Update health regeneration for player and goblin
+        this.updateHealthRegen(deltaTime);
+
         // Update crops
         if (this.cropManager) {
             this.cropManager.update(deltaTime);
@@ -1359,6 +1443,14 @@ export class Game {
             this.playerDamageFlashTimer -= deltaTime;
             if (this.playerDamageFlashTimer <= 0) {
                 this.playerDamageFlashing = false;
+            }
+        }
+
+        // Update goblin damage flash
+        if (this.goblinDamageFlashing) {
+            this.goblinDamageFlashTimer -= deltaTime;
+            if (this.goblinDamageFlashTimer <= 0) {
+                this.goblinDamageFlashing = false;
             }
         }
 
@@ -1623,6 +1715,11 @@ export class Game {
             this.renderPlayerHealthBar();
         }
 
+        // Render goblin health bar if damaged
+        if (this.goblinHealth < this.goblinMaxHealth) {
+            this.renderGoblinHealthBar();
+        }
+
         // Reset transformation for UI (if needed later)
         this.ctx.setTransform(1, 0, 0, 1, 0, 0);
     }
@@ -1672,6 +1769,35 @@ export class Game {
         this.ctx.strokeRect(barX, barY, barWidth, barHeight);
     }
 
+    renderGoblinHealthBar() {
+        if (!this.goblinPosition) return;
+
+        const barWidth = 32;
+        const barHeight = 5;
+        const barX = this.goblinPosition.x - barWidth / 2;
+        const barY = this.goblinPosition.y - 24; // Above the sprite
+
+        // Background (dark red)
+        this.ctx.fillStyle = '#8B0000';
+        this.ctx.fillRect(barX, barY, barWidth, barHeight);
+
+        // Health (green to yellow to red based on health)
+        const healthPercent = this.goblinHealth / this.goblinMaxHealth;
+        if (healthPercent > 0.5) {
+            this.ctx.fillStyle = '#32CD32'; // Green
+        } else if (healthPercent > 0.25) {
+            this.ctx.fillStyle = '#FFD700'; // Yellow
+        } else {
+            this.ctx.fillStyle = '#FF4500'; // Orange-red
+        }
+        this.ctx.fillRect(barX, barY, barWidth * healthPercent, barHeight);
+
+        // Border
+        this.ctx.strokeStyle = '#000';
+        this.ctx.lineWidth = 1;
+        this.ctx.strokeRect(barX, barY, barWidth, barHeight);
+    }
+
     loop(currentTime) {
         if (!this.running) return;
 
@@ -1684,7 +1810,7 @@ export class Game {
             this.update(deltaTime);
             this.render();
         } catch (error) {
-            console.error('Error in game loop:', error);
+            log.error('Error in game loop:', error);
             // Continue running despite errors to prevent complete freeze
         }
 
@@ -1693,7 +1819,7 @@ export class Game {
     }
 
     start() {
-        console.log('Starting game loop...');
+        log.info('Starting game loop...');
         this.running = true;
         this.lastTime = 0;
         requestAnimationFrame((time) => this.loop(time));

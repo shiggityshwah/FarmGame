@@ -1,3 +1,7 @@
+import { Logger } from './Logger.js';
+
+const log = Logger.create('Toolbar');
+
 // Tool definitions with tile IDs from tileset
 const TOOLS = {
     WATERING_CAN: { id: 'watering_can', tileId: 2858, name: 'Watering Can', animation: 'WATERING' },
@@ -71,7 +75,7 @@ export class Toolbar {
                     this.game.jobManager.setActiveQueueTarget(this.selectedQueue);
                 }
 
-                console.log(`Queue target changed to: ${this.selectedQueue}`);
+                log.debug(`Queue target changed to: ${this.selectedQueue}`);
             });
         });
     }
@@ -228,7 +232,7 @@ export class Toolbar {
         const cursorUrl = this.seedCursorDataUrls.get(crop.index);
         document.body.style.cursor = `url(${cursorUrl}) 16 16, auto`;
 
-        console.log(`Selected seed: ${crop.name}`);
+        log.debug(`Selected seed: ${crop.name}`);
     }
 
     showPlantSubmenu() {

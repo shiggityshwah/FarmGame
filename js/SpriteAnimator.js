@@ -1,3 +1,7 @@
+import { Logger } from './Logger.js';
+
+const log = Logger.create('SpriteAnimator');
+
 // Static image cache to prevent memory leaks from repeated loading
 const imageCache = new Map();
 
@@ -51,7 +55,7 @@ export class SpriteAnimator {
 
             this.loaded = true;
         } catch (error) {
-            console.error('Failed to load sprite:', error);
+            log.error('Failed to load sprite:', error);
             throw error;
         }
     }

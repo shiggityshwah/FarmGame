@@ -17,7 +17,16 @@ export const CONFIG = {
         visionRange: 5,             // tiles
         attackRange: 1,             // tiles (must be adjacent)
         attackCooldown: 800,        // ms between attacks
-        damageFlashDuration: 200    // ms
+        damageFlashDuration: 200,   // ms
+        healthRegen: 1,             // HP per second (when out of combat)
+        healthRegenDelay: 3000      // ms after taking damage before regen starts
+    },
+
+    // === GOBLIN STATS ===
+    goblin: {
+        maxHealth: 80,
+        healthRegen: 0.5,           // HP per second (slower than player)
+        healthRegenDelay: 5000      // ms after taking damage before regen starts
     },
 
     // === ENEMY STATS ===
@@ -130,6 +139,13 @@ export const CONFIG = {
     // === PATHFINDING ===
     pathfinding: {
         maxIterations: 1000         // prevent infinite loops
+    },
+
+    // === FOREST POCKETS ===
+    forestPockets: {
+        enemySpawnChance: 0.4,      // 40% chance for pocket to have skeletons
+        minEnemiesPerPocket: 1,
+        maxEnemiesPerPocket: 3
     }
 };
 

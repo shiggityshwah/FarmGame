@@ -1,3 +1,7 @@
+import { Logger } from './Logger.js';
+
+const log = Logger.create('TilemapRenderer');
+
 export class TilemapRenderer {
     constructor() {
         this.tileData = null;        // Base layer (grass)
@@ -50,10 +54,10 @@ export class TilemapRenderer {
 
             this.loaded = true;
             this.mapType = 'csv'; // Loaded from CSV, treat as non-procedural
-            console.log(`Tilemap loaded: ${this.mapWidth}x${this.mapHeight} tiles`);
-            console.log(`Tileset: ${this.tilesPerRow} tiles per row (padded: ${this.paddedTileSize}px)`);
+            log.debug(`Tilemap loaded: ${this.mapWidth}x${this.mapHeight} tiles`);
+            log.debug(`Tileset: ${this.tilesPerRow} tiles per row (padded: ${this.paddedTileSize}px)`);
         } catch (error) {
-            console.error('Failed to load tilemap:', error);
+            log.error('Failed to load tilemap:', error);
             throw error;
         }
     }
@@ -95,10 +99,10 @@ export class TilemapRenderer {
 
             this.loaded = true;
             this.mapType = 'procedural';
-            console.log(`Procedural map generated: ${this.mapWidth}x${this.mapHeight} tiles`);
-            console.log(`Tileset: ${this.tilesPerRow} tiles per row`);
+            log.debug(`Procedural map generated: ${this.mapWidth}x${this.mapHeight} tiles`);
+            log.debug(`Tileset: ${this.tilesPerRow} tiles per row`);
         } catch (error) {
-            console.error('Failed to generate procedural map:', error);
+            log.error('Failed to generate procedural map:', error);
             throw error;
         }
     }
@@ -240,7 +244,7 @@ export class TilemapRenderer {
                 });
             }
 
-            console.log(`Loaded ${this.collisionRects.length} collision rectangles`);
+            log.debug(`Loaded ${this.collisionRects.length} collision rectangles`);
 
             // Combine interactable objects from both TMX files
             this.interactables = [];
@@ -267,16 +271,16 @@ export class TilemapRenderer {
                 });
             }
 
-            console.log(`Loaded ${this.interactables.length} interactable objects`);
+            log.debug(`Loaded ${this.interactables.length} interactable objects`);
 
             this.loaded = true;
             this.mapType = 'home';
-            console.log(`Combined map generated: ${this.mapWidth}x${this.mapHeight} tiles`);
-            console.log(`Store area: ${this.storeWidth}x${this.storeHeight} tiles at (${this.storeOffsetX}, ${this.storeOffsetY})`);
-            console.log(`House area: ${this.houseWidth}x${this.houseHeight} tiles at (${this.houseOffsetX}, ${this.houseOffsetY})`);
-            console.log(`Tileset: ${this.tilesPerRow} tiles per row`);
+            log.debug(`Combined map generated: ${this.mapWidth}x${this.mapHeight} tiles`);
+            log.debug(`Store area: ${this.storeWidth}x${this.storeHeight} tiles at (${this.storeOffsetX}, ${this.storeOffsetY})`);
+            log.debug(`House area: ${this.houseWidth}x${this.houseHeight} tiles at (${this.houseOffsetX}, ${this.houseOffsetY})`);
+            log.debug(`Tileset: ${this.tilesPerRow} tiles per row`);
         } catch (error) {
-            console.error('Failed to generate home map:', error);
+            log.error('Failed to generate home map:', error);
             throw error;
         }
     }

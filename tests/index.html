@@ -244,6 +244,8 @@
         import './Inventory.test.js';
         import './Pathfinder.test.js';
         import './Integration.test.js';
+        import './Combat.test.js';
+        import './CropManager.test.js';
 
         // Store results for display
         let testResults = [];
@@ -260,9 +262,21 @@
             suiteResults = new Map();
             let currentSuite = null;
 
+            // Helper to strip %c format specifiers and their CSS arguments
+            function stripConsoleFormatting(args) {
+                if (args.length === 0) return '';
+                let text = args[0];
+                if (typeof text !== 'string') return JSON.stringify(text);
+
+                // Remove %c format specifiers
+                text = text.replace(/%c/g, '');
+                // The remaining args after the first are CSS styles - skip them
+                return text.trim();
+            }
+
             console.log = function(...args) {
                 originalLog.apply(console, args);
-                const text = args.map(a => typeof a === 'string' ? a : JSON.stringify(a)).join(' ');
+                const text = stripConsoleFormatting(args);
 
                 // Parse test output
                 if (text.includes('▶')) {
@@ -313,6 +327,8 @@
             await import('./Inventory.test.js?' + Date.now());
             await import('./Pathfinder.test.js?' + Date.now());
             await import('./Integration.test.js?' + Date.now());
+            await import('./Combat.test.js?' + Date.now());
+            await import('./CropManager.test.js?' + Date.now());
 
             captureOutput();
 

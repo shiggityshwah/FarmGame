@@ -1,6 +1,9 @@
 // UI Manager handles all menu systems (Storage, Crafting, etc.)
 
 import { RESOURCE_TYPES } from './Inventory.js';
+import { Logger } from './Logger.js';
+
+const log = Logger.create('UIManager');
 
 // Crafting recipes - upgrades that can be purchased with resources
 export const UPGRADES = {
@@ -355,12 +358,12 @@ export class UIManager {
 
     purchaseUpgrade(upgrade) {
         if (this.purchasedUpgrades.has(upgrade.id)) {
-            console.log('Upgrade already purchased:', upgrade.name);
+            log.debug('Upgrade already purchased:', upgrade.name);
             return;
         }
 
         if (!this.canAffordUpgrade(upgrade)) {
-            console.log('Cannot afford upgrade:', upgrade.name);
+            log.debug('Cannot afford upgrade:', upgrade.name);
             return;
         }
 
@@ -375,7 +378,7 @@ export class UIManager {
         // Apply the upgrade effect
         this.applyUpgradeEffect(upgrade);
 
-        console.log('Purchased upgrade:', upgrade.name);
+        log.info('Purchased upgrade:', upgrade.name);
 
         // Re-render the menu
         this.renderCraftingMenu();
@@ -391,17 +394,17 @@ export class UIManager {
                     this.game.toolAnimationMultipliers = {};
                 }
                 this.game.toolAnimationMultipliers[effect.tool] = effect.multiplier;
-                console.log(`Tool ${effect.tool} animation speed now ${effect.multiplier}x`);
+                log.debug(`Tool ${effect.tool} animation speed now ${effect.multiplier}x`);
                 break;
 
             case 'max_health':
                 this.game.playerMaxHealth += effect.amount;
                 this.game.playerHealth = Math.min(this.game.playerHealth + effect.amount, this.game.playerMaxHealth);
-                console.log(`Max health increased to ${this.game.playerMaxHealth}`);
+                log.debug(`Max health increased to ${this.game.playerMaxHealth}`);
                 break;
 
             default:
-                console.warn('Unknown upgrade effect type:', effect.type);
+                log.warn('Unknown upgrade effect type:', effect.type);
         }
     }
 
@@ -605,13 +608,13 @@ export class UIManager {
         }
 
         if (!seedResource) {
-            console.warn('Unknown seed ID:', seedId);
+            log.warn('Unknown seed ID:', seedId);
             return;
         }
 
         // Check if player can afford it
         if (!inventory.has(RESOURCE_TYPES.GOLD, seedResource.price)) {
-            console.log('Not enough gold to buy:', seedResource.name);
+            log.debug('Not enough gold to buy:', seedResource.name);
             return;
         }
 
@@ -619,7 +622,7 @@ export class UIManager {
         inventory.spendGold(seedResource.price);
         inventory.add(seedResource, 1);
 
-        console.log(`Purchased ${seedResource.name} for ${seedResource.price} gold`);
+        log.debug(`Purchased ${seedResource.name} for ${seedResource.price} gold`);
 
         // Re-render shop menu preserving tab and scroll
         this.renderShopMenu(this.shopActiveTab || 'buy');
@@ -638,19 +641,19 @@ export class UIManager {
         }
 
         if (!resource) {
-            console.warn('Unknown resource ID:', resourceId);
+            log.warn('Unknown resource ID:', resourceId);
             return;
         }
 
         // Check if resource has sell_price
         if (!resource.sell_price) {
-            console.warn('Resource cannot be sold:', resource.name);
+            log.warn('Resource cannot be sold:', resource.name);
             return;
         }
 
         // Check if player has the item
         if (!inventory.has(resource, 1)) {
-            console.log('You don\'t have any:', resource.name);
+            log.debug('You don\'t have any:', resource.name);
             return;
         }
 
@@ -658,7 +661,7 @@ export class UIManager {
         inventory.remove(resource, 1);
         inventory.addGold(resource.sell_price);
 
-        console.log(`Sold ${resource.name} for ${resource.sell_price} gold`);
+        log.debug(`Sold ${resource.name} for ${resource.sell_price} gold`);
 
         // Re-render shop menu preserving tab and scroll
         this.renderShopMenu(this.shopActiveTab || 'sell');

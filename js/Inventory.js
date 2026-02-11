@@ -1,6 +1,10 @@
 // Inventory system to track collected resources
 // Resources are stored by type and include display information
 
+import { Logger } from './Logger.js';
+
+const log = Logger.create('Inventory');
+
 export const RESOURCE_TYPES = {
     // Crops (harvested from fully grown plants)
     CROP_CARROT: { id: 'crop_carrot', name: 'Carrot', category: 'crop', tileId: 691, sell_price: 18 },
@@ -103,11 +107,11 @@ export class Inventory {
     // Add a resource by its type
     add(resourceType, amount = 1) {
         if (!resourceType || !resourceType.id) {
-            console.warn('Invalid resource type:', resourceType);
+            log.warn('Invalid resource type:', resourceType);
             return false;
         }
         this.items[resourceType.id] = (this.items[resourceType.id] || 0) + amount;
-        console.log(`Added ${amount} ${resourceType.name}. Total: ${this.items[resourceType.id]}`);
+        log.debug(`Added ${amount} ${resourceType.name}. Total: ${this.items[resourceType.id]}`);
         this.notifyChange();
         return true;
     }
@@ -176,7 +180,7 @@ export class Inventory {
         if (resourceType) {
             return this.add(resourceType, amount);
         }
-        console.warn('Unknown crop index:', cropIndex);
+        log.warn('Unknown crop index:', cropIndex);
         return false;
     }
 
@@ -186,7 +190,7 @@ export class Inventory {
         if (resourceType) {
             return this.add(resourceType, amount);
         }
-        console.warn('Unknown ore name:', oreName);
+        log.warn('Unknown ore name:', oreName);
         return false;
     }
 

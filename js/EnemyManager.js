@@ -1,4 +1,7 @@
 import { Enemy } from './Enemy.js';
+import { Logger } from './Logger.js';
+
+const log = Logger.create('EnemyManager');
 
 export class EnemyManager {
     constructor(tilemap) {
@@ -33,7 +36,7 @@ export class EnemyManager {
         }
 
         this.enemies.push(enemy);
-        console.log(`Spawned ${type} at tile (${tileX}, ${tileY})`);
+        log.debug(`Spawned ${type} at tile (${tileX}, ${tileY})`);
 
         return enemy;
     }
@@ -49,7 +52,7 @@ export class EnemyManager {
         }
 
         this.enemies.push(enemy);
-        console.log(`Spawned ${type} at world (${worldX}, ${worldY})`);
+        log.debug(`Spawned ${type} at world (${worldX}, ${worldY})`);
 
         return enemy;
     }
@@ -87,7 +90,7 @@ export class EnemyManager {
         // Remove enemies that have fully faded out after death
         this.enemies = this.enemies.filter(e => {
             if (e.isFullyFaded()) {
-                console.log(`Removing ${e.type} from game`);
+                log.debug(`Removing ${e.type} from game`);
                 return false; // Remove
             }
             return true; // Keep
@@ -104,49 +107,54 @@ export class EnemyManager {
             // Skip AI for dead or dying enemies
             if (!enemy.isAlive || enemy.isDying) continue;
 
-            // Check if player is in vision range
-            if (this.game && this.game.humanPosition) {
-                const playerPos = this.game.humanPosition;
+            // Find closest target (human or goblin) in vision range
+            const closestTarget = this.findClosestTarget(enemy, tileSize);
 
-                if (enemy.isInVisionRange(playerPos.x, playerPos.y, tileSize)) {
-                    // Player spotted - set as target
-                    if (!enemy.target) {
-                        enemy.setTarget({ x: playerPos.x, y: playerPos.y });
-                        console.log(`${enemy.type} spotted player!`);
+            if (closestTarget) {
+                const { target, type } = closestTarget;
 
-                        // Notify game that enemy engaged player
-                        if (this.game.onEnemyEngaged) {
-                            this.game.onEnemyEngaged(enemy);
-                        }
-                    } else {
-                        // Update target position (player moves)
-                        enemy.target.x = playerPos.x;
-                        enemy.target.y = playerPos.y;
-                    }
+                // Target spotted - set or update target
+                if (!enemy.target || enemy.targetType !== type) {
+                    enemy.setTarget({ x: target.x, y: target.y });
+                    enemy.targetType = type; // Track which type we're targeting
+                    log.debug(`${enemy.type} spotted ${type}!`);
 
-                    // Check if in attack range
-                    if (enemy.isInAttackRange(playerPos.x, playerPos.y, tileSize)) {
-                        // Attack the player
-                        enemy.performAttack({ x: playerPos.x, y: playerPos.y }, currentTime, (damage) => {
-                            // Damage callback - hurt the player
-                            if (this.game.takeDamage) {
-                                this.game.takeDamage(damage, enemy);
-                            }
-                        });
-                    } else if (!enemy.isAttacking) {
-                        // Move towards player
-                        enemy.moveTowardsTarget(tileSize, deltaTime);
+                    // Notify game that enemy engaged player (only for human)
+                    if (type === 'human' && this.game.onEnemyEngaged) {
+                        this.game.onEnemyEngaged(enemy);
                     }
                 } else {
-                    // Player out of vision range
-                    if (enemy.target) {
-                        enemy.clearTarget();
-                        console.log(`${enemy.type} lost sight of player`);
+                    // Update target position (target moves)
+                    enemy.target.x = target.x;
+                    enemy.target.y = target.y;
+                }
 
-                        // Notify game that enemy disengaged
-                        if (this.game.onEnemyDisengaged) {
-                            this.game.onEnemyDisengaged(enemy);
+                // Check if in attack range
+                if (enemy.isInAttackRange(target.x, target.y, tileSize)) {
+                    // Attack the target
+                    enemy.performAttack({ x: target.x, y: target.y }, currentTime, (damage) => {
+                        // Damage callback - hurt the target
+                        if (type === 'human' && this.game.takeDamage) {
+                            this.game.takeDamage(damage, enemy);
+                        } else if (type === 'goblin' && this.game.takeGoblinDamage) {
+                            this.game.takeGoblinDamage(damage, enemy);
                         }
+                    });
+                } else if (!enemy.isAttacking) {
+                    // Move towards target
+                    enemy.moveTowardsTarget(tileSize, deltaTime);
+                }
+            } else {
+                // No target in vision range
+                if (enemy.target) {
+                    const wasTargetingHuman = enemy.targetType === 'human';
+                    enemy.clearTarget();
+                    enemy.targetType = null;
+                    log.debug(`${enemy.type} lost sight of target`);
+
+                    // Notify game that enemy disengaged (only for human)
+                    if (wasTargetingHuman && this.game.onEnemyDisengaged) {
+                        this.game.onEnemyDisengaged(enemy);
                     }
                 }
             }
@@ -154,6 +162,44 @@ export class EnemyManager {
 
         // Clean up enemies that have fully faded out
         this.removeDeadEnemies();
+    }
+
+    // Find the closest valid target (human or goblin) in vision range
+    findClosestTarget(enemy, tileSize) {
+        const targets = [];
+
+        // Check human
+        if (this.game && this.game.humanPosition && this.game.playerHealth > 0) {
+            const humanPos = this.game.humanPosition;
+            if (enemy.isInVisionRange(humanPos.x, humanPos.y, tileSize)) {
+                const dx = humanPos.x - enemy.x;
+                const dy = humanPos.y - enemy.y;
+                targets.push({
+                    target: humanPos,
+                    type: 'human',
+                    distance: Math.sqrt(dx * dx + dy * dy)
+                });
+            }
+        }
+
+        // Check goblin
+        if (this.game && this.game.goblinPosition && this.game.goblinHealth > 0) {
+            const goblinPos = this.game.goblinPosition;
+            if (enemy.isInVisionRange(goblinPos.x, goblinPos.y, tileSize)) {
+                const dx = goblinPos.x - enemy.x;
+                const dy = goblinPos.y - enemy.y;
+                targets.push({
+                    target: goblinPos,
+                    type: 'goblin',
+                    distance: Math.sqrt(dx * dx + dy * dy)
+                });
+            }
+        }
+
+        // Return closest target or null if none found
+        if (targets.length === 0) return null;
+        targets.sort((a, b) => a.distance - b.distance);
+        return targets[0];
     }
 
     render(ctx, camera) {

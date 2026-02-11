@@ -1,4 +1,7 @@
 import { Crop, CROP_TYPES, GROWTH_STAGE, getCropTypeByIndex } from './Crop.js';
+import { Logger } from './Logger.js';
+
+const log = Logger.create('CropManager');
 
 export class CropManager {
     constructor(tilemap) {
@@ -11,7 +14,7 @@ export class CropManager {
     plantCrop(tileX, tileY, cropTypeIndex) {
         // Check if there's already a crop here
         if (this.getCropAt(tileX, tileY)) {
-            console.log(`Cannot plant at (${tileX}, ${tileY}) - crop already exists`);
+            log.debug(`Cannot plant at (${tileX}, ${tileY}) - crop already exists`);
             return null;
         }
 
@@ -19,7 +22,7 @@ export class CropManager {
         const crop = new Crop(tileX, tileY, cropType, true); // true = start as planted
         this.crops.push(crop);
 
-        console.log(`Planted ${cropType.name} at (${tileX}, ${tileY})`);
+        log.debug(`Planted ${cropType.name} at (${tileX}, ${tileY})`);
         return crop;
     }
 
@@ -59,7 +62,7 @@ export class CropManager {
             this.crops.push(crop);
         }
 
-        console.log(`Spawned ${this.crops.length} crops`);
+        log.debug(`Spawned ${this.crops.length} crops`);
     }
 
     update(deltaTime) {
@@ -162,7 +165,7 @@ export class CropManager {
                     alpha: 1
                 });
 
-                console.log(`Harvested ${crop.cropType.name}!`);
+                log.debug(`Harvested ${crop.cropType.name}!`);
                 return crop.cropType;
             }
         }

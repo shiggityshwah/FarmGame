@@ -1,3 +1,7 @@
+import { Logger } from './Logger.js';
+
+const log = Logger.create('TileOverlayManager');
+
 export class TileOverlayManager {
     constructor(tilemap) {
         this.tilemap = tilemap;
@@ -38,7 +42,7 @@ export class TileOverlayManager {
             }
             // Add the new hole overlay
             overlayList.push(overlay);
-            console.log(`Hole overlay added at (${tileX}, ${tileY})`);
+            log.debug(`Hole overlay added at (${tileX}, ${tileY})`);
             return;
         }
 
@@ -50,7 +54,7 @@ export class TileOverlayManager {
             }
             // Add the edge overlay (different edge types can coexist on the same tile)
             overlayList.push(overlay);
-            console.log(`Edge overlay added at (${tileX}, ${tileY}): tile ${tileId}`);
+            log.debug(`Edge overlay added at (${tileX}, ${tileY}): tile ${tileId}`);
             return;
         }
 
@@ -62,7 +66,7 @@ export class TileOverlayManager {
             overlayList.splice(nonEdgeIndex, 1);
         }
         overlayList.push(overlay);
-        console.log(`Overlay added at (${tileX}, ${tileY}): tile ${tileId}`);
+        log.debug(`Overlay added at (${tileX}, ${tileY}): tile ${tileId}`);
     }
 
     removeOverlay(tileX, tileY, tileId = null) {
@@ -81,7 +85,7 @@ export class TileOverlayManager {
                 this.overlays.set(key, filtered);
             }
             if (filtered.length < initialLength) {
-                console.log(`Non-edge overlay removed at (${tileX}, ${tileY})`);
+                log.debug(`Non-edge overlay removed at (${tileX}, ${tileY})`);
                 return true;
             }
             return false;
@@ -93,7 +97,7 @@ export class TileOverlayManager {
                 if (overlayList.length === 0) {
                     this.overlays.delete(key);
                 }
-                console.log(`Overlay ${tileId} removed at (${tileX}, ${tileY})`);
+                log.debug(`Overlay ${tileId} removed at (${tileX}, ${tileY})`);
                 return true;
             }
             return false;
@@ -104,7 +108,7 @@ export class TileOverlayManager {
         const key = `${tileX},${tileY}`;
         if (this.overlays.has(key)) {
             this.overlays.delete(key);
-            console.log(`All overlays removed at (${tileX}, ${tileY})`);
+            log.debug(`All overlays removed at (${tileX}, ${tileY})`);
             return true;
         }
         return false;

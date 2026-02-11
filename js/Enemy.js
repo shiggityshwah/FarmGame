@@ -1,5 +1,8 @@
 import { SpriteAnimator } from './SpriteAnimator.js';
 import { CONFIG } from './config.js';
+import { Logger } from './Logger.js';
+
+const log = Logger.create('Enemy');
 
 // Enemy animation data
 const ENEMY_ANIMATIONS = {
@@ -76,7 +79,7 @@ export class Enemy {
     async setAnimation(animationName, loop = true, onComplete = null) {
         const animations = ENEMY_ANIMATIONS[this.type];
         if (!animations || !animations[animationName]) {
-            console.error(`Animation ${animationName} not found for ${this.type}`);
+            log.error(`Animation ${animationName} not found for ${this.type}`);
             return;
         }
 
@@ -130,7 +133,7 @@ export class Enemy {
         const stats = CONFIG.enemy[this.type] || CONFIG.enemy.skeleton;
         this.damageFlashTimer = stats.damageFlashDuration;
 
-        console.log(`${this.type} took ${amount} damage! Health: ${this.health}/${this.maxHealth}`);
+        log.debug(`${this.type} took ${amount} damage! Health: ${this.health}/${this.maxHealth}`);
 
         if (this.health <= 0) {
             this.health = 0;
@@ -158,11 +161,11 @@ export class Enemy {
         this.isDying = true;
         this.isAlive = false;
 
-        console.log(`${this.type} died!`);
+        log.info(`${this.type} died!`);
 
         await this.setAnimation('DEATH', false, () => {
             // Start fading out after death animation completes
-            console.log(`${this.type} death animation complete, starting fade out`);
+            log.debug(`${this.type} death animation complete, starting fade out`);
             this.isFadingOut = true;
         });
     }

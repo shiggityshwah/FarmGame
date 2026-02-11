@@ -1,4 +1,7 @@
 import { Tree, TREE_TYPES, CHOP_STAGE, getRandomTreeType } from './Tree.js';
+import { Logger } from './Logger.js';
+
+const log = Logger.create('TreeManager');
 
 export class TreeManager {
     constructor(tilemap) {
@@ -16,7 +19,7 @@ export class TreeManager {
         const tree = new Tree(tileX, tileY, treeType);
         this.trees.push(tree);
 
-        console.log(`Spawned ${treeType.name} at base (${tileX}, ${tileY})`);
+        log.debug(`Spawned ${treeType.name} at base (${tileX}, ${tileY})`);
         return tree;
     }
 
@@ -72,7 +75,7 @@ export class TreeManager {
             this.spawnTree(tileX, tileY, treeType);
         }
 
-        console.log(`Spawned ${this.trees.length} trees`);
+        log.debug(`Spawned ${this.trees.length} trees`);
         return localOccupied;
     }
 
@@ -124,7 +127,7 @@ export class TreeManager {
             treeName: tree.treeType.name
         });
 
-        console.log(`+1 wood from ${tree.treeType.name}!`);
+        log.debug(`+1 wood from ${tree.treeType.name}!`);
     }
 
     update(deltaTime) {

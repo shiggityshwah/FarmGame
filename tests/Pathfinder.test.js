@@ -135,17 +135,19 @@ describe('Pathfinder', () => {
         expect(path).toBeNull();
     });
 
-    it('should return null when start is on obstacle tile', () => {
+    it('should allow pathfinding from obstacle tile (game design choice)', () => {
         // Block the start position
         tilemap = new MockTilemap(10, 10, [[0, 0]]);
         pathfinder = new Pathfinder(tilemap);
 
         const path = pathfinder.findPath(0, 0, 5, 5);
 
-        // Start is unwalkable, path may be null or have issues
-        // The actual implementation allows starting from unwalkable,
-        // but we can't generate neighbors from an unwalkable tile
-        expect(path).toBeNull();
+        // The implementation intentionally allows starting from obstacle tiles
+        // This is useful when characters end up on unwalkable positions and need
+        // to path out. The path should still reach the destination.
+        expect(path).not.toBeNull();
+        expect(path[path.length - 1].x).toBe(5);
+        expect(path[path.length - 1].y).toBe(5);
     });
 
     // === Edge Cases ===

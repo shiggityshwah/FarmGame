@@ -23,12 +23,16 @@
 import { OreVein, ORE_TYPES } from './OreVein.js';
 import { Crop, CROP_TYPES } from './Crop.js';
 import { CONFIG } from './config.js';
+import { Logger } from './Logger.js';
+
+const log = Logger.create('ForestGenerator');
 
 // Pocket types for forest clearings
 export const POCKET_TYPES = {
     ORE: 'ore',           // One ore type + stone
     STONE: 'stone',       // Stone only
-    CROP: 'crop'          // Single crop type
+    CROP: 'crop',         // Single crop type
+    ENEMY: 'enemy'        // Enemy skeleton spawns
 };
 
 // Tile IDs for forest trees (from tileset)
@@ -152,10 +156,10 @@ export class ForestTree {
         this.resourcesRemaining--;
         const woodYielded = WOOD_ICON_TILE_ID;
 
-        console.log(`Forest tree chopped: ${this.resourcesRemaining}/${this.initialResources} wood remaining`);
+        log.debug(`Forest tree chopped: ${this.resourcesRemaining}/${this.initialResources} wood remaining`);
 
         if (this.resourcesRemaining <= 0) {
-            console.log('Forest tree depleted!');
+            log.debug('Forest tree depleted!');
             return { woodYielded, depleted: true };
         }
 
@@ -311,6 +315,7 @@ export class ForestGenerator {
         this.pockets = [];
         this.pocketOreVeins = [];    // Ore veins in forest pockets
         this.pocketCrops = [];        // Crops in forest pockets
+        this.pendingEnemySpawns = []; // Enemy spawn positions (spawned by Game.js)
 
         // Track tiles occupied by pocket contents
         this.pocketOccupiedTiles = new Set();
@@ -336,6 +341,7 @@ export class ForestGenerator {
         this.pockets = [];
         this.pocketOreVeins = [];
         this.pocketCrops = [];
+        this.pendingEnemySpawns = [];
         this.pocketOccupiedTiles.clear();
 
         const mapWidth = this.tilemap.mapWidth;
@@ -382,7 +388,7 @@ export class ForestGenerator {
 
         // Note: Flowers/weeds now spawn naturally via FlowerManager (not pre-generated)
 
-        console.log(`ForestGenerator: Created ${this.trees.length} forest trees, ${this.pockets.length} pockets`);
+        log.debug(`ForestGenerator: Created ${this.trees.length} forest trees, ${this.pockets.length} pockets`);
     }
 
     /**
@@ -510,6 +516,9 @@ export class ForestGenerator {
                     contentType = cropTypes[Math.floor(Math.random() * cropTypes.length)];
                 }
 
+                // Determine if this pocket should also have enemies
+                const hasEnemies = Math.random() < CONFIG.forestPockets.enemySpawnChance;
+
                 // Create the pocket
                 const pocket = {
                     centerX,
@@ -517,6 +526,7 @@ export class ForestGenerator {
                     radius,
                     type: pocketType,
                     contentType,
+                    hasEnemies,
                     tiles: []
                 };
 
@@ -535,7 +545,7 @@ export class ForestGenerator {
                 this.pockets.push(pocket);
                 placed = true;
 
-                console.log(`Generated ${pocketType} pocket at (${centerX}, ${centerY}) radius ${radius}${contentType ? ` - ${contentType}` : ''}`);
+                log.debug(`Generated ${pocketType} pocket at (${centerX}, ${centerY}) radius ${radius}${contentType ? ` - ${contentType}` : ''}`);
             }
         }
     }
@@ -583,7 +593,58 @@ export class ForestGenerator {
                     this.populateCropPocket(pocket);
                     break;
             }
+
+            // Add enemies if pocket has them (can be combined with any pocket type)
+            if (pocket.hasEnemies) {
+                this.addEnemySpawnsToPocket(pocket);
+            }
         }
+    }
+
+    /**
+     * Add enemy spawn positions to a pocket
+     */
+    addEnemySpawnsToPocket(pocket) {
+        const minEnemies = CONFIG.forestPockets.minEnemiesPerPocket;
+        const maxEnemies = CONFIG.forestPockets.maxEnemiesPerPocket;
+        const enemyCount = minEnemies + Math.floor(Math.random() * (maxEnemies - minEnemies + 1));
+
+        // Get available tiles for enemy spawning (avoid occupied tiles)
+        const availableTiles = pocket.tiles.filter(tile => {
+            // Must be outside main tilemap
+            if (tile.x >= 0 && tile.x < this.tilemap.mapWidth &&
+                tile.y >= 0 && tile.y < this.tilemap.mapHeight) {
+                return false;
+            }
+            return !this.pocketOccupiedTiles.has(`${tile.x},${tile.y}`);
+        });
+
+        for (let i = 0; i < enemyCount && availableTiles.length > 0; i++) {
+            const idx = Math.floor(Math.random() * availableTiles.length);
+            const tile = availableTiles.splice(idx, 1)[0];
+
+            // Store spawn position for later (EnemyManager will handle actual spawning)
+            this.pendingEnemySpawns.push({
+                tileX: tile.x,
+                tileY: tile.y,
+                type: 'skeleton'
+            });
+
+            // Mark tile as occupied
+            this.pocketOccupiedTiles.add(`${tile.x},${tile.y}`);
+
+            log.debug(`Queued skeleton spawn in forest pocket at (${tile.x}, ${tile.y})`);
+        }
+    }
+
+    /**
+     * Get pending enemy spawns and clear the list
+     * Called by Game.js after forest generation to spawn enemies via EnemyManager
+     */
+    getPendingEnemySpawns() {
+        const spawns = [...this.pendingEnemySpawns];
+        this.pendingEnemySpawns = [];
+        return spawns;
     }
 
     /**
@@ -733,7 +794,7 @@ export class ForestGenerator {
             }
         }
 
-        console.log(`Spawned ${oreType.name} ore in forest pocket at (${tileX}, ${tileY})`);
+        log.debug(`Spawned ${oreType.name} ore in forest pocket at (${tileX}, ${tileY})`);
     }
 
     /**
@@ -750,7 +811,7 @@ export class ForestGenerator {
         // Mark tile as occupied
         this.pocketOccupiedTiles.add(`${tileX},${tileY}`);
 
-        console.log(`Spawned ${cropType.name} in forest pocket at (${tileX}, ${tileY})`);
+        log.debug(`Spawned ${cropType.name} in forest pocket at (${tileX}, ${tileY})`);
     }
 
     /**

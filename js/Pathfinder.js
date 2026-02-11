@@ -1,3 +1,7 @@
+import { Logger } from './Logger.js';
+
+const log = Logger.create('Pathfinder');
+
 // Define obstacle tile IDs (water, rocks, buildings, etc.)
 // These are common obstacle tiles from the tileset - adjust as needed
 const OBSTACLE_TILES = new Set([
@@ -207,7 +211,7 @@ export class Pathfinder {
         }
 
         // No path found - return null instead of fallback to prevent walking through obstacles
-        console.warn('No path found from', startX, startY, 'to', endX, endY);
+        log.warn('No path found from', startX, startY, 'to', endX, endY);
         return null;
     }
 
