@@ -7,7 +7,7 @@ import { Crop, CROP_TYPES } from './Crop.js';
 import { Toolbar } from './Toolbar.js';
 import { TileSelector } from './TileSelector.js';
 import { JobManager } from './JobManager.js';
-import { Pathfinder } from './Pathfinder.js';
+import { Pathfinder, PATH_TILES } from './Pathfinder.js';
 import { TileOverlayManager } from './TileOverlayManager.js';
 import { EnemyManager } from './EnemyManager.js';
 import { OreManager } from './OreManager.js';
@@ -16,7 +16,7 @@ import { FlowerManager } from './FlowerManager.js';
 import { Inventory, RESOURCE_TYPES } from './Inventory.js';
 import { UIManager } from './UIManager.js';
 import { ORE_TYPES } from './OreVein.js';
-import { CONFIG } from './config.js';
+import { CONFIG, getRandomPathTile } from './config.js';
 import { ForestGenerator } from './ForestGenerator.js';
 import { JobQueueUI } from './JobQueueUI.js';
 import { Logger } from './Logger.js';
@@ -165,6 +165,7 @@ export class Game {
         // Character movement
         this.currentPath = null;
         this.moveSpeed = CONFIG.player.moveSpeed;
+        this.pathPositions = [];
 
         // Character direction (false = right, true = left)
         this.facingLeft = false;
@@ -203,6 +204,9 @@ export class Game {
             this.tilemap = new TilemapRenderer();
             await this.tilemap.generateHomeMap('Tileset/spr_tileset_sunnysideworld_16px.png');
 
+            // Place east-west path above the farm area
+            this.placePathTilesInMap();
+
             // Center camera on the house
             const houseCenter = this.tilemap.getHouseCenter();
             this.camera.x = houseCenter.x;
@@ -233,6 +237,11 @@ export class Game {
 
             // Create characters at random positions
             await this.createCharacters(occupiedBaseTiles);
+
+            // Mark all path tiles as occupied to prevent entity spawning
+            for (const pos of this.pathPositions) {
+                occupiedBaseTiles.add(`${pos.x},${pos.y}`);
+            }
 
             // Initialize tree manager and spawn one random tree
             this.treeManager = new TreeManager(this.tilemap);
@@ -277,6 +286,8 @@ export class Game {
             this.pathfinder = new Pathfinder(this.tilemap);
             this.pathfinder.setForestGenerator(this.forestGenerator);
             this.overlayManager = new TileOverlayManager(this.tilemap);
+            this.overlayManager.setForestGenerator(this.forestGenerator);
+            this.initPathEdgeOverlays();
             this.tileSelector = new TileSelector(this.tilemap, this.camera, this.overlayManager, this.cropManager);
             this.tileSelector.setEnemyManager(this.enemyManager);
             this.tileSelector.setOreManager(this.oreManager);
@@ -1252,8 +1263,15 @@ export class Game {
                 this.setFacingDirection(dx < 0);
             }
 
-            // Move toward waypoint
-            const moveDistance = this.moveSpeed * deltaTime / 1000;
+            // Move toward waypoint - apply path speed boost if on a path tile
+            let effectiveSpeed = this.moveSpeed;
+            const currentTileX = Math.floor(this.humanPosition.x / tileSize);
+            const currentTileY = Math.floor(this.humanPosition.y / tileSize);
+            const currentTileId = this.tilemap.getTileAt(currentTileX, currentTileY);
+            if (currentTileId !== null && PATH_TILES.has(currentTileId)) {
+                effectiveSpeed *= CONFIG.path.speedMultiplier;
+            }
+            const moveDistance = effectiveSpeed * deltaTime / 1000;
             const ratio = Math.min(moveDistance, distance) / distance;
 
             this.humanPosition.x += dx * ratio;
@@ -1350,8 +1368,15 @@ export class Game {
                 this.setGoblinFacingDirection(dx < 0);
             }
 
-            // Move toward waypoint
-            const moveDistance = this.moveSpeed * deltaTime / 1000;
+            // Move toward waypoint - apply path speed boost if on a path tile
+            let effectiveSpeed = this.moveSpeed;
+            const goblinTileX = Math.floor(this.goblinPosition.x / tileSize);
+            const goblinTileY = Math.floor(this.goblinPosition.y / tileSize);
+            const goblinTileId = this.tilemap.getTileAt(goblinTileX, goblinTileY);
+            if (goblinTileId !== null && PATH_TILES.has(goblinTileId)) {
+                effectiveSpeed *= CONFIG.path.speedMultiplier;
+            }
+            const moveDistance = effectiveSpeed * deltaTime / 1000;
             const ratio = Math.min(moveDistance, distance) / distance;
 
             this.goblinPosition.x += dx * ratio;
@@ -1361,6 +1386,45 @@ export class Game {
             if (this.goblinSprite) {
                 this.goblinSprite.setPosition(this.goblinPosition.x, this.goblinPosition.y);
             }
+        }
+    }
+
+    placePathTilesInMap() {
+        this.pathPositions = [];
+        const map = this.tilemap;
+        const ewPathY = map.storeOffsetY + map.storeHeight;                        // y=10
+        const houseEastEdge = map.houseOffsetX + map.houseWidth;                    // x=10
+        const pathX = houseEastEdge + 1;                                            // x=11
+        const houseCenterX = map.houseOffsetX + Math.floor(map.houseWidth / 2);     // x=5
+        const underHouseY = map.houseOffsetY + map.houseHeight;                     // y=21
+
+        // 1. E-W path between shop and house (full width, extends to map edges)
+        for (let x = 0; x < map.mapWidth; x++) {
+            map.setTileAt(x, ewPathY, getRandomPathTile());
+            this.pathPositions.push({ x, y: ewPathY });
+        }
+        // 2. N-S east-side path (1 tile gap from house east edge, down to under-house)
+        for (let y = ewPathY + 1; y <= underHouseY; y++) {
+            map.setTileAt(pathX, y, getRandomPathTile());
+            this.pathPositions.push({ x: pathX, y });
+        }
+        // 3. E-W connector under house (center to east path)
+        for (let x = houseCenterX; x < pathX; x++) {
+            map.setTileAt(x, underHouseY, getRandomPathTile());
+            this.pathPositions.push({ x, y: underHouseY });
+        }
+        // 4. N-S south path (house center to map bottom)
+        for (let y = underHouseY + 1; y < map.mapHeight; y++) {
+            map.setTileAt(houseCenterX, y, getRandomPathTile());
+            this.pathPositions.push({ x: houseCenterX, y });
+        }
+    }
+
+    initPathEdgeOverlays() {
+        if (!this.overlayManager || this.pathPositions.length === 0) return;
+
+        for (const pos of this.pathPositions) {
+            this.overlayManager.markTileAsPath(pos.x, pos.y);
         }
     }
 
@@ -1492,13 +1556,21 @@ export class Game {
         // Render forest grass layer (surrounding the playable area)
         if (this.forestGenerator) {
             this.forestGenerator.render(this.ctx, this.camera);
-            // Render tree trunk and shadow tiles (behind characters)
+        }
+
+        // Render edge overlays (hoed tile neighbor overlays) before tree/rock bottoms
+        if (this.overlayManager) {
+            this.overlayManager.renderEdgeOverlays(this.ctx, this.camera);
+        }
+
+        // Render tree trunk and shadow tiles (behind characters) - includes tree bottoms that should be on top of edge overlays
+        if (this.forestGenerator) {
             this.forestGenerator.renderAllTreeBackgrounds(this.ctx, this.camera);
         }
 
-        // Render tile overlays (holes, etc.) on top of tilemap
+        // Render non-edge overlays (holes, etc.) after tree backgrounds
         if (this.overlayManager) {
-            this.overlayManager.render(this.ctx, this.camera);
+            this.overlayManager.renderNonEdgeOverlays(this.ctx, this.camera);
         }
 
         // Render tile selection highlight

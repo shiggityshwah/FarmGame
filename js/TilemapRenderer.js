@@ -133,19 +133,20 @@ export class TilemapRenderer {
             this.houseWidth = homeData.width;
             this.houseHeight = homeData.height;
 
-            // Total map: store on left, house on right, grass area below both
-            // Store is placed directly to the left of home
+            // Layout: shop above, house below on west side, grass below both
+            // E-W path row separates shop and house
+            const pathRowHeight = 1;
             const grassHeight = 10;
-            this.mapWidth = this.storeWidth + this.houseWidth; // 20 tiles wide (10 + 10)
-            this.mapHeight = Math.max(this.houseHeight, this.storeHeight) + grassHeight; // 20 tiles tall
+            this.mapWidth = 20;
+            this.mapHeight = this.storeHeight + pathRowHeight + this.houseHeight + grassHeight; // 31
 
-            // Store is on the left (x: 0-9)
-            this.storeOffsetX = 0;
+            // Shop above, slightly east of house
+            this.storeOffsetX = 2;
             this.storeOffsetY = 0;
 
-            // House is on the right (x: 10-19)
-            this.houseOffsetX = this.storeWidth;
-            this.houseOffsetY = 0;
+            // House below shop + path row, on west side
+            this.houseOffsetX = 0;
+            this.houseOffsetY = this.storeHeight + pathRowHeight; // 11
 
             // Generate base layer (Ground layers from both TMX + grass below)
             this.tileData = [];
@@ -158,15 +159,19 @@ export class TilemapRenderer {
                 for (let x = 0; x < this.mapWidth; x++) {
                     let tile = -1;
 
-                    // Check if in store area (left side, top)
-                    if (x < this.storeWidth && y < this.storeHeight && storeGroundLayer) {
-                        tile = storeGroundLayer.data[y][x];
+                    // Check if in store/shop area (above, slightly east)
+                    if (x >= this.storeOffsetX && x < this.storeOffsetX + this.storeWidth &&
+                        y >= this.storeOffsetY && y < this.storeOffsetY + this.storeHeight && storeGroundLayer) {
+                        const localX = x - this.storeOffsetX;
+                        const localY = y - this.storeOffsetY;
+                        tile = storeGroundLayer.data[localY][localX];
                     }
-                    // Check if in home area (right side, top)
+                    // Check if in home/house area (below, west side)
                     else if (x >= this.houseOffsetX && x < this.houseOffsetX + this.houseWidth &&
-                             y < this.houseHeight && homeGroundLayer) {
+                             y >= this.houseOffsetY && y < this.houseOffsetY + this.houseHeight && homeGroundLayer) {
                         const localX = x - this.houseOffsetX;
-                        tile = homeGroundLayer.data[y][localX];
+                        const localY = y - this.houseOffsetY;
+                        tile = homeGroundLayer.data[localY][localX];
                     }
 
                     if (tile >= 0) {
@@ -562,10 +567,10 @@ export class TilemapRenderer {
         return this.mapHeight * this.tileSize;
     }
 
-    // Get the center of the map (between store and house)
+    // Get the center of the house for camera positioning
     getHouseCenter() {
-        const centerX = (this.mapWidth / 2) * this.tileSize;
-        const centerY = (Math.max(this.houseHeight, this.storeHeight) / 2) * this.tileSize;
+        const centerX = (this.houseOffsetX + this.houseWidth / 2) * this.tileSize;
+        const centerY = (this.houseOffsetY + this.houseHeight / 2) * this.tileSize;
         return { x: centerX, y: centerY };
     }
 

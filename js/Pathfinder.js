@@ -1,6 +1,15 @@
 import { Logger } from './Logger.js';
+import { CONFIG } from './config.js';
 
 const log = Logger.create('Pathfinder');
+
+// Path tile IDs that reduce movement cost (preferred for navigation)
+const PATH_TILES = new Set(CONFIG.tiles.path);
+
+// Cost to traverse a path tile derived from speed: faster movement = lower time cost
+const PATH_TILE_COST = 1 / CONFIG.path.speedMultiplier;
+// Minimum possible tile cost (used to keep heuristic admissible)
+const MIN_TILE_COST = Math.min(1.0, PATH_TILE_COST);
 
 // Define obstacle tile IDs (water, rocks, buildings, etc.)
 // These are common obstacle tiles from the tileset - adjust as needed
@@ -193,7 +202,7 @@ export class Pathfinder {
                 const key = `${neighbor.x},${neighbor.y}`;
                 if (closedSet.has(key)) continue;
 
-                const tentativeG = current.g + 1;
+                const tentativeG = current.g + this.getMovementCost(neighbor.x, neighbor.y);
                 const existing = openSet.get(neighbor.x, neighbor.y);
 
                 if (!existing) {
@@ -216,8 +225,9 @@ export class Pathfinder {
     }
 
     heuristic(x1, y1, x2, y2) {
-        // Manhattan distance
-        return Math.abs(x2 - x1) + Math.abs(y2 - y1);
+        // Manhattan distance scaled by minimum tile cost to stay admissible
+        // This ensures A* explores path tile routes when they save travel time
+        return (Math.abs(x2 - x1) + Math.abs(y2 - y1)) * MIN_TILE_COST;
     }
 
     isAdjacent(x1, y1, x2, y2) {
@@ -274,6 +284,17 @@ export class Pathfinder {
         return false;
     }
 
+    getMovementCost(x, y) {
+        const inTilemap = x >= 0 && x < this.tilemap.mapWidth && y >= 0 && y < this.tilemap.mapHeight;
+        if (inTilemap) {
+            const tileId = this.tilemap.getTileAt(x, y);
+            if (tileId !== null && PATH_TILES.has(tileId)) {
+                return PATH_TILE_COST;
+            }
+        }
+        return 1.0;
+    }
+
     reconstructPath(node) {
         const path = [];
         let current = node;
@@ -299,5 +320,5 @@ export class Pathfinder {
     }
 }
 
-// Export obstacle tiles for external use
-export { OBSTACLE_TILES };
+// Export obstacle and path tiles for external use
+export { OBSTACLE_TILES, PATH_TILES };

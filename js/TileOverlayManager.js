@@ -1,4 +1,5 @@
 import { Logger } from './Logger.js';
+import { CONFIG } from './config.js';
 
 const log = Logger.create('TileOverlayManager');
 
@@ -7,6 +8,7 @@ export class TileOverlayManager {
         this.tilemap = tilemap;
         this.overlays = new Map(); // Key: "x,y", Value: array of overlay objects
         this.hoedTiles = new Set(); // Key: "x,y", tracks which tiles are hoed
+        this.forestGenerator = null; // Reference to ForestGenerator for checking forest grass tiles
         // Edge overlay tile IDs
         this.EDGE_OVERLAYS = {
             TOP: 2118,      // Above hoed tile
@@ -16,15 +18,38 @@ export class TileOverlayManager {
         };
         this.edgeOverlaySet = new Set(Object.values(this.EDGE_OVERLAYS));
         this.HOLE_OVERLAY_ID = 1138; // Hole overlay - should be unique/replace
+
+        // Path tile system
+        this.pathTileIds = new Set(CONFIG.tiles.path);
+        this.PATH_EDGE_OVERLAYS = CONFIG.tiles.pathEdgeOverlays;
+        this.pathEdgeOverlaySet = new Set(Object.values(this.PATH_EDGE_OVERLAYS));
+        // Add path edge overlay IDs to main edgeOverlaySet for addOverlay dedup
+        for (const tileId of this.pathEdgeOverlaySet) {
+            this.edgeOverlaySet.add(tileId);
+        }
+        this.pathTiles = new Set(); // Key: "x,y"
+        // Pixel offsets to shift path edge overlays toward the seam
+        this.PATH_EDGE_OFFSETS = {
+            'N': { x: 0, y: -2 },
+            'E': { x: 2, y: 0 },
+            'S': { x: 0, y: 2 },
+            'W': { x: -2, y: 0 },
+            'N+E': { x: 2, y: -2 },
+            'N+W': { x: -2, y: -2 },
+            'E+S': { x: 2, y: 2 },
+            'W+S': { x: -2, y: 2 }
+        };
     }
 
-    addOverlay(tileX, tileY, tileId, offsetY = 0) {
+    addOverlay(tileX, tileY, tileId, offsetY = 0, offsetXPx = 0, offsetYPx = 0) {
         const key = `${tileX},${tileY}`;
         const overlay = {
             tileX: tileX,
             tileY: tileY,
             tileId: tileId,
-            offsetY: offsetY
+            offsetY: offsetY,
+            offsetXPx: offsetXPx,
+            offsetYPx: offsetYPx
         };
 
         if (!this.overlays.has(key)) {
@@ -150,26 +175,106 @@ export class TileOverlayManager {
 
         const tileSize = this.tilemap.tileSize;
 
-        // Get visible bounds for culling
+        // Get visible bounds for culling (don't clamp to tilemap size - forest tiles are outside)
         const bounds = camera.getVisibleBounds();
-        const startCol = Math.max(0, Math.floor(bounds.left / tileSize) - 1);
-        const endCol = Math.min(this.tilemap.mapWidth - 1, Math.ceil(bounds.right / tileSize) + 1);
-        const startRow = Math.max(0, Math.floor(bounds.top / tileSize) - 1);
-        const endRow = Math.min(this.tilemap.mapHeight - 1, Math.ceil(bounds.bottom / tileSize) + 1);
+        const startCol = Math.floor(bounds.left / tileSize) - 1;
+        const endCol = Math.ceil(bounds.right / tileSize) + 1;
+        const startRow = Math.floor(bounds.top / tileSize) - 1;
+        const endRow = Math.ceil(bounds.bottom / tileSize) + 1;
 
         // Render all overlays for each tile
         // Iterate through each tile position and render all its overlays
         for (const [key, overlayList] of this.overlays.entries()) {
             for (const overlay of overlayList) {
-                // Check if overlay is visible
+                // Check if overlay is visible (using unclamped bounds to include forest tiles)
                 if (overlay.tileX < startCol || overlay.tileX > endCol ||
                     overlay.tileY < startRow || overlay.tileY > endRow) {
                     continue;
                 }
 
                 const sourceRect = this.tilemap.getTilesetSourceRect(overlay.tileId);
-                const worldX = overlay.tileX * tileSize;
-                const worldY = (overlay.tileY + overlay.offsetY) * tileSize;
+                const worldX = overlay.tileX * tileSize + (overlay.offsetXPx || 0);
+                const worldY = (overlay.tileY + overlay.offsetY) * tileSize + (overlay.offsetYPx || 0);
+
+                ctx.drawImage(
+                    this.tilemap.tilesetImage,
+                    sourceRect.x, sourceRect.y, sourceRect.width, sourceRect.height,
+                    worldX, worldY, tileSize, tileSize
+                );
+            }
+        }
+    }
+
+    // Render only edge overlays (for rendering before tree/rock bottoms)
+    renderEdgeOverlays(ctx, camera) {
+        if (this.overlays.size === 0) return;
+
+        const tileSize = this.tilemap.tileSize;
+
+        // Get visible bounds for culling (don't clamp to tilemap size - forest tiles are outside)
+        const bounds = camera.getVisibleBounds();
+        const startCol = Math.floor(bounds.left / tileSize) - 1;
+        const endCol = Math.ceil(bounds.right / tileSize) + 1;
+        const startRow = Math.floor(bounds.top / tileSize) - 1;
+        const endRow = Math.ceil(bounds.bottom / tileSize) + 1;
+
+        // Render only edge overlays
+        for (const [key, overlayList] of this.overlays.entries()) {
+            for (const overlay of overlayList) {
+                // Only render edge overlays
+                if (!this.edgeOverlaySet.has(overlay.tileId)) {
+                    continue;
+                }
+
+                // Check if overlay is visible (using unclamped bounds to include forest tiles)
+                if (overlay.tileX < startCol || overlay.tileX > endCol ||
+                    overlay.tileY < startRow || overlay.tileY > endRow) {
+                    continue;
+                }
+
+                const sourceRect = this.tilemap.getTilesetSourceRect(overlay.tileId);
+                const worldX = overlay.tileX * tileSize + (overlay.offsetXPx || 0);
+                const worldY = (overlay.tileY + overlay.offsetY) * tileSize + (overlay.offsetYPx || 0);
+
+                ctx.drawImage(
+                    this.tilemap.tilesetImage,
+                    sourceRect.x, sourceRect.y, sourceRect.width, sourceRect.height,
+                    worldX, worldY, tileSize, tileSize
+                );
+            }
+        }
+    }
+
+    // Render only non-edge overlays (holes, etc.) - for rendering after tree/rock bottoms
+    renderNonEdgeOverlays(ctx, camera) {
+        if (this.overlays.size === 0) return;
+
+        const tileSize = this.tilemap.tileSize;
+
+        // Get visible bounds for culling (don't clamp to tilemap size - forest tiles are outside)
+        const bounds = camera.getVisibleBounds();
+        const startCol = Math.floor(bounds.left / tileSize) - 1;
+        const endCol = Math.ceil(bounds.right / tileSize) + 1;
+        const startRow = Math.floor(bounds.top / tileSize) - 1;
+        const endRow = Math.ceil(bounds.bottom / tileSize) + 1;
+
+        // Render only non-edge overlays
+        for (const [key, overlayList] of this.overlays.entries()) {
+            for (const overlay of overlayList) {
+                // Only render non-edge overlays
+                if (this.edgeOverlaySet.has(overlay.tileId)) {
+                    continue;
+                }
+
+                // Check if overlay is visible (using unclamped bounds to include forest tiles)
+                if (overlay.tileX < startCol || overlay.tileX > endCol ||
+                    overlay.tileY < startRow || overlay.tileY > endRow) {
+                    continue;
+                }
+
+                const sourceRect = this.tilemap.getTilesetSourceRect(overlay.tileId);
+                const worldX = overlay.tileX * tileSize + (overlay.offsetXPx || 0);
+                const worldY = (overlay.tileY + overlay.offsetY) * tileSize + (overlay.offsetYPx || 0);
 
                 ctx.drawImage(
                     this.tilemap.tilesetImage,
@@ -188,14 +293,34 @@ export class TileOverlayManager {
         return count;
     }
 
+    // Set reference to ForestGenerator for checking forest grass tiles
+    setForestGenerator(forestGenerator) {
+        this.forestGenerator = forestGenerator;
+    }
+
     // Check if a tile is a grass tile (not hoed)
     isGrassTile(tileX, tileY) {
+        // First check main tilemap
         const tileId = this.tilemap.getTileAt(tileX, tileY);
-        if (tileId === null) return false;
+        if (tileId !== null) {
+            // Grass tiles are: 65, 66, 129, 130, 131, 132, 133, 134, 192, 193, 194, 195, 197, 199, 257, 258
+            const grassTileIds = new Set([65, 66, 129, 130, 131, 132, 133, 134, 192, 193, 194, 195, 197, 199, 257, 258]);
+            if (grassTileIds.has(tileId)) {
+                return true;
+            }
+        }
         
-        // Grass tiles are: 65, 66, 129, 130, 131, 132, 133, 134, 192, 193, 194, 195, 197, 199, 257, 258
-        const grassTileIds = new Set([65, 66, 129, 130, 131, 132, 133, 134, 192, 193, 194, 195, 197, 199, 257, 258]);
-        return grassTileIds.has(tileId);
+        // If not in main tilemap, check forest grass layer
+        if (this.forestGenerator) {
+            const forestTileId = this.forestGenerator.getGrassTileAt(tileX, tileY);
+            if (forestTileId !== null) {
+                // Forest uses the same grass tile IDs
+                const grassTileIds = new Set([65, 66, 129, 130, 131, 132, 133, 134, 192, 193, 194, 195, 197, 199, 257, 258]);
+                return grassTileIds.has(forestTileId);
+            }
+        }
+        
+        return false;
     }
 
     // Check if a tile is hoed (dirt tile)
@@ -218,11 +343,15 @@ export class TileOverlayManager {
         if (this.hoedTiles.has(key)) {
             // Already hoed, just update edges
             this.updateEdgeOverlays(tileX, tileY);
+            // Restore path edge overlays if adjacent to path
+            this.recalculatePathEdgeOverlay(tileX, tileY);
             return;
         }
 
         this.hoedTiles.add(key);
         this.updateEdgeOverlays(tileX, tileY);
+        // Restore path edge overlays if adjacent to path
+        this.recalculatePathEdgeOverlay(tileX, tileY);
     }
 
     // Update edge overlays around a hoed tile
@@ -266,6 +395,114 @@ export class TileOverlayManager {
         for (const key of this.hoedTiles) {
             const [x, y] = key.split(',').map(Number);
             this.updateEdgeOverlays(x, y);
+        }
+    }
+
+    // Check if a tile is a path tile
+    isPathTile(tileX, tileY) {
+        const tileId = this.tilemap.getTileAt(tileX, tileY);
+        if (tileId === null) return false;
+        return this.pathTileIds.has(tileId);
+    }
+
+    // Mark a tile as a path tile and update edge overlays on neighbors
+    markTileAsPath(tileX, tileY) {
+        const key = `${tileX},${tileY}`;
+        this.removeAllOverlays(tileX, tileY);
+
+        if (this.pathTiles.has(key)) {
+            this.updatePathEdgeOverlays(tileX, tileY);
+            return;
+        }
+
+        this.pathTiles.add(key);
+        this.updatePathEdgeOverlays(tileX, tileY);
+    }
+
+    // Update path edge overlays for neighbors around a path tile
+    updatePathEdgeOverlays(tileX, tileY) {
+        const neighbors = [
+            { x: tileX, y: tileY - 1 },
+            { x: tileX + 1, y: tileY },
+            { x: tileX, y: tileY + 1 },
+            { x: tileX - 1, y: tileY }
+        ];
+
+        for (const neighbor of neighbors) {
+            if (!this.isPathTile(neighbor.x, neighbor.y)) {
+                this.recalculatePathEdgeOverlay(neighbor.x, neighbor.y);
+            }
+        }
+    }
+
+    // Recalculate the path edge overlay for a non-path tile
+    // Works on grass and hoed ground so overlays persist through hoeing
+    recalculatePathEdgeOverlay(tileX, tileY) {
+        const tileId = this.tilemap.getTileAt(tileX, tileY);
+        if (tileId === null) return;
+        if (this.pathTileIds.has(tileId)) return;
+
+        // Remove existing path edge overlays on this tile
+        this.removePathEdgeOverlays(tileX, tileY);
+
+        // Check which cardinal directions have a path tile neighbor
+        const directions = [];
+        if (this.isPathTile(tileX, tileY - 1)) directions.push('N');
+        if (this.isPathTile(tileX + 1, tileY)) directions.push('E');
+        if (this.isPathTile(tileX, tileY + 1)) directions.push('S');
+        if (this.isPathTile(tileX - 1, tileY)) directions.push('W');
+
+        if (directions.length === 0) return;
+
+        // Build combination key (N, E, S, W order)
+        const key = directions.join('+');
+        const overlayTileId = this.PATH_EDGE_OVERLAYS[key];
+        const offsets = this.PATH_EDGE_OFFSETS[key] || { x: 0, y: 0 };
+
+        if (overlayTileId !== undefined) {
+            this.addOverlay(tileX, tileY, overlayTileId, 0, offsets.x, offsets.y);
+        } else {
+            // Fallback: add individual direction overlays for unmapped combos
+            for (const dir of directions) {
+                const singleOverlay = this.PATH_EDGE_OVERLAYS[dir];
+                const singleOffsets = this.PATH_EDGE_OFFSETS[dir] || { x: 0, y: 0 };
+                if (singleOverlay !== undefined) {
+                    this.addOverlay(tileX, tileY, singleOverlay, 0, singleOffsets.x, singleOffsets.y);
+                }
+            }
+        }
+    }
+
+    // Remove all path edge overlays from a tile
+    removePathEdgeOverlays(tileX, tileY) {
+        const key = `${tileX},${tileY}`;
+        if (!this.overlays.has(key)) return;
+
+        const overlayList = this.overlays.get(key);
+        const filtered = overlayList.filter(o => !this.pathEdgeOverlaySet.has(o.tileId));
+        if (filtered.length === 0) {
+            this.overlays.delete(key);
+        } else {
+            this.overlays.set(key, filtered);
+        }
+    }
+
+    // Rebuild all path edge overlays
+    updateAllPathEdgeOverlays() {
+        // Clear existing path edge overlays
+        for (const [key, overlayList] of this.overlays.entries()) {
+            const filtered = overlayList.filter(o => !this.pathEdgeOverlaySet.has(o.tileId));
+            if (filtered.length === 0) {
+                this.overlays.delete(key);
+            } else {
+                this.overlays.set(key, filtered);
+            }
+        }
+
+        // Re-add path edge overlays for all tracked path tiles
+        for (const key of this.pathTiles) {
+            const [x, y] = key.split(',').map(Number);
+            this.updatePathEdgeOverlays(x, y);
         }
     }
 }

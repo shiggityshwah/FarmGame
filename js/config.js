@@ -67,6 +67,11 @@ export const CONFIG = {
         waypointThreshold: 2        // pixels - distance to consider waypoint reached
     },
 
+    // === PATH SYSTEM ===
+    path: {
+        speedMultiplier: 1.5        // 1.5x speed on path tiles (pathfinding cost derived as 1/speedMultiplier)
+    },
+
     // === RESOURCE FADE ===
     resourceFade: {
         duration: 500               // ms for resources to fade out after depletion
@@ -133,7 +138,12 @@ export const CONFIG = {
     // Common tiles used for game logic
     tiles: {
         hoedGround: [67, 449, 457, 458, 459, 521, 522],
-        holeOverlay: 1138
+        holeOverlay: 1138,
+        path: [482, 490, 491, 554, 555],
+        pathEdgeOverlays: {
+            'N': 550, 'E': 487, 'S': 485, 'W': 548,
+            'N+E': 486, 'N+W': 546, 'E+S': 483, 'W+S': 484
+        }
     },
 
     // === PATHFINDING ===
@@ -156,6 +166,15 @@ export function getRandomDirtTile() {
 
     if (Math.random() < 0.8) {
         return common[Math.floor(Math.random() * common.length)];
+    }
+    return rare[Math.floor(Math.random() * rare.length)];
+}
+
+// Path tile selection helper - 482 is most common
+export function getRandomPathTile() {
+    const rare = [490, 491, 554, 555];
+    if (Math.random() < 0.6) {
+        return 482;
     }
     return rare[Math.floor(Math.random() * rare.length)];
 }
