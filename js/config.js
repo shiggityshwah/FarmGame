@@ -148,7 +148,7 @@ export const CONFIG = {
 
     // === PATHFINDING ===
     pathfinding: {
-        maxIterations: 1000         // prevent infinite loops
+        maxIterations: 5000         // prevent infinite loops (increased for larger grids with path tiles)
     },
 
     // === FOREST POCKETS ===

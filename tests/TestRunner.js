@@ -184,6 +184,15 @@ export function expect(actual) {
             }
         },
 
+        toBeCloseTo(expected, precision = 2) {
+            const power = Math.pow(10, precision);
+            const actualRounded = Math.round(actual * power) / power;
+            const expectedRounded = Math.round(expected * power) / power;
+            if (actualRounded !== expectedRounded) {
+                throw new AssertionError(`Expected ${actual} to be close to ${expected} (precision: ${precision})`);
+            }
+        },
+
         toContain(item) {
             if (Array.isArray(actual)) {
                 if (!actual.includes(item)) {

@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<map version="1.10" tiledversion="1.11.2" orientation="orthogonal" renderorder="right-down" width="10" height="10" tilewidth="16" tileheight="16" infinite="0" nextlayerid="9" nextobjectid="14">
+<map version="1.10" tiledversion="1.11.2" orientation="orthogonal" renderorder="right-down" width="10" height="10" tilewidth="16" tileheight="16" infinite="0" nextlayerid="9" nextobjectid="17">
  <editorsettings>
   <export target="home.csv" format="csv"/>
  </editorsettings>
@@ -34,16 +34,16 @@
  </layer>
  <layer id="3" name="Buildings (Base)" width="10" height="10">
   <data encoding="csv">
-107,170,170,170,170,170,170,170,170,106,
-233,0,0,0,0,0,0,0,0,233,
-233,0,0,0,0,0,0,0,0,233,
-233,0,0,0,0,0,0,0,0,233,
-233,2773,2774,2775,0,0,0,0,0,233,
-233,2837,2838,2839,0,0,0,0,0,233,
-233,2960,2840,2840,909,2962,2960,909,2962,233,
-233,0,0,0,0,0,0,0,0,233,
-233,0,95,0,0,0,0,0,287,233,
-104,168,170,171,0,0,167,168,168,103
+0,0,0,0,0,0,0,0,0,0,
+0,0,0,0,0,0,0,0,0,0,
+0,0,0,0,0,0,0,0,0,0,
+0,0,0,0,0,0,0,0,0,0,
+0,2773,2774,2775,0,0,0,0,0,0,
+0,2837,2838,2839,0,0,0,0,0,0,
+0,2960,2840,2840,909,2962,2960,909,2962,0,
+0,0,0,0,0,0,0,0,0,0,
+0,0,95,0,0,0,0,0,287,0,
+0,0,0,0,0,0,0,0,0,0
 </data>
  </layer>
  <layer id="8" name="Buildings (Detail)" width="10" height="10">
@@ -87,10 +87,8 @@
   </object>
  </objectgroup>
  <objectgroup id="6" name="Collision">
-  <object id="7" x="4.85281" y="1.99822" width="150.152" height="99.0544"/>
-  <object id="8" x="5.42373" y="102.765" width="5.13827" height="53.0955"/>
-  <object id="9" x="149.295" y="103.336" width="4.85281" height="52.5245"/>
-  <object id="10" x="11.1329" y="145.87" width="47.3863" height="9.99108"/>
-  <object id="11" x="101.053" y="145.299" width="47.3863" height="10.8475"/>
+  <object id="14" x="25.9475" y="58.4531" width="59.0234" height="53.0355"/>
+  <object id="15" x="105.501" y="59.0234" width="28.2286" height="53.3207"/>
+  <object id="16" x="86.1114" y="104.645" width="19.3893" height="7.12843"/>
  </objectgroup>
 </map>

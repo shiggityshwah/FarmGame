@@ -180,7 +180,7 @@ export class Pathfinder {
         openSet.push(startNode);
 
         let iterations = 0;
-        const maxIterations = 1000; // Prevent infinite loops
+        const maxIterations = CONFIG.pathfinding.maxIterations;
 
         while (!openSet.isEmpty() && iterations < maxIterations) {
             iterations++;

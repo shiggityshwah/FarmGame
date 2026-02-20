@@ -14,14 +14,15 @@ Open `index.html` directly in a web browser. No build step required. Refresh bro
 
 ### Core Systems (js/)
 
-- **config.js** - Centralized game configuration constants (player stats, enemy stats, camera, tiles). Import CONFIG object to access values
+- **config.js** - Centralized game configuration constants (player stats, enemy stats, camera, tiles, path system, goblin stats). Import CONFIG object to access values
 - **main.js** - Entry point. DOMContentLoaded initialization of Game and CharacterCustomizer with error handling
 - **Game.js** - Main engine class. Manages game loop (update/render via requestAnimationFrame), initializes all subsystems, handles character loading, movement, and combat
 - **Camera.js** - Pan/zoom camera with world-to-screen coordinate conversion. Zoom range: 0.5x-4x
 - **InputManager.js** - Unified input handling for keyboard (WASD/arrows), mouse (drag/wheel/click), and touch (drag/pinch/tap). Supports drag callbacks and panning toggle
-- **TilemapRenderer.js** - Loads CSV tilemap and renders visible tiles from tileset PNG (16px tiles, 64x64 grid = 4096 tiles). Supports runtime tile modification via setTileAt()
+- **TilemapRenderer.js** - Loads CSV tilemap and renders visible tiles from tileset PNG (16px tiles, 64x64 grid = 4096 tiles). Supports runtime tile modification via setTileAt(). Renders multi-layer TMX maps (home, store, new house ground/roof layers)
 - **SpriteAnimator.js** - Horizontal strip sprite animation with configurable FPS (default 8 FPS). Supports non-looping animations with completion callbacks
 - **CharacterCustomizer.js** - UI panel for hair style and animation selection
+- **Logger.js** - Structured logging with configurable log level (`CONFIG.debug.logLevel`). Use `Logger.create('ModuleName')` per module
 
 ### Inventory & UI Systems (js/)
 
@@ -30,6 +31,7 @@ Open `index.html` directly in a web browser. No build step required. Refresh bro
   - **Storage Menu**: Display inventory items grouped by category with tile icons
   - **Crafting Menu**: Purchase upgrades (Efficient Hoe, Sharp Axe, Reinforced Pickaxe, Vitality Boost)
   - **Shop Menu**: Buy seeds and sell crops/flowers for gold
+- **JobQueueUI.js** - Overlay panel showing queued jobs per worker (Human, Goblin, Shared). Displays active/queued jobs with cancel buttons. Idle jobs shown with "Idle" badge and distinct styling
 
 ### Farming Systems (js/)
 
@@ -54,9 +56,36 @@ Open `index.html` directly in a web browser. No build step required. Refresh bro
 
 - **Toolbar.js** - Bottom toolbar with tool icons extracted from tileset at 400% scale. Handles tool selection and cursor changes
 - **TileSelector.js** - Click/drag tile selection with rectangle highlight. Validates tiles against tool acceptability rules and resource occupancy
-- **JobManager.js** - Job queue for character tasks. Coordinates walk → animate → apply effect → next tile sequence
-- **Pathfinder.js** - A* pathfinding with MinHeap for O(n log n) performance. Finds paths avoiding obstacles (water, rocks). Returns null if no path found (no longer falls back to direct path through obstacles)
-- **TileOverlayManager.js** - Manages sprite overlays on tiles (holes from digging)
+- **JobManager.js** - Multi-queue job system. Queues: `all` (shared), `human`, `goblin`. Each worker tracks current job independently. Supports `isIdleJob` flag for idle-sourced jobs. Methods: `addJob()`, `addIdleJob()`, `cancelJob()`, `getAllJobsByQueue()`
+- **Pathfinder.js** - A* pathfinding with MinHeap for O(n log n) performance. Path tiles have 1.5x speed boost (lower cost). Finds paths avoiding obstacles. Returns null if no path found
+- **TileOverlayManager.js** - Manages sprite overlays on tiles (holes from digging, path edge sprites)
+- **IdleManager.js** - Autonomous idle activity system for the human character. State machine: `inactive → waiting (3-5s) → active`. Evaluates harvest, water, flower-pick, and weed-clear tasks using actual A* path lengths (not just Euclidean distance). Prefers tasks with path length ≤ 35 tiles. Backs off exponentially on failure. Returns home when nothing to do
+
+### Map Layout (home map, 20×43 tiles)
+
+- **y 0–9**: Store (10×10) at offsetX=2
+- **y 10**: E-W path (full width)
+- **y 11–20**: Former home area (10×10) at offsetX=0
+- **y 21–26**: Gap (6 tiles of grass)
+- **y 27–32**: New house/house.tmx (6×6) at offsetX=12
+- **y 33–42**: Farmable grass area
+
+### New House (house.tmx)
+
+- 6×6 tile footprint placed at world tile (12, 27)
+- Layers: `Ground`, `Ground Detail`, `Wall`, `Wall Detail` (rendered above path overlays via `renderGroundLayers()`), `Roof`, `Roof Detail` (rendered above character, hidden when player inside)
+- Roof hidden when player tile is within x:12–17, y:27–32 (`isPlayerInsideNewHouse`)
+- Door at local tile (1,4) in Roof layer; path endpoint = world (13,32)
+- Player spawn = world tile (13,30)
+- Chimney smoke SpriteAnimator at world tile (14,28): `chimneysmoke_02_strip30.png`, 30 frames @ 12fps. Only shown when player is outside
+
+### Path Routing
+
+- Path tiles IDs: `[482, 490, 491, 554, 555]`. Speed multiplier: 1.5x
+- E-W path at y=10 connects store ↔ rest of map
+- N-S connector at x=11 from y=10 to y=21, then E-W at y=21 (x=5→11)
+- South approach to new house: S@x=5 y=22→36, E@y=36 x=6→13, N@x=13 y=35→32
+- 3-tile exclusion zone around new house (except direct approach from south at x=13)
 
 ### Game.js Combat Properties
 
@@ -70,7 +99,18 @@ animationSession          // For stale callback invalidation
 ```
 
 ### Rendering Order
-1. Canvas clear → 2. Tilemap → 3. Tile overlays → 4. Crops → 5. Flowers/Weeds → 6. Trees → 7. Ore veins → 8. Tile selection highlight → 9. Characters → 10. Enemies → 11. Effects → 12. UI
+1. Canvas clear
+2. `tilemap.render()` — base tiles + store/home building layers (Ground, Decor, Buildings Base/Detail)
+3. `overlayManager.renderEdgeOverlays()` — path edge sprites
+4. Forest tree backgrounds
+5. `overlayManager.renderNonEdgeOverlays()` — holes
+6. `tilemap.renderGroundLayers()` — new house floor/walls (ABOVE overlays)
+7. Depth-sorted entities (crops, flowers/weeds, trees, ore veins, tile highlight, characters, enemies, effects)
+8. Forest foregrounds
+9. `tilemap.renderUpperLayers()` — store/home upper building layers
+10. `tilemap.renderRoofLayers()` — new house roof (hidden when player inside)
+11. Chimney smoke (when player outside)
+12. UI
 
 ### Coordinate Systems
 - World coordinates (pixels) ↔ Tile coordinates (grid positions) ↔ Screen coordinates (canvas viewport)
@@ -80,10 +120,13 @@ animationSession          // For stale callback invalidation
 
 - **Characters/Human/** - Player character with 3 layers: `base_[anim].png`, `[style]hair_[anim].png`, `tools_[anim].png`. 6 hair styles, 20 animations
 - **Characters/Skeleton/PNG/** - Enemy character with animations: idle, walk, attack, hurt, death, jump
-- **Characters/Goblin/PNG/** - Pre-made NPC with full 20 animation set
+- **Characters/Goblin/PNG/** - NPC with full 20 animation set (some multi-row sprites; see GOBLIN_ANIMATION_DATA in Game.js)
 - **Elements/Crops/** - Crop growth stage sprites
 - **Tileset/** - `spr_tileset_sunnysideworld_16px.png` (1024x1024), `testing.csv` (main tilemap)
 - **Tileset/store*.csv** - Store map layers: `store_Ground.csv`, `store_Buildings (Upper).csv`, `store_Decor.csv`
+- **Tileset/house.tmx** - New house map (6×6). Layers: Ground, Ground Detail, Wall, Wall Detail, Roof, Roof Detail. Exported as `house_[Layer].csv`
+- **Tileset/home.tmx** - Home map. Layers: Ground, Decor, Buildings (Base/Detail/Upper)
+- **Elements/chimney/** - `chimneysmoke_02_strip30.png` (300×30, 30 frames)
 - **UI/** - Interface elements
 
 ## Configuration Constants
@@ -92,25 +135,34 @@ animationSession          // For stale callback invalidation
 
 All major game balance values are centralized in `config.js`. Import with:
 ```javascript
-import { CONFIG, getRandomDirtTile } from './config.js';
+import { CONFIG, getRandomDirtTile, getRandomPathTile } from './config.js';
 ```
 
-**CONFIG.player** - Player stats (maxHealth, damage, moveSpeed, visionRange, attackRange, attackCooldown, damageFlashDuration)
+**CONFIG.player** - Player stats (maxHealth, damage, moveSpeed, visionRange, attackRange, attackCooldown, damageFlashDuration, healthRegen, healthRegenDelay)
 
-**CONFIG.enemy.skeleton** - Skeleton enemy stats (maxHealth, damage, moveSpeed, visionRange, attackRange, attackCooldown, fadeDuration)
+**CONFIG.goblin** - Goblin NPC stats (maxHealth, healthRegen, healthRegenDelay)
+
+**CONFIG.enemy.skeleton** - Skeleton enemy stats (maxHealth, damage, moveSpeed, visionRange, attackRange, attackCooldown, fadeDuration, pathfindCooldown, damageFlashDuration)
 
 **CONFIG.camera** - Zoom limits (minZoom, maxZoom), pan speed
 
-**CONFIG.tiles** - Common tile IDs (hoedGround array, holeOverlay)
+**CONFIG.path** - `speedMultiplier: 1.5` — speed boost on path tiles
+
+**CONFIG.tiles** - Common tile IDs (hoedGround array, holeOverlay, path IDs, pathEdgeOverlays directions)
 
 **CONFIG.pathfinding** - maxIterations to prevent infinite loops
 
+**CONFIG.debug** - logLevel, showFps, showPathfinding
+
 **Helper functions**:
 - `getRandomDirtTile()` - Returns random dirt tile ID (80% common, 20% rare variants)
+- `getRandomPathTile()` - Returns random path tile ID (60% common tile 482, 40% variants)
 
 ### Other Configuration Locations
 
-**Game.js ANIMATION_DATA** - Frame counts per animation (e.g., WAITING: 9, WALKING: 8, HAMMERING: 23)
+**Game.js ANIMATION_DATA** - Frame counts per animation for human (e.g., WAITING: 9, WALKING: 8, HAMMERING: 23, DOING: 8, WATERING: 5)
+
+**Game.js GOBLIN_ANIMATION_DATA** - Frame counts + framesPerRow for goblin (handles multi-row sprites)
 
 **Crop.js** - Growth timing (GROWTH_TIME: 3000ms), crop types (11 types with tile offsets), tile ID ranges (691-1139)
 
@@ -118,11 +170,14 @@ import { CONFIG, getRandomDirtTile } from './config.js';
 
 **UIManager.js UPGRADES** - Crafting upgrades with costs and effects (tool speed multipliers, health boost)
 
+**IdleManager.js** - Activity weights (harvest:30, water:30, flower:20, weed:20), MAX_IDLE_DISTANCE: 20, MAX_IDLE_PATH_LENGTH: 35, PATH_CHECK_CANDIDATES: 3, NEAR_HOUSE_RADIUS: 15
+
 ## Known Asset Quirks
 
 Animation filenames have inconsistencies the code handles:
 - "HAMMERING" → filename uses "hamering" (typo in assets)
 - "WALKING" → filename uses "walk" (shortened)
+- Goblin CASTING and DIG are multi-row sprite sheets (framesPerRow in GOBLIN_ANIMATION_DATA)
 
 ## Tool System
 
@@ -136,6 +191,7 @@ Animation filenames have inconsistencies the code handles:
 - **Axe**: Chops trees. Each hit yields 1 wood. Uses AXE animation
 - **Pickaxe**: Mines ore veins. Each hit yields 1 ore. Uses AXE animation
 - **Sword**: Attacks enemies. Uses ATTACK animation. Damage based on playerDamage stat
+- **Watering Can** (idle only): Waters un-watered crops. Uses WATERING animation
 
 **Character behavior**: Character walks to an adjacent tile, faces the work tile, then performs the tool animation. Sprite flips horizontally when facing left.
 
@@ -144,6 +200,17 @@ Animation filenames have inconsistencies the code handles:
 **Adding a new tool action**: In JobManager.js applyToolEffect(), add case for tool.id
 
 **Acceptable tiles**: Defined in TileSelector.js ACCEPTABLE_TILES object per tool. Also checks for resource occupancy (trees, ore, enemies)
+
+## Idle System
+
+The `IdleManager` gives the human character autonomous behavior when no player jobs are queued and not in combat:
+
+1. **Wait phase**: 3–5 seconds after becoming idle before acting
+2. **Evaluate**: Scans for harvestable crops, unwanted crops, flowers, weeds — picks closest by actual A* path length
+3. **Act**: Submits job via `jobManager.addIdleJob()` (jobs tagged `isIdleJob: true`)
+4. **Backoff**: Exponential backoff (up to 15s) on repeated fast-failure
+5. **Return home**: Goes to spawn area when nothing else to do
+6. **Preemption**: Any player-submitted job immediately cancels the idle job
 
 ## Extending the Game
 
@@ -165,6 +232,8 @@ Animation filenames have inconsistencies the code handles:
 
 **New inventory item**: Add to Inventory.js with category and update UIManager.js for display
 
+**New idle activity**: Add weight entry to ACTIVITY_WEIGHTS in IdleManager.js, add case to `_evaluateActivity()` and `_createJobForEvaluation()`
+
 ## Important Implementation Notes
 
 ### Error Handling
@@ -180,3 +249,9 @@ Animation filenames have inconsistencies the code handles:
 ### Data Structures
 - `engagedEnemies` in Game.js is a Set (not Array) for O(1) lookup/add/delete
 - Pathfinder uses MinHeap for O(log n) node extraction instead of array sort
+- JobManager uses `workers` Map (workerId → state) and `queues` object (all/human/goblin)
+
+### Logging
+- Use `Logger.create('ModuleName')` at the top of each file
+- Log level configured via `CONFIG.debug.logLevel` ('debug', 'info', 'warn', 'error', 'none')
+- Prefer `log.debug()` for frequent/verbose output, `log.info()` for significant events

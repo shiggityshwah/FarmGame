@@ -35,6 +35,14 @@ export class TilemapRenderer {
         // Interactable rectangles from TMX object layer
         this.interactables = [];
 
+        // New house (house.tmx) - 6x6 building with indoor/outdoor roof toggle
+        this.groundLayers = [];     // Ground/wall layers rendered AFTER path edge overlays (above path)
+        this.roofLayers = [];       // Rendered above character, hidden when player is inside
+        this.newHouseOffsetX = 0;
+        this.newHouseOffsetY = 0;
+        this.newHouseWidth = 0;
+        this.newHouseHeight = 0;
+
         // Map type tracking - 'procedural' for generated maps, 'home' for premade maps
         this.mapType = null;
     }
@@ -115,40 +123,58 @@ export class TilemapRenderer {
             // Calculate tiles per row based on image width and padded tile size
             this.tilesPerRow = Math.floor(this.tilesetImage.width / this.paddedTileSize);
 
-            // Load and parse both TMX files
-            const [homeTmxResponse, storeTmxResponse] = await Promise.all([
+            // Load and parse all three TMX files
+            const [homeTmxResponse, storeTmxResponse, houseTmxResponse] = await Promise.all([
                 fetch('Tileset/home.tmx'),
-                fetch('Tileset/store.tmx')
+                fetch('Tileset/store.tmx'),
+                fetch('Tileset/house.tmx')
             ]);
             const homeTmxText = await homeTmxResponse.text();
             const storeTmxText = await storeTmxResponse.text();
+            const houseTmxText = await houseTmxResponse.text();
             const homeData = this.parseTmx(homeTmxText);
             const storeData = this.parseTmx(storeTmxText);
+            const houseData = this.parseTmx(houseTmxText);
 
             // Store dimensions (both are 10x10)
             this.storeWidth = storeData.width;
             this.storeHeight = storeData.height;
 
-            // House dimensions from TMX
+            // Former home dimensions from TMX
             this.houseWidth = homeData.width;
             this.houseHeight = homeData.height;
 
-            // Layout: shop above, house below on west side, grass below both
-            // E-W path row separates shop and house
+            // New house (house.tmx) dimensions
+            this.newHouseWidth = houseData.width;   // 6
+            this.newHouseHeight = houseData.height; // 6
+
+            // Layout: shop above, former home below on west side, new house further SW,
+            // grass/farm below new house.
+            // E-W path row separates shop and former home.
             const pathRowHeight = 1;
+            const newHouseGap = 6;  // 6-tile gap between former home and new house
             const grassHeight = 10;
             this.mapWidth = 20;
-            this.mapHeight = this.storeHeight + pathRowHeight + this.houseHeight + grassHeight; // 31
+            // Total: store(10) + path(1) + formerHome(10) + gap(6) + newHouse(6) + grass(10) = 43
+            this.mapHeight = this.storeHeight + pathRowHeight + this.houseHeight +
+                             newHouseGap + this.newHouseHeight + grassHeight;
 
             // Shop above, slightly east of house
             this.storeOffsetX = 2;
             this.storeOffsetY = 0;
 
-            // House below shop + path row, on west side
+            // Former home below shop + path row, on west side
             this.houseOffsetX = 0;
             this.houseOffsetY = this.storeHeight + pathRowHeight; // 11
 
-            // Generate base layer (Ground layers from both TMX + grass below)
+            // New house: southwest of former home (lower X center, further south)
+            // 12 tiles right of map west edge, 6-tile gap below former home bottom (y=20)
+            this.newHouseOffsetX = 12;
+            this.newHouseOffsetY = this.houseOffsetY + this.houseHeight + newHouseGap; // 27
+
+            // Generate base layer (Ground layers from store & former home + grass elsewhere)
+            // NOTE: New house Ground is intentionally kept OUT of the base layer so it can
+            // render above path tiles and path edge overlays via groundLayers instead.
             this.tileData = [];
             const commonGrassTiles = [66, 129, 130, 131, 192, 193, 194, 195, 197, 199, 257, 258];
             const homeGroundLayer = homeData.tileLayers.find(l => l.name === 'Ground');
@@ -166,13 +192,14 @@ export class TilemapRenderer {
                         const localY = y - this.storeOffsetY;
                         tile = storeGroundLayer.data[localY][localX];
                     }
-                    // Check if in home/house area (below, west side)
+                    // Check if in former home area (below shop, west side)
                     else if (x >= this.houseOffsetX && x < this.houseOffsetX + this.houseWidth &&
                              y >= this.houseOffsetY && y < this.houseOffsetY + this.houseHeight && homeGroundLayer) {
                         const localX = x - this.houseOffsetX;
                         const localY = y - this.houseOffsetY;
                         tile = homeGroundLayer.data[localY][localX];
                     }
+                    // New house footprint: leave as grass — Ground layer renders via groundLayers above path tiles
 
                     if (tile >= 0) {
                         row.push(tile);
@@ -185,11 +212,10 @@ export class TilemapRenderer {
                 this.tileData.push(row);
             }
 
-            // Store layers rendered BELOW character: Decor, Buildings (Base), Buildings (Detail)
-            // Include layers from both home and store
+            // Layers rendered BELOW character: Decor, Buildings (Base/Detail) for store & former home.
             this.layers = [];
 
-            // Helper to add layer with offset
+            // Helper to add standard TMX layers (store/home style) with offset
             const addLayersFromTmx = (tmxData, offsetX, offsetY) => {
                 const decorLayer = tmxData.tileLayers.find(l => l.name === 'Decor');
                 const baseBuildingsLayer = tmxData.tileLayers.find(l => l.name === 'Buildings (Base)');
@@ -206,12 +232,22 @@ export class TilemapRenderer {
                 }
             };
 
-            // Add store layers (left side)
+            // Add store and former home layers
             addLayersFromTmx(storeData, this.storeOffsetX, this.storeOffsetY);
-            // Add home layers (right side)
             addLayersFromTmx(homeData, this.houseOffsetX, this.houseOffsetY);
 
-            // Store layers rendered ABOVE character: Buildings (Upper)
+            // New house ground/floor layers: rendered AFTER path edge overlays (via renderGroundLayers)
+            // Order matters: Ground first (bottom), then Ground Detail, Wall, Wall Detail on top.
+            this.groundLayers = [];
+            for (const name of ['Ground', 'Ground Detail', 'Wall', 'Wall Detail']) {
+                const layer = houseData.tileLayers.find(l => l.name === name);
+                if (layer) {
+                    this.groundLayers.push({ data: layer.data, offsetX: this.newHouseOffsetX, offsetY: this.newHouseOffsetY });
+                }
+            }
+
+            // Layers rendered ABOVE character: Buildings (Upper) for store/home;
+            // Roof and Roof Detail for new house (conditionally hidden when player is inside).
             this.upperLayers = [];
 
             const addUpperLayersFromTmx = (tmxData, offsetX, offsetY) => {
@@ -221,15 +257,21 @@ export class TilemapRenderer {
                 }
             };
 
-            // Add store upper layers
             addUpperLayersFromTmx(storeData, this.storeOffsetX, this.storeOffsetY);
-            // Add home upper layers
             addUpperLayersFromTmx(homeData, this.houseOffsetX, this.houseOffsetY);
 
-            // Combine collision rectangles from both TMX files
+            // New house roof layers (hidden when player is inside)
+            this.roofLayers = [];
+            for (const name of ['Roof', 'Roof Detail']) {
+                const layer = houseData.tileLayers.find(l => l.name === name);
+                if (layer) {
+                    this.roofLayers.push({ data: layer.data, offsetX: this.newHouseOffsetX, offsetY: this.newHouseOffsetY });
+                }
+            }
+
+            // Combine collision rectangles from all TMX files
             this.collisionRects = [];
 
-            // Add store collision rectangles with offset
             for (const rect of storeData.collisionRects) {
                 this.collisionRects.push({
                     x: rect.x + this.storeOffsetX * this.tileSize,
@@ -239,7 +281,6 @@ export class TilemapRenderer {
                 });
             }
 
-            // Add home collision rectangles with offset
             for (const rect of homeData.collisionRects) {
                 this.collisionRects.push({
                     x: rect.x + this.houseOffsetX * this.tileSize,
@@ -249,12 +290,30 @@ export class TilemapRenderer {
                 });
             }
 
+            // New house: use tile-based collision from the Wall layer instead of the TMX
+            // collision objects, which are sub-pixel thin (~2-4px) and never hit tile centers.
+            // One full 16×16 rect per non-empty Wall tile ensures isBoundary() works correctly.
+            const houseWallLayer = houseData.tileLayers.find(l => l.name === 'Wall');
+            if (houseWallLayer) {
+                for (let localY = 0; localY < this.newHouseHeight; localY++) {
+                    for (let localX = 0; localX < this.newHouseWidth; localX++) {
+                        if (houseWallLayer.data[localY][localX] >= 0) {
+                            this.collisionRects.push({
+                                x: (this.newHouseOffsetX + localX) * this.tileSize,
+                                y: (this.newHouseOffsetY + localY) * this.tileSize,
+                                width: this.tileSize,
+                                height: this.tileSize
+                            });
+                        }
+                    }
+                }
+            }
+
             log.debug(`Loaded ${this.collisionRects.length} collision rectangles`);
 
-            // Combine interactable objects from both TMX files
+            // Combine interactable objects from all TMX files
             this.interactables = [];
 
-            // Add store interactables with offset
             for (const interactable of storeData.interactables) {
                 this.interactables.push({
                     x: interactable.x + this.storeOffsetX * this.tileSize,
@@ -265,11 +324,20 @@ export class TilemapRenderer {
                 });
             }
 
-            // Add home interactables with offset
             for (const interactable of homeData.interactables) {
                 this.interactables.push({
                     x: interactable.x + this.houseOffsetX * this.tileSize,
                     y: interactable.y + this.houseOffsetY * this.tileSize,
+                    width: interactable.width,
+                    height: interactable.height,
+                    action: interactable.action
+                });
+            }
+
+            for (const interactable of houseData.interactables) {
+                this.interactables.push({
+                    x: interactable.x + this.newHouseOffsetX * this.tileSize,
+                    y: interactable.y + this.newHouseOffsetY * this.tileSize,
                     width: interactable.width,
                     height: interactable.height,
                     action: interactable.action
@@ -282,7 +350,8 @@ export class TilemapRenderer {
             this.mapType = 'home';
             log.debug(`Combined map generated: ${this.mapWidth}x${this.mapHeight} tiles`);
             log.debug(`Store area: ${this.storeWidth}x${this.storeHeight} tiles at (${this.storeOffsetX}, ${this.storeOffsetY})`);
-            log.debug(`House area: ${this.houseWidth}x${this.houseHeight} tiles at (${this.houseOffsetX}, ${this.houseOffsetY})`);
+            log.debug(`Former home area: ${this.houseWidth}x${this.houseHeight} tiles at (${this.houseOffsetX}, ${this.houseOffsetY})`);
+            log.debug(`New house area: ${this.newHouseWidth}x${this.newHouseHeight} tiles at (${this.newHouseOffsetX}, ${this.newHouseOffsetY})`);
             log.debug(`Tileset: ${this.tilesPerRow} tiles per row`);
         } catch (error) {
             log.error('Failed to generate home map:', error);
@@ -559,6 +628,57 @@ export class TilemapRenderer {
         }
     }
 
+    // Render new house ground/floor layers (called AFTER path edge overlays so they appear on top)
+    renderGroundLayers(ctx, camera) {
+        if (!this.loaded || this.groundLayers.length === 0) return;
+
+        const bounds = camera.getVisibleBounds();
+        const startCol = Math.max(0, Math.floor(bounds.left / this.tileSize));
+        const endCol = Math.min(this.mapWidth - 1, Math.ceil(bounds.right / this.tileSize));
+        const startRow = Math.max(0, Math.floor(bounds.top / this.tileSize));
+        const endRow = Math.min(this.mapHeight - 1, Math.ceil(bounds.bottom / this.tileSize));
+
+        const overlap = 0.5;
+        for (const layer of this.groundLayers) {
+            this.renderLayer(ctx, layer, startCol, endCol, startRow, endRow, overlap);
+        }
+    }
+
+    // Render new house roof layers (above characters, call only when player is outside)
+    renderRoofLayers(ctx, camera) {
+        if (!this.loaded || this.roofLayers.length === 0) return;
+
+        const bounds = camera.getVisibleBounds();
+        const startCol = Math.max(0, Math.floor(bounds.left / this.tileSize));
+        const endCol = Math.min(this.mapWidth - 1, Math.ceil(bounds.right / this.tileSize));
+        const startRow = Math.max(0, Math.floor(bounds.top / this.tileSize));
+        const endRow = Math.min(this.mapHeight - 1, Math.ceil(bounds.bottom / this.tileSize));
+
+        const overlap = 0.5;
+        for (const layer of this.roofLayers) {
+            this.renderLayer(ctx, layer, startCol, endCol, startRow, endRow, overlap);
+        }
+    }
+
+    // Returns true when the player's world position is inside the new house footprint
+    isPlayerInsideNewHouse(worldX, worldY) {
+        const tileX = Math.floor(worldX / this.tileSize);
+        const tileY = Math.floor(worldY / this.tileSize);
+        return tileX >= this.newHouseOffsetX && tileX < this.newHouseOffsetX + this.newHouseWidth &&
+               tileY >= this.newHouseOffsetY && tileY < this.newHouseOffsetY + this.newHouseHeight;
+    }
+
+    // Returns true if the tile is occupied by a custom tilemap (e.g. house.tmx)
+    isCustomTilemapTile(tileX, tileY) {
+        if (this.newHouseWidth > 0 && this.newHouseHeight > 0) {
+            if (tileX >= this.newHouseOffsetX && tileX < this.newHouseOffsetX + this.newHouseWidth &&
+                tileY >= this.newHouseOffsetY && tileY < this.newHouseOffsetY + this.newHouseHeight) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     getWorldWidth() {
         return this.mapWidth * this.tileSize;
     }
@@ -574,11 +694,12 @@ export class TilemapRenderer {
         return { x: centerX, y: centerY };
     }
 
-    // Get the spawn position (bottom center of house)
+    // Get the spawn/idle position: tile just above the new house door
     getPlayerSpawnPosition() {
-        // Bottom center of the house area (last row of house, center column)
-        const spawnTileX = this.houseOffsetX + Math.floor(this.houseWidth / 2);
-        const spawnTileY = this.houseOffsetY + this.houseHeight - 2; // Second to last row inside house
+        // Door is at local (1, 4) in house.tmx Roof layer.
+        // One tile above the door = local (1, 3) = the indoor tile in front of the door.
+        const spawnTileX = this.newHouseOffsetX + 1; // x=13 with newHouseOffsetX=12
+        const spawnTileY = this.newHouseOffsetY + 3; // y=30 (local row 3, one above door at row 4)
 
         return {
             x: spawnTileX * this.tileSize + this.tileSize / 2,
@@ -589,8 +710,8 @@ export class TilemapRenderer {
     }
 
     getRandomTilePosition() {
-        // Only return positions in the grass area (below the house)
-        const grassStartY = this.houseOffsetY + this.houseHeight;
+        // Only return positions in the grass area (below the new house)
+        const grassStartY = this.newHouseOffsetY + this.newHouseHeight;
         const x = Math.floor(Math.random() * this.mapWidth);
         const y = grassStartY + Math.floor(Math.random() * (this.mapHeight - grassStartY));
 
@@ -603,7 +724,7 @@ export class TilemapRenderer {
     }
 
     // Check if a tile is in the procedural/farmable area (grass below buildings)
-    // For 'home' maps, this is the grass area below the house/store
+    // For 'home' maps, this is the grass area below the new house
     // For 'procedural' maps, all tiles are farmable
     isInFarmableArea(tileX, tileY) {
         if (this.mapType === 'procedural') {
@@ -612,8 +733,8 @@ export class TilemapRenderer {
         }
 
         if (this.mapType === 'home') {
-            // Only the grass area below the buildings is farmable
-            const grassStartY = this.houseOffsetY + this.houseHeight;
+            // Only the grass area below the new house is farmable
+            const grassStartY = this.newHouseOffsetY + this.newHouseHeight;
             return tileY >= grassStartY;
         }
 

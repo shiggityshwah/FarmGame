@@ -85,15 +85,17 @@ export class JobQueueUI {
 
     createJobElement(job, isActive) {
         const el = document.createElement('div');
-        el.className = `job-item ${isActive ? 'active' : ''}`;
+        const isIdle = !!job.isIdleJob;
+        el.className = `job-item ${isActive ? 'active' : ''} ${isIdle ? 'idle-job' : ''}`.trim();
 
         const remaining = job.tiles ? (job.tiles.length - job.currentTileIndex) : 0;
         const statusText = isActive ? this.getStatusText(job.status) : 'Queued';
+        const nameLabel = isIdle ? `<span class="idle-badge">Idle</span> ${job.tool.name}` : job.tool.name;
 
         el.innerHTML = `
             <div class="job-icon" style="background-position: ${this.getTilePosition(job.tool.tileId)}"></div>
             <div class="job-info">
-                <div class="job-name">${job.tool.name}</div>
+                <div class="job-name">${nameLabel}</div>
                 <div class="job-status">${statusText} (${remaining} tiles)</div>
             </div>
             <button class="job-cancel" data-job-id="${job.id}" title="Cancel job">&times;</button>

@@ -19,6 +19,7 @@ import { ORE_TYPES } from './OreVein.js';
 import { CONFIG, getRandomPathTile } from './config.js';
 import { ForestGenerator } from './ForestGenerator.js';
 import { JobQueueUI } from './JobQueueUI.js';
+import { IdleManager } from './IdleManager.js';
 import { Logger } from './Logger.js';
 
 const log = Logger.create('Game');
@@ -130,6 +131,11 @@ export class Game {
         this.inventory = null;
         this.uiManager = null;
         this.jobQueueUI = null;
+        this.idleManager = null;
+
+        // Chimney smoke animation (rendered above roof when player is outside new house)
+        this.chimneySmoke = null;
+        this.chimneySmokePauseTimer = 0; // seconds remaining in gap between smoke cycles
 
         // Tool animation speed multipliers (modified by upgrades)
         this.toolAnimationMultipliers = {};
@@ -197,8 +203,8 @@ export class Game {
         try {
             log.info('Initializing game...');
 
-            // Initialize camera
-            this.camera = new Camera(this.canvas.width, this.canvas.height);
+            // Initialize camera with CSS display dimensions (not DPR-scaled canvas.width)
+            this.camera = new Camera(window.innerWidth, window.innerHeight);
 
             // Initialize tilemap with home map (house + grass area below)
             this.tilemap = new TilemapRenderer();
@@ -301,6 +307,10 @@ export class Game {
             // Initialize job queue UI panel
             this.jobQueueUI = new JobQueueUI(this);
 
+            // Initialize idle manager (character auto-tasks when queue is empty)
+            this.idleManager = new IdleManager(this);
+            this.idleManager.init();
+
             // Spawn enemies from forest pockets
             await this.spawnForestPocketEnemies();
 
@@ -353,6 +363,20 @@ export class Game {
                 }
             });
 
+            // Initialize chimney smoke animation for the new house (tile 349 = chimney in Roof Detail)
+            // Chimney is at Roof Detail local (2,2) = world (newHouseOffsetX+2, newHouseOffsetY+2).
+            // Smoke renders on the tile ABOVE the chimney: world (newHouseOffsetX+2, newHouseOffsetY+1).
+            {
+                const tileSize = this.tilemap.tileSize;
+                const smokeWorldX = (this.tilemap.newHouseOffsetX + 2) * tileSize + tileSize / 2 - 1;
+                const smokeWorldY = (this.tilemap.newHouseOffsetY + 1) * tileSize + tileSize / 2 - 4;
+                // chimneysmoke_02_strip30.png: 300x30px → 30 frames, each 10x30px
+                this.chimneySmoke = new SpriteAnimator(smokeWorldX, smokeWorldY, 30, 12);
+                await this.chimneySmoke.load('Elements/VFX/Chimney Smoke/chimneysmoke_02_strip30.png');
+                this.chimneySmoke.setLooping(false);
+                this.chimneySmoke.setOnComplete(() => { this.chimneySmokePauseTimer = 2; });
+            }
+
             log.info('Game initialized successfully!');
         } catch (error) {
             log.error('Failed to initialize game:', error);
@@ -368,9 +392,10 @@ export class Game {
         await this.loadHumanSprites();
         log.debug(`Human placed at tile (${spawnPos.tileX}, ${spawnPos.tileY})`);
 
-        // Create Goblin NPC 2 tiles to the right of the human
-        const goblinTileX = spawnPos.tileX + 2;
-        const goblinTileY = spawnPos.tileY;
+        // Create Goblin NPC near the old home (same position as original human spawn)
+        // Anchored to the former home, not the new house, so it doesn't move when spawn changes.
+        const goblinTileX = this.tilemap.houseOffsetX + Math.floor(this.tilemap.houseWidth / 2) + 2;
+        const goblinTileY = this.tilemap.houseOffsetY + this.tilemap.houseHeight - 2;
         const tileSize = this.tilemap.tileSize;
         this.goblinPosition = {
             x: goblinTileX * tileSize + tileSize / 2,
@@ -1271,6 +1296,10 @@ export class Game {
             if (currentTileId !== null && PATH_TILES.has(currentTileId)) {
                 effectiveSpeed *= CONFIG.path.speedMultiplier;
             }
+            // Move at half speed when carrying out an idle task
+            if (this.jobManager?.currentJob?.isIdleJob) {
+                effectiveSpeed *= 0.5;
+            }
             const moveDistance = effectiveSpeed * deltaTime / 1000;
             const ratio = Math.min(moveDistance, distance) / distance;
 
@@ -1392,31 +1421,55 @@ export class Game {
     placePathTilesInMap() {
         this.pathPositions = [];
         const map = this.tilemap;
-        const ewPathY = map.storeOffsetY + map.storeHeight;                        // y=10
+        const ewPathY = map.storeOffsetY + map.storeHeight;                         // y=10
         const houseEastEdge = map.houseOffsetX + map.houseWidth;                    // x=10
         const pathX = houseEastEdge + 1;                                            // x=11
-        const houseCenterX = map.houseOffsetX + Math.floor(map.houseWidth / 2);     // x=5
+        const houseCenterX = map.houseOffsetX + Math.floor(map.houseWidth / 2);    // x=5
         const underHouseY = map.houseOffsetY + map.houseHeight;                     // y=21
+
+        // New house door geometry:
+        // Door tile is at local (1, 4) in the 6x6 house.tmx Roof layer (tile ID 2000).
+        // Tile underneath the door = local (1, 5) = world (newHouseOffsetX+1, newHouseOffsetY+5).
+        const underDoorX = map.newHouseOffsetX + 1;                                 // x=13
+        const underDoorY = map.newHouseOffsetY + map.newHouseHeight - 1;            // y=32 (bottom row)
+
+        // With the house at x=12-17, the south path at x=5 has Chebyshev dx=7 from the house
+        // at all y values — safely outside the 3-tile exclusion zone throughout. No bypass needed.
+        // approachFromY: 3 tiles south of house bottom (y=32) → dy=4 at y=36 (safe, dy>3).
+        const approachFromY = map.newHouseOffsetY + map.newHouseHeight + 3;        // y=36
 
         // 1. E-W path between shop and house (full width, extends to map edges)
         for (let x = 0; x < map.mapWidth; x++) {
             map.setTileAt(x, ewPathY, getRandomPathTile());
             this.pathPositions.push({ x, y: ewPathY });
         }
-        // 2. N-S east-side path (1 tile gap from house east edge, down to under-house)
+        // 2. N-S east-side path (1 tile gap from former home east edge, down to under-home)
         for (let y = ewPathY + 1; y <= underHouseY; y++) {
             map.setTileAt(pathX, y, getRandomPathTile());
             this.pathPositions.push({ x: pathX, y });
         }
-        // 3. E-W connector under house (center to east path)
+        // 3. E-W connector under former home (center to east path)
         for (let x = houseCenterX; x < pathX; x++) {
             map.setTileAt(x, underHouseY, getRandomPathTile());
             this.pathPositions.push({ x, y: underHouseY });
         }
-        // 4. N-S south path (house center to map bottom)
-        for (let y = underHouseY + 1; y < map.mapHeight; y++) {
+        // 4a. S from former home center all the way down to the approach row.
+        //     x=5 is 7 tiles west of house left edge (x=12), always outside the 3-tile zone.
+        for (let y = underHouseY + 1; y <= approachFromY; y++) {
             map.setTileAt(houseCenterX, y, getRandomPathTile());
             this.pathPositions.push({ x: houseCenterX, y });
+        }
+        // 4b. E along approach row from former-home center column to door column.
+        //     At y=36, dy=4 from house bottom — all outside the 3-tile exclusion zone.
+        for (let x = houseCenterX + 1; x <= underDoorX; x++) {
+            map.setTileAt(x, approachFromY, getRandomPathTile());
+            this.pathPositions.push({ x, y: approachFromY });
+        }
+        // 4c. Direct approach N to tile under door (within exclusion zone — allowed exception).
+        //     Approach is from south going north, never from north of the house.
+        for (let y = approachFromY - 1; y >= underDoorY; y--) {
+            map.setTileAt(underDoorX, y, getRandomPathTile());
+            this.pathPositions.push({ x: underDoorX, y });
         }
     }
 
@@ -1483,6 +1536,11 @@ export class Game {
             this.jobManager.update(deltaTime);
         }
 
+        // Update idle manager – triggers auto-tasks when job queue is empty
+        if (this.idleManager) {
+            this.idleManager.update(deltaTime);
+        }
+
         // Update character movement (human)
         this.updateCharacterMovement(deltaTime);
 
@@ -1533,6 +1591,19 @@ export class Game {
             this.forestGenerator.update(deltaTime);
         }
 
+        // Update chimney smoke animation (always runs, rendering is conditional)
+        if (this.chimneySmoke) {
+            if (this.chimneySmokePauseTimer > 0) {
+                this.chimneySmokePauseTimer -= deltaTime / 1000;
+                if (this.chimneySmokePauseTimer <= 0) {
+                    this.chimneySmokePauseTimer = 0;
+                    this.chimneySmoke.resetAnimation();
+                }
+            } else {
+                this.chimneySmoke.update(deltaTime);
+            }
+        }
+
         // Update other character animations (non-enemy NPCs)
         for (const character of this.characters) {
             character.update(deltaTime);
@@ -1572,6 +1643,10 @@ export class Game {
         if (this.overlayManager) {
             this.overlayManager.renderNonEdgeOverlays(this.ctx, this.camera);
         }
+
+        // Render new house ground/floor layers AFTER all path/overlay rendering so they
+        // appear on top of path tiles and path edge overlays
+        this.tilemap.renderGroundLayers(this.ctx, this.camera);
 
         // Render tile selection highlight
         if (this.tileSelector) {
@@ -1764,6 +1839,17 @@ export class Game {
 
         // Render upper layers (Buildings Upper) - above characters
         this.tilemap.renderUpperLayers(this.ctx, this.camera);
+
+        // Render new house roof layers and chimney smoke - hidden when player is inside
+        const playerOutsideNewHouse = !this.humanPosition ||
+            !this.tilemap.isPlayerInsideNewHouse(this.humanPosition.x, this.humanPosition.y);
+        if (playerOutsideNewHouse) {
+            this.tilemap.renderRoofLayers(this.ctx, this.camera);
+            // Chimney smoke renders above the roof on the tile above tile 349 (chimney in Roof Detail)
+            if (this.chimneySmoke) {
+                this.chimneySmoke.render(this.ctx, this.camera);
+            }
+        }
 
         // Render effects on top of everything (floating +1 icons, etc.)
         if (this.cropManager) {

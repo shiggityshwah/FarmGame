@@ -130,6 +130,11 @@ export class FlowerManager {
             return false;
         }
 
+        // Exclude tiles covered by custom tilemaps (e.g. house.tmx)
+        if (this.tilemap.isCustomTilemapTile(tileX, tileY)) {
+            return false;
+        }
+
         // Check base tile is grass (not hoed)
         const tileId = this.tilemap.getTileAt(tileX, tileY);
         if (!this.grassTileIds.has(tileId)) {

@@ -442,6 +442,33 @@ body {
     background: linear-gradient(180deg, #e8f5e0 0%, #d0e8c0 100%);
 }
 
+.job-item.idle-job {
+    opacity: 0.72;
+    border-color: #8a9aaa;
+    background: linear-gradient(180deg, #dde6ee 0%, #ccd6e0 100%);
+    font-style: italic;
+}
+
+.job-item.idle-job.active {
+    border-color: #5a7a9a;
+    background: linear-gradient(180deg, #d0e0ee 0%, #b8ccdd 100%);
+}
+
+.idle-badge {
+    display: inline-block;
+    font-size: 8px;
+    font-style: normal;
+    font-weight: bold;
+    letter-spacing: 0.04em;
+    color: #fff;
+    background: #7a9aaa;
+    border-radius: 3px;
+    padding: 1px 4px;
+    margin-right: 3px;
+    vertical-align: middle;
+    line-height: 1.5;
+}
+
 .job-icon {
     width: 16px;
     height: 16px;

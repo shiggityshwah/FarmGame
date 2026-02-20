@@ -1,0 +1,83 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<map version="1.10" tiledversion="1.11.2" orientation="orthogonal" renderorder="right-down" width="6" height="6" tilewidth="16" tileheight="16" infinite="0" nextlayerid="11" nextobjectid="15">
+ <editorsettings>
+  <export target="house.csv" format="csv"/>
+ </editorsettings>
+ <tileset firstgid="1" source="spr_tileset_sunnysideworld_16px.tsx"/>
+ <layer id="7" name="Ground" width="6" height="6">
+  <data encoding="csv">
+0,0,0,0,0,0,
+0,646,646,646,646,0,
+0,578,578,578,578,0,
+0,578,578,0,0,0,
+0,910,0,0,95,0,
+0,0,0,0,0,0
+</data>
+ </layer>
+ <layer id="8" name="Ground Detail" width="6" height="6">
+  <data encoding="csv">
+0,0,0,0,0,0,
+0,2161,2166,2160,2152,0,
+0,2225,0,2224,2216,0,
+0,0,2231,0,0,0,
+0,0,0,0,0,0,
+206,207,208,0,0,0
+</data>
+ </layer>
+ <layer id="2" name="Wall" width="6" height="6">
+  <data encoding="csv">
+1616,1617,1617,1617,1617,1618,
+1680,0,0,0,0,1746,
+1808,0,0,0,0,1810,
+1808,0,0,1875,1937,1874,
+1872,0,1937,1874,0,0,
+0,0,0,0,0,0
+</data>
+ </layer>
+ <layer id="5" name="Wall Detail" width="6" height="6">
+  <data encoding="csv">
+0,0,0,0,0,0,
+0,0,0,2229,0,0,
+0,0,0,0,0,0,
+0,0,0,0,0,0,
+0,0,0,0,0,0,
+0,0,0,0,0,0
+</data>
+ </layer>
+ <layer id="1" name="Roof" width="6" height="6" visible="0">
+  <data encoding="csv">
+0,0,0,0,0,0,
+0,1683,1683,1683,1683,0,
+0,1809,1809,1809,1685,0,
+0,1809,1809,0,0,0,
+0,2001,0,0,0,0,
+0,0,0,0,0,0
+</data>
+ </layer>
+ <layer id="6" name="Roof Detail" width="6" height="6">
+  <data encoding="csv">
+0,0,0,0,0,0,
+0,0,0,0,0,0,
+0,0,350,1810,0,0,
+0,0,0,0,0,0,
+0,0,0,0,0,0,
+0,0,0,0,0,0
+</data>
+ </layer>
+ <objectgroup id="9" name="Collision" visible="0">
+  <object id="2" x="8.55472" y="17.7778" width="78.4628" height="2.27235"/>
+  <object id="3" x="8.28739" y="20.0501" width="3.60902" height="59.6157"/>
+  <object id="4" x="51.061" y="54.4027" width="4.01003" height="25.3968"/>
+  <object id="5" x="83.2749" y="20.1838" width="3.34169" height="43.5756"/>
+  <object id="10" x="12.1637" y="74.1855" width="4.01003" height="5.88137"/>
+  <object id="11" x="32.0802" y="74.4528" width="18.7135" height="5.21303"/>
+  <object id="12" x="55.7393" y="54.4027" width="27.2682" height="9.22306"/>
+ </objectgroup>
+ <objectgroup id="10" name="Interactables" visible="0">
+  <object id="1" x="7.75272" y="9.75773" width="80.3342" height="70.7101">
+   <properties>
+    <property name="action" value="openCrafting"/>
+   </properties>
+  </object>
+ </objectgroup>
+</map>

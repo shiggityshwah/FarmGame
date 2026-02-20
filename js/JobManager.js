@@ -1,4 +1,5 @@
 import { getRandomDirtTile, CONFIG } from './config.js';
+import { RESOURCE_TYPES } from './Inventory.js';
 import { Logger } from './Logger.js';
 
 // Create logger for this module
@@ -107,8 +108,29 @@ export class JobManager {
             log.info(`Job added: ${job.id} - ${tool.name} on ${tiles.length} tiles to queue: ${this.activeQueueTarget}`);
         }
 
-        // Add to the appropriate queue
-        this.queues[this.activeQueueTarget].push(job);
+        // If the human is currently idle-working and the player hasn't explicitly
+        // chosen goblin-only, intercept the job for the human first.
+        const humanWorker = this.workers.get('human');
+        const humanIdleJob = humanWorker?.currentJob;
+        const humanIsIdling = humanIdleJob?.isIdleJob;
+        const overrideToHuman = humanIsIdling && this.activeQueueTarget !== 'goblin';
+
+        if (overrideToHuman) {
+            // Discard any queued idle jobs ahead of the new player job
+            this.queues.human = this.queues.human.filter(j => !j.isIdleJob);
+            // Route player job to front of human's private queue
+            this.queues.human.unshift(job);
+            log.info(`Job ${job.id} routed to human (preempting idle)`);
+
+            // If human is still walking to the idle target, cancel immediately so
+            // they can start the player job right away.
+            // If already mid-animation (WORKING), let it finish naturally.
+            if (humanIdleJob.status === JOB_STATUS.WALKING) {
+                this._preemptIdleJob(humanWorker);
+            }
+        } else {
+            this.queues[this.activeQueueTarget].push(job);
+        }
 
         // Notify UI of queue change
         if (this.onQueueChange) {
@@ -119,6 +141,22 @@ export class JobManager {
         this.tryAssignJobs();
 
         return job;
+    }
+
+    // Cancel the human's current idle job mid-walk so a player job can start immediately.
+    _preemptIdleJob(humanWorker) {
+        log.debug(`Preempting idle job ${humanWorker.currentJob?.id} (human was walking)`);
+        humanWorker.currentJob = null;
+        humanWorker.isProcessing = false;
+
+        // Stop movement
+        this.game.currentPath = null;
+        this.game.currentWorkTile = null;
+
+        // Tell IdleManager it was preempted so it resets cleanly
+        if (this.game.idleManager) {
+            this.game.idleManager.onIdlePreempted();
+        }
     }
 
     // Try to assign jobs to any idle workers
@@ -599,6 +637,40 @@ export class JobManager {
                 // These should not reach here - handled specially in onAnimationComplete
                 break;
 
+            case 'idle_harvest':
+                // Harvest the crop at this tile and add it to inventory
+                if (this.game.cropManager) {
+                    const harvested = this.game.cropManager.tryHarvest(tileX, tileY);
+                    if (harvested && this.game.inventory) {
+                        this.game.inventory.addCropByIndex(harvested.index);
+                        log.debug(`Idle harvested: ${harvested.name}`);
+                    }
+                }
+                break;
+
+            case 'idle_flower':
+                // Pick the flower at this tile and add it to inventory
+                if (this.game.flowerManager) {
+                    const flowerHarvest = this.game.flowerManager.tryHarvest(tileX, tileY);
+                    if (flowerHarvest && this.game.inventory) {
+                        this.game.inventory.add(RESOURCE_TYPES.FLOWER, flowerHarvest.yield);
+                        log.debug(`Idle picked: ${flowerHarvest.flowerType.name} x${flowerHarvest.yield}`);
+                    }
+                }
+                break;
+
+            case 'idle_weed':
+                // Regress one growth stage on the weed at this tile
+                if (this.game.flowerManager) {
+                    this.game.flowerManager.tryRemoveWeed(tileX, tileY);
+                    log.debug(`Idle cleared weed at (${tileX}, ${tileY})`);
+                }
+                break;
+
+            case 'idle_return':
+                // No work action – character simply walks home and plays one IDLE cycle
+                break;
+
             // Other tools can be implemented later
             default:
                 log.warn(`No effect implemented for ${tool.name}`);
@@ -845,7 +917,39 @@ export class JobManager {
         }
     }
 
-    update(deltaTime) {
+    // Add an idle job directly to a specific worker's private queue.
+    // The job is marked isIdleJob:true so it won't block player-job detection.
+    addIdleJob(workerId, tool, tiles) {
+        if (!tiles || tiles.length === 0) return null;
+
+        const job = {
+            id: `job_${this.jobIdCounter++}`,
+            tool: tool,
+            tiles: tiles,
+            currentTileIndex: 0,
+            status: JOB_STATUS.PENDING,
+            assignedTo: null,
+            targetQueue: workerId,
+            createdAt: Date.now(),
+            isIdleJob: true
+        };
+
+        log.debug(`Idle job added: ${job.id} - ${tool.name} for ${workerId}`);
+
+        // Add to worker's private queue (human or goblin); fall back to shared
+        const targetQueue = this.queues[workerId] ? workerId : 'all';
+        this.queues[targetQueue].push(job);
+
+        // Assign immediately if the worker is free
+        const workerState = this.workers.get(workerId);
+        if (workerState && !workerState.isProcessing && !workerState.isPausedForCombat) {
+            this.assignJobToWorker(workerId);
+        }
+
+        return job;
+    }
+
+    update(_deltaTime) {
         // JobManager doesn't need frame updates - it's event-driven
         // Movement and animation updates happen in Game.js
     }
@@ -873,7 +977,7 @@ export class JobManager {
         const tileSize = this.game.tilemap.tileSize;
 
         // Helper to add tile(s) - expands multi-tile objects to all their base tiles
-        const addTileOrExpand = (tile, job) => {
+        const addTileOrExpand = (tile, _job) => {
             if (tile.multiTileBaseTiles && tile.multiTileBaseTiles.length > 0) {
                 // Multi-tile object: add all base tiles for display
                 for (const baseTile of tile.multiTileBaseTiles) {
@@ -976,7 +1080,7 @@ export class JobManager {
         let count = this.queues.all.length + this.queues.human.length + this.queues.goblin.length;
 
         // Count active jobs
-        for (const [workerId, workerState] of this.workers) {
+        for (const [, workerState] of this.workers) {
             if (workerState.currentJob) count++;
         }
 
@@ -988,18 +1092,6 @@ export class JobManager {
 
     // Cancel a job by ID (from any queue or active job)
     cancelJob(jobId) {
-        // Check current human job (legacy)
-        if (this.currentJob && this.currentJob.id === jobId) {
-            log.debug(`Cancelling active human job: ${jobId}`);
-            this.currentJob = null;
-            this.isProcessing = false;
-            this.game.setAnimation('IDLE');
-            this.game.currentPath = null;
-            this.game.currentWorkTile = null;
-            if (this.onQueueChange) this.onQueueChange();
-            return true;
-        }
-
         // Check worker active jobs
         for (const [workerId, workerState] of this.workers) {
             if (workerState.currentJob && workerState.currentJob.id === jobId) {

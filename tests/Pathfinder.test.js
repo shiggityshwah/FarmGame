@@ -249,9 +249,11 @@ describe('Pathfinder', () => {
     });
 
     it('should calculate correct Manhattan heuristic', () => {
-        expect(pathfinder.heuristic(0, 0, 5, 0)).toBe(5);
-        expect(pathfinder.heuristic(0, 0, 0, 5)).toBe(5);
-        expect(pathfinder.heuristic(0, 0, 3, 4)).toBe(7);
+        // Heuristic is scaled by MIN_TILE_COST (1/1.5 = 0.6667) to stay admissible with path tiles
+        const MIN_TILE_COST = 1 / 1.5;
+        expect(pathfinder.heuristic(0, 0, 5, 0)).toBeCloseTo(5 * MIN_TILE_COST, 5);
+        expect(pathfinder.heuristic(0, 0, 0, 5)).toBeCloseTo(5 * MIN_TILE_COST, 5);
+        expect(pathfinder.heuristic(0, 0, 3, 4)).toBeCloseTo(7 * MIN_TILE_COST, 5);
         expect(pathfinder.heuristic(5, 5, 5, 5)).toBe(0);
     });
 });
