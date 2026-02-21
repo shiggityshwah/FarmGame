@@ -3,6 +3,10 @@ import { CONFIG } from './config.js';
 
 const log = Logger.create('TileOverlayManager');
 
+// Static tile ID sets — defined once at module level to avoid per-call allocations
+const GRASS_TILE_IDS = new Set([65, 66, 129, 130, 131, 132, 133, 134, 192, 193, 194, 195, 197, 199, 257, 258]);
+const HOED_TILE_IDS = new Set([67, 449, 457, 458, 459, 521, 522]);
+
 export class TileOverlayManager {
     constructor(tilemap) {
         this.tilemap = tilemap;
@@ -170,23 +174,20 @@ export class TileOverlayManager {
         this.overlays.clear();
     }
 
-    render(ctx, camera) {
+    render(ctx, camera, bounds = null) {
         if (this.overlays.size === 0) return;
 
         const tileSize = this.tilemap.tileSize;
 
-        // Get visible bounds for culling (don't clamp to tilemap size - forest tiles are outside)
-        const bounds = camera.getVisibleBounds();
-        const startCol = Math.floor(bounds.left / tileSize) - 1;
-        const endCol = Math.ceil(bounds.right / tileSize) + 1;
-        const startRow = Math.floor(bounds.top / tileSize) - 1;
-        const endRow = Math.ceil(bounds.bottom / tileSize) + 1;
+        // Accept pre-computed bounds from caller to avoid redundant calculation
+        const b = bounds || camera.getVisibleBounds();
+        const startCol = Math.floor(b.left / tileSize) - 1;
+        const endCol = Math.ceil(b.right / tileSize) + 1;
+        const startRow = Math.floor(b.top / tileSize) - 1;
+        const endRow = Math.ceil(b.bottom / tileSize) + 1;
 
-        // Render all overlays for each tile
-        // Iterate through each tile position and render all its overlays
         for (const [key, overlayList] of this.overlays.entries()) {
             for (const overlay of overlayList) {
-                // Check if overlay is visible (using unclamped bounds to include forest tiles)
                 if (overlay.tileX < startCol || overlay.tileX > endCol ||
                     overlay.tileY < startRow || overlay.tileY > endRow) {
                     continue;
@@ -206,27 +207,22 @@ export class TileOverlayManager {
     }
 
     // Render only edge overlays (for rendering before tree/rock bottoms)
-    renderEdgeOverlays(ctx, camera) {
+    renderEdgeOverlays(ctx, camera, bounds = null) {
         if (this.overlays.size === 0) return;
 
         const tileSize = this.tilemap.tileSize;
 
-        // Get visible bounds for culling (don't clamp to tilemap size - forest tiles are outside)
-        const bounds = camera.getVisibleBounds();
-        const startCol = Math.floor(bounds.left / tileSize) - 1;
-        const endCol = Math.ceil(bounds.right / tileSize) + 1;
-        const startRow = Math.floor(bounds.top / tileSize) - 1;
-        const endRow = Math.ceil(bounds.bottom / tileSize) + 1;
+        // Accept pre-computed bounds from caller to avoid redundant calculation
+        const b = bounds || camera.getVisibleBounds();
+        const startCol = Math.floor(b.left / tileSize) - 1;
+        const endCol = Math.ceil(b.right / tileSize) + 1;
+        const startRow = Math.floor(b.top / tileSize) - 1;
+        const endRow = Math.ceil(b.bottom / tileSize) + 1;
 
-        // Render only edge overlays
         for (const [key, overlayList] of this.overlays.entries()) {
             for (const overlay of overlayList) {
-                // Only render edge overlays
-                if (!this.edgeOverlaySet.has(overlay.tileId)) {
-                    continue;
-                }
+                if (!this.edgeOverlaySet.has(overlay.tileId)) continue;
 
-                // Check if overlay is visible (using unclamped bounds to include forest tiles)
                 if (overlay.tileX < startCol || overlay.tileX > endCol ||
                     overlay.tileY < startRow || overlay.tileY > endRow) {
                     continue;
@@ -246,27 +242,22 @@ export class TileOverlayManager {
     }
 
     // Render only non-edge overlays (holes, etc.) - for rendering after tree/rock bottoms
-    renderNonEdgeOverlays(ctx, camera) {
+    renderNonEdgeOverlays(ctx, camera, bounds = null) {
         if (this.overlays.size === 0) return;
 
         const tileSize = this.tilemap.tileSize;
 
-        // Get visible bounds for culling (don't clamp to tilemap size - forest tiles are outside)
-        const bounds = camera.getVisibleBounds();
-        const startCol = Math.floor(bounds.left / tileSize) - 1;
-        const endCol = Math.ceil(bounds.right / tileSize) + 1;
-        const startRow = Math.floor(bounds.top / tileSize) - 1;
-        const endRow = Math.ceil(bounds.bottom / tileSize) + 1;
+        // Accept pre-computed bounds from caller to avoid redundant calculation
+        const b = bounds || camera.getVisibleBounds();
+        const startCol = Math.floor(b.left / tileSize) - 1;
+        const endCol = Math.ceil(b.right / tileSize) + 1;
+        const startRow = Math.floor(b.top / tileSize) - 1;
+        const endRow = Math.ceil(b.bottom / tileSize) + 1;
 
-        // Render only non-edge overlays
         for (const [key, overlayList] of this.overlays.entries()) {
             for (const overlay of overlayList) {
-                // Only render non-edge overlays
-                if (this.edgeOverlaySet.has(overlay.tileId)) {
-                    continue;
-                }
+                if (this.edgeOverlaySet.has(overlay.tileId)) continue;
 
-                // Check if overlay is visible (using unclamped bounds to include forest tiles)
                 if (overlay.tileX < startCol || overlay.tileX > endCol ||
                     overlay.tileY < startRow || overlay.tileY > endRow) {
                     continue;
@@ -303,23 +294,17 @@ export class TileOverlayManager {
         // First check main tilemap
         const tileId = this.tilemap.getTileAt(tileX, tileY);
         if (tileId !== null) {
-            // Grass tiles are: 65, 66, 129, 130, 131, 132, 133, 134, 192, 193, 194, 195, 197, 199, 257, 258
-            const grassTileIds = new Set([65, 66, 129, 130, 131, 132, 133, 134, 192, 193, 194, 195, 197, 199, 257, 258]);
-            if (grassTileIds.has(tileId)) {
-                return true;
-            }
+            if (GRASS_TILE_IDS.has(tileId)) return true;
         }
-        
+
         // If not in main tilemap, check forest grass layer
         if (this.forestGenerator) {
             const forestTileId = this.forestGenerator.getGrassTileAt(tileX, tileY);
             if (forestTileId !== null) {
-                // Forest uses the same grass tile IDs
-                const grassTileIds = new Set([65, 66, 129, 130, 131, 132, 133, 134, 192, 193, 194, 195, 197, 199, 257, 258]);
-                return grassTileIds.has(forestTileId);
+                return GRASS_TILE_IDS.has(forestTileId);
             }
         }
-        
+
         return false;
     }
 
@@ -327,10 +312,7 @@ export class TileOverlayManager {
     isHoedTile(tileX, tileY) {
         const tileId = this.tilemap.getTileAt(tileX, tileY);
         if (tileId === null) return false;
-        
-        // Dirt tiles: 67, 449, 457, 458, 459, 521, 522
-        const dirtTileIds = new Set([67, 449, 457, 458, 459, 521, 522]);
-        return dirtTileIds.has(tileId);
+        return HOED_TILE_IDS.has(tileId);
     }
 
     // Mark a tile as hoed and update edge overlays

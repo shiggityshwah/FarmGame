@@ -83,21 +83,9 @@ class MinHeap {
         node.f = newF;
         node.parent = newParent;
 
-        // Find current index and bubble up
-        let index = this._findIndex(node);
-        if (index !== -1) {
-            this._bubbleUp(index);
-        }
+        // Use cached index from nodeMap (O(1)) instead of linear scan
+        this._bubbleUp(entry.index);
         return true;
-    }
-
-    _findIndex(node) {
-        for (let i = 0; i < this.heap.length; i++) {
-            if (this.heap[i].x === node.x && this.heap[i].y === node.y) {
-                return i;
-            }
-        }
-        return -1;
     }
 
     _bubbleUp(index) {

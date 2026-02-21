@@ -9,6 +9,7 @@ export class EnemyManager {
         this.enemies = [];
         this.pathfinder = null;
         this.game = null; // Reference to game for player access
+        this._aliveEnemies = null; // Per-frame cache, invalidated at start of update()
     }
 
     setPathfinder(pathfinder) {
@@ -83,7 +84,10 @@ export class EnemyManager {
     }
 
     getAllAliveEnemies() {
-        return this.enemies.filter(e => e.isAlive);
+        if (!this._aliveEnemies) {
+            this._aliveEnemies = this.enemies.filter(e => e.isAlive);
+        }
+        return this._aliveEnemies;
     }
 
     removeDeadEnemies() {
@@ -100,6 +104,9 @@ export class EnemyManager {
     update(deltaTime) {
         const tileSize = this.tilemap.tileSize;
         const currentTime = performance.now();
+
+        // Invalidate per-frame alive cache at the start of each update
+        this._aliveEnemies = null;
 
         for (const enemy of this.enemies) {
             enemy.update(deltaTime);
@@ -166,7 +173,9 @@ export class EnemyManager {
 
     // Find the closest valid target (human or goblin) in vision range
     findClosestTarget(enemy, tileSize) {
-        const targets = [];
+        let bestTarget = null;
+        let bestType = null;
+        let bestDistSq = Infinity;
 
         // Check human
         if (this.game && this.game.humanPosition && this.game.playerHealth > 0) {
@@ -174,11 +183,12 @@ export class EnemyManager {
             if (enemy.isInVisionRange(humanPos.x, humanPos.y, tileSize)) {
                 const dx = humanPos.x - enemy.x;
                 const dy = humanPos.y - enemy.y;
-                targets.push({
-                    target: humanPos,
-                    type: 'human',
-                    distance: Math.sqrt(dx * dx + dy * dy)
-                });
+                const distSq = dx * dx + dy * dy;
+                if (distSq < bestDistSq) {
+                    bestDistSq = distSq;
+                    bestTarget = humanPos;
+                    bestType = 'human';
+                }
             }
         }
 
@@ -188,18 +198,17 @@ export class EnemyManager {
             if (enemy.isInVisionRange(goblinPos.x, goblinPos.y, tileSize)) {
                 const dx = goblinPos.x - enemy.x;
                 const dy = goblinPos.y - enemy.y;
-                targets.push({
-                    target: goblinPos,
-                    type: 'goblin',
-                    distance: Math.sqrt(dx * dx + dy * dy)
-                });
+                const distSq = dx * dx + dy * dy;
+                if (distSq < bestDistSq) {
+                    bestDistSq = distSq;
+                    bestTarget = goblinPos;
+                    bestType = 'goblin';
+                }
             }
         }
 
-        // Return closest target or null if none found
-        if (targets.length === 0) return null;
-        targets.sort((a, b) => a.distance - b.distance);
-        return targets[0];
+        if (!bestTarget) return null;
+        return { target: bestTarget, type: bestType };
     }
 
     render(ctx, camera) {
@@ -213,7 +222,7 @@ export class EnemyManager {
     }
 
     getAliveEnemyCount() {
-        return this.enemies.filter(e => e.isAlive).length;
+        return this.getAllAliveEnemies().length;
     }
 
     // Get all enemies currently in combat with the player

@@ -16,6 +16,10 @@ export class FlowerManager {
         this.spawnTimer = 0;
         this.maxFlowers = 100; // Prevent too many flowers/weeds
 
+        // Grass tile count cache — recomputed at most once every 5 seconds
+        this._grassTileCount = -1;
+        this._grassCountLastUpdate = -Infinity;
+
         // Grass tile IDs that flowers can spawn on
         this.grassTileIds = new Set([
             65, 66, 129, 130, 131, 132, 133, 134,
@@ -51,8 +55,14 @@ export class FlowerManager {
         this.forestGenerator = forestGenerator;
     }
 
-    // Calculate the number of grass tiles in the spawnable area (unhoed grass only)
+    // Calculate the number of grass tiles in the spawnable area (unhoed grass only).
+    // Result is cached for 5 seconds since this only changes when tiles are hoed.
     getGrassTileCount() {
+        const now = performance.now();
+        if (this._grassTileCount >= 0 && now - this._grassCountLastUpdate < 5000) {
+            return this._grassTileCount;
+        }
+
         let count = 0;
         const grassStartY = this.tilemap.houseOffsetY + this.tilemap.houseHeight;
 
@@ -72,7 +82,14 @@ export class FlowerManager {
             count += forestTiles.length;
         }
 
+        this._grassTileCount = count;
+        this._grassCountLastUpdate = now;
         return count;
+    }
+
+    // Invalidate the grass tile count cache (call when tiles are hoed or restored)
+    invalidateGrassCache() {
+        this._grassTileCount = -1;
     }
 
     // Get the count of active (non-harvested) flowers and weeds

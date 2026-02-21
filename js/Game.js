@@ -1489,17 +1489,15 @@ export class Game {
 
         const tileSize = this.tilemap.tileSize;
 
+        // Hoist canvas state out of the loop — set once for all tiles
+        this.ctx.fillStyle = 'rgba(100, 150, 255, 0.4)';
+        this.ctx.strokeStyle = 'rgba(100, 150, 255, 0.8)';
+        this.ctx.lineWidth = 1;
+
         for (const tile of queuedTiles) {
             const worldX = tile.x * tileSize;
             const worldY = tile.y * tileSize;
-
-            // Draw a blue overlay for queued work tiles
-            this.ctx.fillStyle = 'rgba(100, 150, 255, 0.4)';
             this.ctx.fillRect(worldX, worldY, tileSize, tileSize);
-
-            // Draw border
-            this.ctx.strokeStyle = 'rgba(100, 150, 255, 0.8)';
-            this.ctx.lineWidth = 1;
             this.ctx.strokeRect(worldX + 0.5, worldY + 0.5, tileSize - 1, tileSize - 1);
         }
     }
@@ -1618,8 +1616,8 @@ export class Game {
         // Apply camera transformation
         this.camera.applyTransform(this.ctx);
 
-        // Ensure image smoothing stays disabled after transform
-        this.ctx.imageSmoothingEnabled = false;
+        // Compute visible bounds once per frame and share with all render systems
+        const renderBounds = this.camera.getVisibleBounds();
 
         // Render tilemap
         this.tilemap.render(this.ctx, this.camera);
@@ -1631,7 +1629,7 @@ export class Game {
 
         // Render edge overlays (hoed tile neighbor overlays) before tree/rock bottoms
         if (this.overlayManager) {
-            this.overlayManager.renderEdgeOverlays(this.ctx, this.camera);
+            this.overlayManager.renderEdgeOverlays(this.ctx, this.camera, renderBounds);
         }
 
         // Render tree trunk and shadow tiles (behind characters) - includes tree bottoms that should be on top of edge overlays
@@ -1641,7 +1639,7 @@ export class Game {
 
         // Render non-edge overlays (holes, etc.) after tree backgrounds
         if (this.overlayManager) {
-            this.overlayManager.renderNonEdgeOverlays(this.ctx, this.camera);
+            this.overlayManager.renderNonEdgeOverlays(this.ctx, this.camera, renderBounds);
         }
 
         // Render new house ground/floor layers AFTER all path/overlay rendering so they
