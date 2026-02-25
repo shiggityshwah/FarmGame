@@ -201,6 +201,18 @@ export class OreManager {
         }
     }
 
+    // Check if a tile is blocked by the bottom row of an ore vein (for pathfinding)
+    // Ore veins are 2x2; only the bottom tiles (tileY + 1) act as obstacles
+    isOreObstacle(tileX, tileY) {
+        for (const ore of this.oreVeins) {
+            if (ore.isGone) continue;
+            if (tileY === ore.tileY + 1 && (tileX === ore.tileX || tileX === ore.tileX + 1)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     getOreCount() {
         return this.oreVeins.filter(ore => !ore.isGone).length;
     }

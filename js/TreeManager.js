@@ -255,6 +255,20 @@ export class TreeManager {
         return this.trees.filter(tree => !tree.isGone).length;
     }
 
+    // Check if a tile is blocked by a tree trunk (for pathfinding)
+    // Trunk row is one above the shadow/base row (tileY - 1)
+    isTreeObstacle(tileX, tileY) {
+        for (const tree of this.trees) {
+            if (tree.isGone) continue;
+            const trunkY = tree.tileY - 1;
+            if (tileY !== trunkY) continue;
+            for (let x = 0; x < tree.treeType.width; x++) {
+                if (tileX === tree.tileX + x) return true;
+            }
+        }
+        return false;
+    }
+
     // Get all base tile positions currently occupied by trees
     getOccupiedBaseTiles() {
         const occupied = new Set();

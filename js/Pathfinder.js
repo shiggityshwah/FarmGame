@@ -135,6 +135,8 @@ export class Pathfinder {
     constructor(tilemap) {
         this.tilemap = tilemap;
         this.forestGenerator = null;
+        this.treeManager = null;
+        this.oreManager = null;
     }
 
     /**
@@ -142,6 +144,16 @@ export class Pathfinder {
      */
     setForestGenerator(forestGenerator) {
         this.forestGenerator = forestGenerator;
+    }
+
+    /** Set the farm tree manager so trunks block pathfinding */
+    setTreeManager(treeManager) {
+        this.treeManager = treeManager;
+    }
+
+    /** Set the ore manager so ore vein bottom tiles block pathfinding */
+    setOreManager(oreManager) {
+        this.oreManager = oreManager;
     }
 
     findPath(startX, startY, endX, endY) {
@@ -258,6 +270,26 @@ export class Pathfinder {
 
             // Check boundary layer (walls, furniture in house)
             if (this.tilemap.isBoundary && this.tilemap.isBoundary(x, y)) {
+                return false;
+            }
+
+            // Check forest tree trunks (covers both purchased forest chunks and
+            // the farm south forest — trees are sprites over grass tiles so the
+            // tile ID alone cannot detect them)
+            if (this.forestGenerator && this.forestGenerator.isForestTreeTrunk(x, y)) {
+                return false;
+            }
+
+            // Check farm/managed tree trunks (TreeManager trees in the south farm area)
+            if (this.treeManager && this.treeManager.isTreeObstacle(x, y)) {
+                return false;
+            }
+
+            // Check ore vein bottom tiles (both farm ores and forest pocket ores)
+            if (this.oreManager && this.oreManager.isOreObstacle(x, y)) {
+                return false;
+            }
+            if (this.forestGenerator && this.forestGenerator.isPocketOreObstacle(x, y)) {
                 return false;
             }
 

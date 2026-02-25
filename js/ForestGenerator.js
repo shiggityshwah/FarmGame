@@ -1570,9 +1570,28 @@ export class ForestGenerator {
      * Check if a tile position is blocked by a forest tree
      */
     isBlockedByTree(tileX, tileY) {
-        // Check trunk positions of all living trees
-        for (const tree of this.trees) {
-            if (tree.blocksPosition(tileX, tileY)) {
+        // Use trunkTileMap for O(1) lookup instead of linear scan
+        const tree = this.trunkTileMap.get(`${tileX},${tileY}`);
+        return tree !== undefined && !tree.isGone && tree.resourcesRemaining > 0;
+    }
+
+    /**
+     * Check if a tile is a forest tree trunk (for pathfinding inside tilemap bounds).
+     * Uses trunkTileMap for O(1) lookup — works regardless of tilemap boundary.
+     */
+    isForestTreeTrunk(tileX, tileY) {
+        const tree = this.trunkTileMap.get(`${tileX},${tileY}`);
+        return tree !== undefined && !tree.isGone && tree.resourcesRemaining > 0;
+    }
+
+    /**
+     * Check if a tile is blocked by the bottom row of a pocket ore vein (for pathfinding).
+     * Pocket ore veins are 2x2; only their bottom tiles (tileY + 1) are obstacles.
+     */
+    isPocketOreObstacle(tileX, tileY) {
+        for (const ore of this.pocketOreVeins) {
+            if (ore.isGone) continue;
+            if (tileY === ore.tileY + 1 && (tileX === ore.tileX || tileX === ore.tileX + 1)) {
                 return true;
             }
         }

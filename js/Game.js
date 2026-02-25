@@ -370,6 +370,8 @@ export class Game {
             // Initialize new systems
             this.pathfinder = new Pathfinder(this.tilemap);
             this.pathfinder.setForestGenerator(this.forestGenerator);
+            this.pathfinder.setTreeManager(this.treeManager);
+            this.pathfinder.setOreManager(this.oreManager);
             this.overlayManager = new TileOverlayManager(this.tilemap);
             this.overlayManager.setForestGenerator(this.forestGenerator);
             this.initPathEdgeOverlays();

@@ -451,9 +451,16 @@ export class TileSelector {
             if (this.flowerManager && this.flowerManager.getWeedAt(tileX, tileY)) {
                 return false;
             }
-            // Can't hoe on a tile occupied by an ore vein
-            if (this.oreManager && this.oreManager.getOreAt(tileX, tileY)) return false;
-            if (this.forestGenerator && this.forestGenerator.getPocketOreAt(tileX, tileY)) return false;
+            // Can't hoe where there's a growing crop
+            if (this.cropManager && this.cropManager.getCropAt(tileX, tileY)) return false;
+            if (this.forestGenerator && this.forestGenerator.getPocketCropAt(tileX, tileY)) return false;
+            // Can't hoe on a tree trunk tile (crown and shadow rows are fine; only the trunk row blocks)
+            if (this.forestGenerator && this.forestGenerator.isForestTreeTrunk(tileX, tileY)) return false;
+            if (this.treeManager && this.treeManager.isTreeObstacle(tileX, tileY)) return false;
+            // Can't hoe on the bottom tiles of an ore vein (those sit on the ground).
+            // The top two tiles are "in the air" and don't block the ground beneath them.
+            if (this.oreManager && this.oreManager.isOreObstacle(tileX, tileY)) return false;
+            if (this.forestGenerator && this.forestGenerator.isPocketOreObstacle(tileX, tileY)) return false;
         }
 
         if (this.currentTool.id === 'shovel') {
