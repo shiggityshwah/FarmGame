@@ -137,6 +137,7 @@ export const CONFIG = {
     // === TILE IDS ===
     // Common tiles used for game logic
     tiles: {
+        grass: [65, 66, 129, 130, 131, 132, 133, 134, 192, 193, 194, 195, 197, 199, 257, 258],
         hoedGround: [67, 449, 457, 458, 459, 521, 522],
         holeOverlay: 1138,
         path: [482, 490, 491, 554, 555],
@@ -156,6 +157,19 @@ export const CONFIG = {
         enemySpawnChance: 0.4,      // 40% chance for pocket to have skeletons
         minEnemiesPerPocket: 1,
         maxEnemiesPerPocket: 3
+    },
+
+    // === CHUNK SYSTEM ===
+    chunks: {
+        size: 30,               // Tiles per chunk side
+        initialGridCols: 3,     // Initial grid width in chunks (3 × 30 = 90 tiles)
+        initialGridRows: 4,     // Initial grid height in chunks (4 × 30 = 120 tiles + 4 path gap = 124 total)
+        townCol: 1,             // Town chunk column index (within 0-2 range)
+        townRow: 1,             // Town chunk row index (within 0-3 range) → x=30-59, y=30-59
+        farmCol: 1,             // Farm chunk column index (within 0-2 range)
+        farmRow: 2,             // Farm chunk row index → x=30-59, world y=64-93 (after 4-tile great path gap)
+        mainPathY: 60,          // World Y of the great path strip top row (y=60 N-grass, y=61-62 path, y=63 S-grass)
+        mainPathGap: 4          // Number of world tile rows reserved for the great path (between townRow and farmRow)
     }
 };
 

@@ -1,5 +1,6 @@
 import { Flower, FLOWER_TYPES, getRandomFlowerType, getRandomFlowerTile } from './Flower.js';
 import { Weed, WEED_STAGES } from './Weed.js';
+import { CONFIG } from './config.js';
 
 export class FlowerManager {
     constructor(tilemap, overlayManager) {
@@ -20,14 +21,11 @@ export class FlowerManager {
         this._grassTileCount = -1;
         this._grassCountLastUpdate = -Infinity;
 
-        // Grass tile IDs that flowers can spawn on
-        this.grassTileIds = new Set([
-            65, 66, 129, 130, 131, 132, 133, 134,
-            192, 193, 194, 195, 197, 199, 257, 258
-        ]);
+        // Grass tile IDs that flowers can spawn on (single source of truth: CONFIG.tiles.grass)
+        this.grassTileIds = new Set(CONFIG.tiles.grass);
 
-        // Dirt/hoed tile IDs that flowers cannot spawn on
-        this.hoedTileIds = new Set([67, 449, 457, 458, 459, 521, 522]);
+        // Dirt/hoed tile IDs that flowers cannot spawn on (CONFIG.tiles.hoedGround)
+        this.hoedTileIds = new Set(CONFIG.tiles.hoedGround);
     }
 
     // Set the crop manager reference for checking occupied tiles
@@ -55,6 +53,11 @@ export class FlowerManager {
         this.forestGenerator = forestGenerator;
     }
 
+    // Set the chunk manager reference for iterating allocated chunks
+    setChunkManager(chunkManager) {
+        this.chunkManager = chunkManager;
+    }
+
     // Calculate the number of grass tiles in the spawnable area (unhoed grass only).
     // Result is cached for 5 seconds since this only changes when tiles are hoed.
     getGrassTileCount() {
@@ -64,14 +67,16 @@ export class FlowerManager {
         }
 
         let count = 0;
-        const grassStartY = this.tilemap.houseOffsetY + this.tilemap.houseHeight;
+        const spawnAreas = this._getSpawnAreas();
 
-        // Count main tilemap grass tiles
-        for (let y = grassStartY; y < this.tilemap.mapHeight; y++) {
-            for (let x = 0; x < this.tilemap.mapWidth; x++) {
-                const tileId = this.tilemap.getTileAt(x, y);
-                if (this.grassTileIds.has(tileId)) {
-                    count++;
+        // Count main tilemap grass tiles across all spawn areas
+        for (const area of spawnAreas) {
+            for (let y = area.top; y < area.bottom; y++) {
+                for (let x = area.left; x < area.right; x++) {
+                    const tileId = this.tilemap.getTileAt(x, y);
+                    if (this.grassTileIds.has(tileId)) {
+                        count++;
+                    }
                 }
             }
         }
@@ -141,9 +146,12 @@ export class FlowerManager {
             return false;
         }
 
-        // Must be in the grass area (below house)
-        const grassStartY = this.tilemap.houseOffsetY + this.tilemap.houseHeight;
-        if (tileY < grassStartY) {
+        // Must be in one of the valid spawn areas (farm chunk grass or town chunk)
+        const spawnAreas = this._getSpawnAreas();
+        const inAnyArea = spawnAreas.some(a =>
+            tileX >= a.left && tileX < a.right && tileY >= a.top && tileY < a.bottom
+        );
+        if (!inAnyArea) {
             return false;
         }
 
@@ -183,7 +191,59 @@ export class FlowerManager {
             return false;
         }
 
+        // Check for forest generator trees and pocket resources
+        if (this.forestGenerator) {
+            if (this.forestGenerator.trunkTileMap.has(`${tileX},${tileY}`)) return false;
+            if (this.forestGenerator.pocketOccupiedTiles.has(`${tileX},${tileY}`)) return false;
+        }
+
         return true;
+    }
+
+    // Returns the farm-chunk grass spawn bounds for main tilemap flowers/weeds
+    _getFarmBounds() {
+        const grassStartY = this.tilemap.houseOffsetY + this.tilemap.houseHeight;
+        if (this.tilemap.mapType === 'chunk') {
+            const { farmCol, farmRow, mainPathGap, size: chunkSize } = CONFIG.chunks;
+            const farmLeft   = farmCol * chunkSize;                              // 30
+            const farmRight  = farmLeft + chunkSize;                             // 60
+            const farmBottom = farmRow * chunkSize + mainPathGap + chunkSize;    // 2*30+4+30=94
+            return { farmLeft, farmRight, grassStartY, farmBottom };
+        }
+        return { farmLeft: 0, farmRight: this.tilemap.mapWidth, grassStartY, farmBottom: this.tilemap.mapHeight };
+    }
+
+    // Returns spawn area rects for all valid spawn zones (farm chunk grass + town chunk + forest chunks)
+    _getSpawnAreas() {
+        const areas = [];
+        const { farmLeft, farmRight, grassStartY, farmBottom } = this._getFarmBounds();
+        areas.push({ left: farmLeft, right: farmRight, top: grassStartY, bottom: farmBottom });
+
+        if (this.tilemap.mapType === 'chunk') {
+            // Town chunk: derive bounds from the store's chunk-aligned position
+            // The store sits in the town chunk; snap to the nearest 30-tile boundary
+            const cs = this.tilemap.CHUNK_SIZE; // 30
+            const townLeft   = Math.floor(this.tilemap.storeOffsetX / cs) * cs;
+            const townTop    = Math.floor(this.tilemap.storeOffsetY / cs) * cs;
+            const townRight  = townLeft + cs;
+            const townBottom = townTop  + cs;
+            areas.push({ left: townLeft, right: townRight, top: townTop, bottom: townBottom });
+
+            // Forest chunks: include all allocated chunks that aren't the town or farm chunk
+            if (this.chunkManager) {
+                const { townCol, townRow, farmCol, farmRow } = CONFIG.chunks;
+                for (const [, chunk] of this.chunkManager.chunks) {
+                    // Skip town and farm chunks (already handled above)
+                    if (chunk.col === townCol && chunk.row === townRow) continue;
+                    if (chunk.col === farmCol && chunk.row === farmRow) continue;
+                    const bounds = this.chunkManager.getChunkBounds(chunk.col, chunk.row);
+                    // getChunkBounds already accounts for the great path gap — no y=60-63 in any chunk
+                    areas.push({ left: bounds.x, right: bounds.x + bounds.width, top: bounds.y, bottom: bounds.y + bounds.height });
+                }
+            }
+        }
+
+        return areas;
     }
 
     // Spawn a flower at a random valid location (main tilemap or forest)
@@ -192,13 +252,13 @@ export class FlowerManager {
             return null;
         }
 
-        // Get forest tiles if available
+        // Get forest tiles and main tilemap spawn areas
         const forestTiles = this.forestGenerator ? this.forestGenerator.getForestGrassTiles() : [];
+        const spawnAreas = this._getSpawnAreas();
 
-        // Calculate main tilemap grass area
-        const grassStartY = this.tilemap.houseOffsetY + this.tilemap.houseHeight;
-        const grassHeight = this.tilemap.mapHeight - grassStartY;
-        const mainTileCount = this.tilemap.mapWidth * grassHeight;
+        // Total tile counts for weighted area selection
+        const mainTileCount = spawnAreas.reduce((sum, a) =>
+            sum + (a.right - a.left) * Math.max(1, a.bottom - a.top), 0);
 
         // Decide whether to spawn in forest or main area based on relative size
         const totalTiles = mainTileCount + forestTiles.length;
@@ -212,23 +272,28 @@ export class FlowerManager {
             while (attempts < maxAttempts) {
                 const idx = Math.floor(Math.random() * forestTiles.length);
                 const tile = forestTiles[idx];
-
                 if (this.isValidSpawnTile(tile.x, tile.y, true)) {
                     return this.spawnFlower(tile.x, tile.y);
                 }
-
                 attempts++;
             }
         } else {
-            // Try to spawn in main tilemap
+            // Pick a random spawn area weighted by size, then pick a random tile
+            const totalMainArea = spawnAreas.reduce((sum, a) =>
+                sum + (a.right - a.left) * (a.bottom - a.top), 0);
             while (attempts < maxAttempts) {
-                const tileX = Math.floor(Math.random() * this.tilemap.mapWidth);
-                const tileY = grassStartY + Math.floor(Math.random() * grassHeight);
-
+                let r = Math.random() * totalMainArea;
+                let chosenArea = spawnAreas[spawnAreas.length - 1];
+                for (const area of spawnAreas) {
+                    const areaSize = (area.right - area.left) * (area.bottom - area.top);
+                    if (r < areaSize) { chosenArea = area; break; }
+                    r -= areaSize;
+                }
+                const tileX = chosenArea.left + Math.floor(Math.random() * (chosenArea.right - chosenArea.left));
+                const tileY = chosenArea.top  + Math.floor(Math.random() * (chosenArea.bottom - chosenArea.top));
                 if (this.isValidSpawnTile(tileX, tileY)) {
                     return this.spawnFlower(tileX, tileY);
                 }
-
                 attempts++;
             }
         }
@@ -242,15 +307,13 @@ export class FlowerManager {
             return null;
         }
 
-        // Get forest tiles if available
+        // Get forest tiles and main tilemap spawn areas
         const forestTiles = this.forestGenerator ? this.forestGenerator.getForestGrassTiles() : [];
+        const spawnAreas = this._getSpawnAreas();
 
-        // Calculate main tilemap grass area
-        const grassStartY = this.tilemap.houseOffsetY + this.tilemap.houseHeight;
-        const grassHeight = this.tilemap.mapHeight - grassStartY;
-        const mainTileCount = this.tilemap.mapWidth * grassHeight;
+        const mainTileCount = spawnAreas.reduce((sum, a) =>
+            sum + (a.right - a.left) * Math.max(1, a.bottom - a.top), 0);
 
-        // Decide whether to spawn in forest or main area based on relative size
         const totalTiles = mainTileCount + forestTiles.length;
         const spawnInForest = forestTiles.length > 0 && Math.random() < (forestTiles.length / totalTiles);
 
@@ -262,23 +325,27 @@ export class FlowerManager {
             while (attempts < maxAttempts) {
                 const idx = Math.floor(Math.random() * forestTiles.length);
                 const tile = forestTiles[idx];
-
                 if (this.isValidSpawnTile(tile.x, tile.y, true)) {
                     return this.spawnWeed(tile.x, tile.y);
                 }
-
                 attempts++;
             }
         } else {
-            // Try to spawn in main tilemap
+            const totalMainArea = spawnAreas.reduce((sum, a) =>
+                sum + (a.right - a.left) * (a.bottom - a.top), 0);
             while (attempts < maxAttempts) {
-                const tileX = Math.floor(Math.random() * this.tilemap.mapWidth);
-                const tileY = grassStartY + Math.floor(Math.random() * grassHeight);
-
+                let r = Math.random() * totalMainArea;
+                let chosenArea = spawnAreas[spawnAreas.length - 1];
+                for (const area of spawnAreas) {
+                    const areaSize = (area.right - area.left) * (area.bottom - area.top);
+                    if (r < areaSize) { chosenArea = area; break; }
+                    r -= areaSize;
+                }
+                const tileX = chosenArea.left + Math.floor(Math.random() * (chosenArea.right - chosenArea.left));
+                const tileY = chosenArea.top  + Math.floor(Math.random() * (chosenArea.bottom - chosenArea.top));
                 if (this.isValidSpawnTile(tileX, tileY)) {
                     return this.spawnWeed(tileX, tileY);
                 }
-
                 attempts++;
             }
         }

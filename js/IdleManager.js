@@ -1,5 +1,6 @@
 import { GROWTH_STAGE } from './Crop.js';
 import { Logger } from './Logger.js';
+import { worldToTile } from './TileUtils.js';
 
 const log = Logger.create('IdleManager');
 
@@ -214,6 +215,17 @@ export class IdleManager {
         log.debug(`Idle: '${key}' → job ${job.id} (pathLen=${job._idlePathLength ?? '?'})`);
     }
 
+    // ─── Chunk ownership helpers ──────────────────────────────────────────────
+
+    /** Returns true if the character is allowed to idle-work at this tile. */
+    _isOwnedForIdle(tileX, tileY, allowTown = false) {
+        const cm = this.game.chunkManager;
+        if (!cm) return true; // no chunk system — allow everything
+        if (cm.isPlayerOwned(tileX, tileY)) return true;
+        if (allowTown && cm.isTownChunk(tileX, tileY)) return true;
+        return false;
+    }
+
     // ─── Per-activity evaluators ──────────────────────────────────────────────
 
     /** Returns { item, pathLength } for the best candidate, or null. */
@@ -222,7 +234,8 @@ export class IdleManager {
             case 'harvest': {
                 if (!this.game.cropManager) return null;
                 const items = this.game.cropManager.getCrops().filter(
-                    c => !c.isGone && !c.isHarvested && c.isReadyToHarvest()
+                    c => !c.isGone && !c.isHarvested && c.isReadyToHarvest() &&
+                         this._isOwnedForIdle(c.tileX, c.tileY)
                 );
                 return this._getClosestReachable(items, c => c.tileX, c => c.tileY);
             }
@@ -230,21 +243,22 @@ export class IdleManager {
                 if (!this.game.cropManager) return null;
                 const items = this.game.cropManager.getCrops().filter(c =>
                     !c.isGone && !c.isHarvested && !c.isWatered &&
-                    c.stage >= GROWTH_STAGE.PLANTED && c.stage < GROWTH_STAGE.HARVESTABLE
+                    c.stage >= GROWTH_STAGE.PLANTED && c.stage < GROWTH_STAGE.HARVESTABLE &&
+                    this._isOwnedForIdle(c.tileX, c.tileY)
                 );
                 return this._getClosestReachable(items, c => c.tileX, c => c.tileY);
             }
             case 'flower': {
                 if (!this.game.flowerManager) return null;
                 const items = this.game.flowerManager.getFlowers().filter(
-                    f => !f.isGone && !f.isHarvested
+                    f => !f.isGone && !f.isHarvested && this._isOwnedForIdle(f.tileX, f.tileY)
                 );
                 return this._getClosestReachable(items, f => f.tileX, f => f.tileY);
             }
             case 'weed': {
                 if (!this.game.flowerManager) return null;
                 let items = this.game.flowerManager.getWeeds().filter(
-                    w => !w.isGone && !w.isRemoved
+                    w => !w.isGone && !w.isRemoved && this._isOwnedForIdle(w.tileX, w.tileY, true)
                 );
                 if (items.length === 0) return null;
                 // Prefer weeds near house
@@ -295,8 +309,8 @@ export class IdleManager {
         if (!this.game.pathfinder || !this.game.humanPosition) return null;
 
         const tileSize = this.game.tilemap.tileSize;
-        const hx = Math.floor(this.game.humanPosition.x / tileSize);
-        const hy = Math.floor(this.game.humanPosition.y / tileSize);
+        const hx = worldToTile(this.game.humanPosition.x, tileSize);
+        const hy = worldToTile(this.game.humanPosition.y, tileSize);
 
         // Euclidean pre-filter + sort
         const candidates = items
@@ -352,8 +366,8 @@ export class IdleManager {
     _returnHome() {
         if (!this._cachedHomeTarget) return null;
         const tileSize = this.game.tilemap.tileSize;
-        const hx = Math.floor(this.game.humanPosition.x / tileSize);
-        const hy = Math.floor(this.game.humanPosition.y / tileSize);
+        const hx = worldToTile(this.game.humanPosition.x, tileSize);
+        const hy = worldToTile(this.game.humanPosition.y, tileSize);
         const t = this._cachedHomeTarget;
         if (Math.sqrt((hx - t.x) ** 2 + (hy - t.y) ** 2) <= 2) return null;
         return this.game.jobManager.addIdleJob(

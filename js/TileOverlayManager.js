@@ -3,9 +3,9 @@ import { CONFIG } from './config.js';
 
 const log = Logger.create('TileOverlayManager');
 
-// Static tile ID sets — defined once at module level to avoid per-call allocations
-const GRASS_TILE_IDS = new Set([65, 66, 129, 130, 131, 132, 133, 134, 192, 193, 194, 195, 197, 199, 257, 258]);
-const HOED_TILE_IDS = new Set([67, 449, 457, 458, 459, 521, 522]);
+// Static tile ID sets — derived from CONFIG so there is a single source of truth
+const GRASS_TILE_IDS = new Set(CONFIG.tiles.grass);
+const HOED_TILE_IDS  = new Set(CONFIG.tiles.hoedGround);
 
 export class TileOverlayManager {
     constructor(tilemap) {
@@ -174,17 +174,24 @@ export class TileOverlayManager {
         this.overlays.clear();
     }
 
+    // Returns the visible tile range for culling overlays.
+    // Called at most once per render pass and shared across all three render methods.
+    _getVisibleTileRange(camera, bounds) {
+        const tileSize = this.tilemap.tileSize;
+        const b = bounds || camera.getVisibleBounds();
+        return {
+            startCol: Math.floor(b.left  / tileSize) - 1,
+            endCol:   Math.ceil(b.right  / tileSize) + 1,
+            startRow: Math.floor(b.top   / tileSize) - 1,
+            endRow:   Math.ceil(b.bottom / tileSize) + 1,
+        };
+    }
+
     render(ctx, camera, bounds = null) {
         if (this.overlays.size === 0) return;
 
         const tileSize = this.tilemap.tileSize;
-
-        // Accept pre-computed bounds from caller to avoid redundant calculation
-        const b = bounds || camera.getVisibleBounds();
-        const startCol = Math.floor(b.left / tileSize) - 1;
-        const endCol = Math.ceil(b.right / tileSize) + 1;
-        const startRow = Math.floor(b.top / tileSize) - 1;
-        const endRow = Math.ceil(b.bottom / tileSize) + 1;
+        const { startCol, endCol, startRow, endRow } = this._getVisibleTileRange(camera, bounds);
 
         for (const [key, overlayList] of this.overlays.entries()) {
             for (const overlay of overlayList) {
@@ -211,13 +218,7 @@ export class TileOverlayManager {
         if (this.overlays.size === 0) return;
 
         const tileSize = this.tilemap.tileSize;
-
-        // Accept pre-computed bounds from caller to avoid redundant calculation
-        const b = bounds || camera.getVisibleBounds();
-        const startCol = Math.floor(b.left / tileSize) - 1;
-        const endCol = Math.ceil(b.right / tileSize) + 1;
-        const startRow = Math.floor(b.top / tileSize) - 1;
-        const endRow = Math.ceil(b.bottom / tileSize) + 1;
+        const { startCol, endCol, startRow, endRow } = this._getVisibleTileRange(camera, bounds);
 
         for (const [key, overlayList] of this.overlays.entries()) {
             for (const overlay of overlayList) {
@@ -246,13 +247,7 @@ export class TileOverlayManager {
         if (this.overlays.size === 0) return;
 
         const tileSize = this.tilemap.tileSize;
-
-        // Accept pre-computed bounds from caller to avoid redundant calculation
-        const b = bounds || camera.getVisibleBounds();
-        const startCol = Math.floor(b.left / tileSize) - 1;
-        const endCol = Math.ceil(b.right / tileSize) + 1;
-        const startRow = Math.floor(b.top / tileSize) - 1;
-        const endRow = Math.ceil(b.bottom / tileSize) + 1;
+        const { startCol, endCol, startRow, endRow } = this._getVisibleTileRange(camera, bounds);
 
         for (const [key, overlayList] of this.overlays.entries()) {
             for (const overlay of overlayList) {
@@ -382,6 +377,8 @@ export class TileOverlayManager {
 
     // Check if a tile is a path tile
     isPathTile(tileX, tileY) {
+        // Also check explicitly registered path tiles (e.g. virtual great path crossing tiles)
+        if (this.pathTiles.has(`${tileX},${tileY}`)) return true;
         const tileId = this.tilemap.getTileAt(tileX, tileY);
         if (tileId === null) return false;
         return this.pathTileIds.has(tileId);

@@ -295,8 +295,9 @@ export class ForestTree {
  * ForestGenerator - Creates and manages harvestable forest trees
  */
 export class ForestGenerator {
-    constructor(tilemap) {
+    constructor(tilemap, chunkManager = null) {
         this.tilemap = tilemap;
+        this.chunkManager = chunkManager; // Reference to ChunkManager for checking allocated chunks
         this.trees = [];
         this.treeMap = new Map(); // Quick lookup by "baseX,baseY" key
         this.trunkTileMap = new Map(); // Quick lookup of trunk tiles to tree
@@ -332,7 +333,9 @@ export class ForestGenerator {
             litChance = 0.3,
             pocketCount = 6,           // Number of pockets to generate
             pocketMinSize = 4,         // Minimum pocket radius in tiles
-            pocketMaxSize = 6          // Maximum pocket radius in tiles
+            pocketMaxSize = 6,         // Maximum pocket radius in tiles
+            pathExcludeYMin = null,    // Inclusive min Y of main-path clearance zone
+            pathExcludeYMax = null     // Exclusive max Y of main-path clearance zone
         } = options;
 
         this.trees = [];
@@ -347,12 +350,11 @@ export class ForestGenerator {
         const mapWidth = this.tilemap.mapWidth;
         const mapHeight = this.tilemap.mapHeight;
 
-        // Calculate extended bounds
-        const extend = borderWidth * 2 + 2;
-        this.extendedMinX = -extend;
-        this.extendedMinY = -extend;
-        this.extendedMaxX = mapWidth + extend;
-        this.extendedMaxY = mapHeight + extend;
+        // Clamp forest generation to exactly the tilemap bounds — no border beyond chunk edges
+        this.extendedMinX = 0;
+        this.extendedMinY = 0;
+        this.extendedMaxX = mapWidth;
+        this.extendedMaxY = mapHeight;
 
         // Generate grass layer first
         this.generateGrassLayer();
@@ -361,7 +363,7 @@ export class ForestGenerator {
         this.generatePockets(pocketCount, pocketMinSize, pocketMaxSize, excludeRect);
 
         // Generate candidate positions using diamond grid pattern
-        const candidates = this.generateDiamondGrid(excludeRect);
+        const candidates = this.generateDiamondGrid(excludeRect, pathExcludeYMin, pathExcludeYMax);
 
         // Filter by density and place trees (avoiding pocket areas)
         for (const pos of candidates) {
@@ -877,8 +879,9 @@ export class ForestGenerator {
 
     /**
      * Generate valid positions in a diamond grid pattern
+     * Only generates trees in allocated chunks (if chunkManager is provided)
      */
-    generateDiamondGrid(excludeRect) {
+    generateDiamondGrid(excludeRect, pathExcludeYMin = null, pathExcludeYMax = null) {
         const positions = [];
 
         const excludeMinX = excludeRect ? excludeRect.x : 0;
@@ -909,9 +912,26 @@ export class ForestGenerator {
                     treeMinY >= excludeMaxY
                 );
 
-                if (!overlapsExclude) {
-                    positions.push({ x, y });
+                if (overlapsExclude) continue;
+
+                // Check if tree overlaps the main-path horizontal clearance band (4 tiles wide)
+                // Path corridor: y=pathExcludeYMin to pathExcludeYMax (4 tiles total)
+                // Trees must not spawn in this full 4-tile band
+                if (pathExcludeYMin != null && pathExcludeYMax != null) {
+                    if (treeMaxY > pathExcludeYMin && treeMinY < pathExcludeYMax) continue;
                 }
+
+                // CRITICAL: Only generate trees in allocated chunks
+                // Check if the chunk containing this tree position is allocated
+                if (this.chunkManager) {
+                    const chunk = this.chunkManager.getChunkForTile(x, y);
+                    if (!chunk) {
+                        // Chunk not allocated - skip this position
+                        continue;
+                    }
+                }
+
+                positions.push({ x, y });
             }
         }
 
@@ -1371,10 +1391,17 @@ export class ForestGenerator {
 
         const overlap = 0.5;
 
-        // Render grass first
+        // Render grass first - only render tiles OUTSIDE the main tilemap
+        // (forest grass should not overlap with allocated chunks)
         if (this.grassLayer) {
             for (let row = startRow; row <= endRow; row++) {
                 for (let col = startCol; col <= endCol; col++) {
+                    // Skip tiles that are within the main tilemap (allocated chunks)
+                    if (col >= 0 && col < this.tilemap.mapWidth &&
+                        row >= 0 && row < this.tilemap.mapHeight) {
+                        continue; // This tile is in an allocated chunk, skip forest grass
+                    }
+                    
                     const key = `${col},${row}`;
                     const tileId = this.grassLayer.get(key);
 
@@ -1605,6 +1632,248 @@ export class ForestGenerator {
         // Must be outside main tilemap
         return tileX < 0 || tileX >= this.tilemap.mapWidth ||
                tileY < 0 || tileY >= this.tilemap.mapHeight;
+    }
+
+    /**
+     * Generate forest content within a specific chunk's tile bounds.
+     * Called when a player purchases a forest chunk.
+     * Places trees in a diamond grid with moderate density, plus 1-2 clearings.
+     */
+    generateForChunk(chunkX, chunkY, chunkWidth, chunkHeight, {
+        density = 0.5 + Math.random() * 0.3,  // 0.5–0.8 random per chunk
+        pathExcludeYMin = null,
+        pathExcludeYMax = null,
+        noPocket = false   // set true to skip pocket clearing (e.g. owned farm areas)
+    } = {}) {
+        const litChance = 0.2;
+
+        // Single clearing at chunk center, matching chunk-test (1 pocket per chunk, centered)
+        const newPockets = [];
+        if (!noPocket) {
+            const pocketRadius = 6;
+            const pocketCx = chunkX + Math.floor(chunkWidth / 2);
+            const pocketCy = chunkY + Math.floor(chunkHeight / 2);
+            const pocketTypes = [POCKET_TYPES.ORE, POCKET_TYPES.STONE, POCKET_TYPES.CROP];
+            const pocketType = pocketTypes[Math.floor(Math.random() * pocketTypes.length)];
+            const pocket = { centerX: pocketCx, centerY: pocketCy, radius: pocketRadius, type: pocketType };
+            newPockets.push(pocket);
+            this.pockets.push(pocket);
+            // Mark pocket tiles so trees are excluded from the clearing
+            for (let dy = -pocketRadius; dy <= pocketRadius; dy++) {
+                for (let dx = -pocketRadius; dx <= pocketRadius; dx++) {
+                    if (dx * dx + dy * dy <= pocketRadius * pocketRadius) {
+                        this.pocketOccupiedTiles.add(`${pocketCx + dx},${pocketCy + dy}`);
+                    }
+                }
+            }
+        }
+
+        // Place trees on diamond grid within chunk — margin=0 so trees reach chunk edges,
+        // giving seamless adjacency with neighbouring chunks (no visible gap at seams).
+        for (let y = chunkY + 1; y < chunkY + chunkHeight - 1; y++) {
+            for (let x = chunkX; x < chunkX + chunkWidth - 1; x++) {
+                if ((x + y) % 2 !== 0) continue;
+                if (this.isInPocket(x, y)) continue;
+                if (this.treeMap.has(`${x},${y}`)) continue; // Skip if tree already exists
+                
+                // Check for existing ore veins (from TreeManager or other sources)
+                if (this.tilemap.oreManager) {
+                    const existingOre = this.tilemap.oreManager.getOreAt(x, y);
+                    if (existingOre) continue; // Skip if ore exists here
+                }
+
+                // Ensure tree fits (2 wide × 3 tall: crown at y-1, trunk at y, shadow at y+1)
+                if (y - 1 < chunkY || y + 1 >= chunkY + chunkHeight) continue;
+                if (x + 1 >= chunkX + chunkWidth) continue;
+
+                // Skip trees with trunks landing ON the great path zone (y=60-63).
+                // Trunks at y=59 (shadow at y=60) and y=64 (crown at y=63) are ALLOWED —
+                // they render over/under the great path, which is the desired appearance.
+                if (pathExcludeYMin !== null && pathExcludeYMax !== null) {
+                    if (y >= pathExcludeYMin && y < pathExcludeYMax) continue;
+                }
+
+                if (Math.random() < density) {
+                    const isLit = Math.random() < litChance;
+                    const tree = new ForestTree(x, y, isLit);
+                    this.trees.push(tree);
+                    this.treeMap.set(`${x},${y}`, tree);
+                    this.trunkTileMap.set(`${x},${y}`, tree);
+                    this.trunkTileMap.set(`${x + 1},${y}`, tree);
+                }
+            }
+        }
+
+        // Update neighbour flags for all trees (cheap, covers newly added trees)
+        this.updateNeighborFlags();
+
+        // Populate new pockets
+        this._populateSpecificPockets(newPockets);
+
+        log.debug(`generateForChunk (${chunkX},${chunkY}): placed trees (density=${density.toFixed(2)}) + ${newPockets.length} pockets`);
+    }
+
+    /**
+     * Place seam trees at the N-S boundary between two adjacent chunks.
+     * The top chunk's last row (topChunkY + chunkHeight - 1) gets tree trunks;
+     * their shadow sprites spill one tile into the bottom chunk — matching
+     * exactly how chunk-test renders cross-chunk seam trees.
+     *
+     * Call this AFTER both adjacent chunks have been generated.
+     */
+    generateNSSeamTrees(topChunkX, topChunkY, chunkWidth, chunkHeight, density = 0.65) {
+        const seamY = topChunkY + chunkHeight - 1; // last row of top chunk (trunk position)
+        const litChance = 0.2;
+
+        for (let x = topChunkX; x < topChunkX + chunkWidth - 1; x++) {
+            if ((x + seamY) % 2 !== 0) continue;             // diamond grid
+            if (this.treeMap.has(`${x},${seamY}`)) continue; // already occupied
+            if (this.isInPocket(x, seamY)) continue;
+            if (this.tilemap.oreManager?.getOreAt(x, seamY)) continue;
+
+            if (Math.random() < density) {
+                const isLit = Math.random() < litChance;
+                const tree = new ForestTree(x, seamY, isLit);
+                this.trees.push(tree);
+                this.treeMap.set(`${x},${seamY}`, tree);
+                this.trunkTileMap.set(`${x},${seamY}`, tree);
+                this.trunkTileMap.set(`${x + 1},${seamY}`, tree);
+            }
+        }
+        this.updateNeighborFlags();
+    }
+
+    /**
+     * Place seam trees at the E-W boundary between two adjacent chunks.
+     * A tree is placed with its LEFT trunk column in the left chunk's last column
+     * and its RIGHT column in the right chunk's first column, matching chunk-test's
+     * E-W seam approach. Both trunk-x positions are written to treeMap so the right
+     * chunk's generator won't place an overlapping tree.
+     *
+     * Call this AFTER both adjacent chunks have been generated.
+     */
+    generateEWSeamTrees(leftChunkX, leftChunkY, chunkWidth, chunkHeight, density = 0.65) {
+        const seamX = leftChunkX + chunkWidth - 1; // last column of left chunk (trunk left)
+        const litChance = 0.2;
+
+        for (let y = leftChunkY + 1; y < leftChunkY + chunkHeight - 1; y++) {
+            if ((seamX + y) % 2 !== 0) continue;                  // diamond grid
+            if (this.treeMap.has(`${seamX},${y}`)) continue;      // left-trunk occupied
+            if (this.treeMap.has(`${seamX + 1},${y}`)) continue;  // right-trunk occupied
+            if (y - 1 < leftChunkY || y + 1 >= leftChunkY + chunkHeight) continue;
+            if (this.isInPocket(seamX, y)) continue;
+            if (this.tilemap.oreManager?.getOreAt(seamX, y)) continue;
+
+            if (Math.random() < density) {
+                const isLit = Math.random() < litChance;
+                const tree = new ForestTree(seamX, y, isLit);
+                this.trees.push(tree);
+                // Mark both trunk columns so neither chunk re-places a tree here
+                this.treeMap.set(`${seamX},${y}`, tree);
+                this.treeMap.set(`${seamX + 1},${y}`, tree);
+                this.trunkTileMap.set(`${seamX},${y}`, tree);
+                this.trunkTileMap.set(`${seamX + 1},${y}`, tree);
+            }
+        }
+        this.updateNeighborFlags();
+    }
+
+    /**
+     * Place trees at the very first row of a chunk so their crowns spill above the chunk boundary.
+     * Trunks sit at y = chunkY (world), crowns render at y - 1 (may be void space or great path).
+     * This fills the visual gap left by the interior loop (which starts at chunkY + 1).
+     *
+     * Call for forest chunks that have no directly adjacent forest chunk above them — i.e.:
+     *   - Top-of-world chunks (row=0): crowns render in the void above
+     *   - Farm-row forest chunks (row=2): crowns at y=63 render over the great path S-grass
+     */
+    generateNorthEdgeTrees(chunkX, chunkY, chunkWidth, density = 0.65) {
+        const northEdgeY = chunkY; // trunk row — crown at chunkY-1 spills above
+        const litChance = 0.2;
+
+        for (let x = chunkX; x < chunkX + chunkWidth - 1; x++) {
+            if ((x + northEdgeY) % 2 !== 0) continue;              // diamond grid parity
+            if (this.treeMap.has(`${x},${northEdgeY}`)) continue;  // already occupied
+            if (this.isInPocket(x, northEdgeY)) continue;
+            if (this.tilemap.oreManager?.getOreAt(x, northEdgeY)) continue;
+            if (x + 1 >= chunkX + chunkWidth) continue;            // needs 2 cols wide
+
+            if (Math.random() < density) {
+                const isLit = Math.random() < litChance;
+                const tree = new ForestTree(x, northEdgeY, isLit);
+                this.trees.push(tree);
+                this.treeMap.set(`${x},${northEdgeY}`, tree);
+                this.trunkTileMap.set(`${x},${northEdgeY}`, tree);
+                this.trunkTileMap.set(`${x + 1},${northEdgeY}`, tree);
+            }
+        }
+        this.updateNeighborFlags();
+    }
+
+    /**
+     * Populate a given list of pocket objects with resources.
+     * Simplified version of populatePockets() that targets only the provided pockets.
+     */
+    _populateSpecificPockets(pockets) {
+        const oreTypes = Object.keys(ORE_TYPES).filter(k => k !== 'ROCK');
+        const cropTypes = Object.keys(CROP_TYPES).filter(k => k !== 'WEED');
+
+        for (const pocket of pockets) {
+            const { centerX: cx, centerY: cy, radius, type } = pocket;
+            const tiles = [];
+            for (let dy = -radius; dy <= radius; dy++) {
+                for (let dx = -radius; dx <= radius; dx++) {
+                    if (dx * dx + dy * dy <= radius * radius) {
+                        tiles.push({ x: cx + dx, y: cy + dy });
+                    }
+                }
+            }
+            // Shuffle tiles
+            for (let i = tiles.length - 1; i > 0; i--) {
+                const j = Math.floor(Math.random() * (i + 1));
+                [tiles[i], tiles[j]] = [tiles[j], tiles[i]];
+            }
+
+            const occupied = new Set();
+            const markOccupied = (tx, ty, w = 1, h = 1) => {
+                for (let dy = 0; dy < h; dy++) {
+                    for (let dx = 0; dx < w; dx++) {
+                        occupied.add(`${tx + dx},${ty + dy}`);
+                        this.pocketOccupiedTiles.add(`${tx + dx},${ty + dy}`);
+                    }
+                }
+            };
+
+            if (type === POCKET_TYPES.ORE || type === POCKET_TYPES.STONE) {
+                const oreCount = Math.floor(radius / 2) + 1;
+                const oreKey = type === POCKET_TYPES.ORE
+                    ? oreTypes[Math.floor(Math.random() * oreTypes.length)]
+                    : 'ROCK';
+                let placed = 0;
+                for (const t of tiles) {
+                    if (placed >= oreCount) break;
+                    if (occupied.has(`${t.x},${t.y}`) || occupied.has(`${t.x + 1},${t.y}`) ||
+                        occupied.has(`${t.x},${t.y + 1}`) || occupied.has(`${t.x + 1},${t.y + 1}`)) continue;
+                    const ore = new OreVein(t.x, t.y, ORE_TYPES[oreKey]);
+                    this.pocketOreVeins.push(ore);
+                    markOccupied(t.x, t.y, 2, 2);
+                    placed++;
+                }
+            } else if (type === POCKET_TYPES.CROP) {
+                const cropKey = cropTypes[Math.floor(Math.random() * cropTypes.length)];
+                const cropCount = Math.floor(radius * 1.5) + 2;
+                let placed = 0;
+                for (const t of tiles) {
+                    if (placed >= cropCount) break;
+                    if (occupied.has(`${t.x},${t.y}`)) continue;
+                    const cropType = CROP_TYPES[cropKey];
+                    const crop = new Crop(t.x, t.y, cropType);
+                    this.pocketCrops.push(crop);
+                    markOccupied(t.x, t.y);
+                    placed++;
+                }
+            }
+        }
     }
 
     /**

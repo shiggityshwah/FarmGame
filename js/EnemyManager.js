@@ -1,5 +1,6 @@
 import { Enemy } from './Enemy.js';
 import { Logger } from './Logger.js';
+import { worldToTile, manhattanDist } from './TileUtils.js';
 
 const log = Logger.create('EnemyManager');
 
@@ -63,11 +64,8 @@ export class EnemyManager {
 
         for (const enemy of this.enemies) {
             if (!enemy.isAlive) continue;
-
-            const enemyTileX = Math.floor(enemy.x / tileSize);
-            const enemyTileY = Math.floor(enemy.y / tileSize);
-
-            if (enemyTileX === tileX && enemyTileY === tileY) {
+            if (worldToTile(enemy.x, tileSize) === tileX &&
+                worldToTile(enemy.y, tileSize) === tileY) {
                 return enemy;
             }
         }
@@ -233,15 +231,15 @@ export class EnemyManager {
     // Get enemies within a certain range of a position (for player vision check)
     getEnemiesInRange(worldX, worldY, rangeTiles) {
         const tileSize = this.tilemap.tileSize;
-        const centerTileX = Math.floor(worldX / tileSize);
-        const centerTileY = Math.floor(worldY / tileSize);
+        const centerTileX = worldToTile(worldX, tileSize);
+        const centerTileY = worldToTile(worldY, tileSize);
 
         return this.enemies.filter(e => {
             if (!e.isAlive) return false;
-            const enemyTileX = Math.floor(e.x / tileSize);
-            const enemyTileY = Math.floor(e.y / tileSize);
-            const distance = Math.abs(centerTileX - enemyTileX) + Math.abs(centerTileY - enemyTileY);
-            return distance <= rangeTiles;
+            return manhattanDist(
+                centerTileX, centerTileY,
+                worldToTile(e.x, tileSize), worldToTile(e.y, tileSize)
+            ) <= rangeTiles;
         });
     }
 

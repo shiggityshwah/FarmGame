@@ -18,6 +18,9 @@ import { UIManager } from './UIManager.js';
 import { ORE_TYPES } from './OreVein.js';
 import { CONFIG, getRandomPathTile } from './config.js';
 import { ForestGenerator } from './ForestGenerator.js';
+import { ChunkManager } from './ChunkManager.js';
+import { ChunkGeneratorRegistry } from './ChunkGeneratorRegistry.js';
+import { ForestChunkGenerator } from './ForestChunkGenerator.js';
 import { JobQueueUI } from './JobQueueUI.js';
 import { IdleManager } from './IdleManager.js';
 import { Logger } from './Logger.js';
@@ -126,6 +129,8 @@ export class Game {
         this.treeManager = null;
         this.flowerManager = null;
         this.forestGenerator = null;
+        this.chunkGeneratorRegistry = null;
+        this.chunkManager = null;
 
         // Inventory and UI
         this.inventory = null;
@@ -206,40 +211,100 @@ export class Game {
             // Initialize camera with CSS display dimensions (not DPR-scaled canvas.width)
             this.camera = new Camera(window.innerWidth, window.innerHeight);
 
-            // Initialize tilemap with home map (house + grass area below)
+            // Initialize tilemap with chunk-based world map (210×240 tiles)
             this.tilemap = new TilemapRenderer();
-            await this.tilemap.generateHomeMap('Tileset/spr_tileset_sunnysideworld_16px.png');
+            await this.tilemap.generateChunkMap('Tileset/spr_tileset_sunnysideworld_16px.png');
 
-            // Place east-west path above the farm area
+            // Initialize chunk manager and set up 3×4 initial grid
+            this.chunkManager = new ChunkManager(this.tilemap);
+            this.chunkManager.initialize();
+            this.chunkManager.onChunkPurchased = (chunk) => {
+                this._onChunkPurchased(chunk);
+            };
+
+            // Place path tiles in the new chunk layout
             this.placePathTilesInMap();
 
-            // Center camera on the house
+            // Center camera on the new house (farm chunk)
             const houseCenter = this.tilemap.getHouseCenter();
             this.camera.x = houseCenter.x;
             this.camera.y = houseCenter.y;
 
-            // Initialize forest generator and generate forest around the playable area
-            this.forestGenerator = new ForestGenerator(this.tilemap);
-            this.forestGenerator.generate({
-                borderWidth: 12,         // Width of forest border in tree units (bigger forest)
-                density: 0.75,           // 75% chance to place tree at valid position
-                excludeRect: {           // Exclude the playable area
-                    x: 0,
-                    y: 0,
-                    width: this.tilemap.mapWidth,
-                    height: this.tilemap.mapHeight
-                },
-                litChance: 0.25,         // 25% chance for lit tree variants
-                pocketCount: 8,          // Number of clearings in the forest
-                pocketMinSize: 4,        // Minimum pocket radius
-                pocketMaxSize: 7         // Maximum pocket radius
-            });
+            // Initialize forest generator — per-chunk generation with random density.
+            // Each initial forest chunk is generated independently so it has its own
+            // density and resources (pocket ores/crops). Using generateForChunk() instead
+            // of generate() avoids the "outside tilemap" restriction in the pocket placement
+            // logic, meaning resources actually spawn in the initial forest chunks.
+            this.forestGenerator = new ForestGenerator(this.tilemap, this.chunkManager);
+
+            // Wire the extensible chunk generator registry so ChunkManager can resolve
+            // biome types and generate correct ground tiles for future chunk types.
+            this.chunkGeneratorRegistry = new ChunkGeneratorRegistry();
+            this.chunkGeneratorRegistry.register(new ForestChunkGenerator(this.forestGenerator));
+            this.chunkManager.generatorRegistry = this.chunkGeneratorRegistry;
+
+            // Great path exclusion zone: tree trunks must not land on y=60-63 (the great path strip).
+            // Trunks at y=59 (shadow at y=60) and y=64 (crown at y=63) ARE allowed — they render
+            // over/under the great path visually, which is the desired appearance.
+            const pathYMin = CONFIG.chunks.mainPathY;                          // 60
+            const pathYMax = CONFIG.chunks.mainPathY + CONFIG.chunks.mainPathGap; // 64
+
+            // Generate each initial forest chunk independently.
+            // Town (col=1,row=1) and farm (col=1,row=2) chunks are skipped (type !== 'forest').
+            for (const chunk of this.chunkManager.chunks.values()) {
+                if (chunk.type !== 'forest') continue;
+                const bounds = this.chunkManager.getChunkBounds(chunk.col, chunk.row);
+                // Pass path exclusion only for chunks whose world y-range overlaps 60-63
+                const needsPathExclude = (bounds.y + bounds.height) > pathYMin && bounds.y < pathYMax;
+                this.forestGenerator.generateForChunk(
+                    bounds.x, bounds.y, bounds.width, bounds.height,
+                    {
+                        pathExcludeYMin: needsPathExclude ? pathYMin : null,
+                        pathExcludeYMax: needsPathExclude ? pathYMax : null
+                    }
+                );
+            }
+
+            // Generate seam trees between every adjacent pair of initial forest chunks.
+            // Each seam function is keyed by the TOP/LEFT chunk and is idempotent
+            // (skips positions already in treeMap), so duplicate calls are harmless.
+            for (const chunk of this.chunkManager.chunks.values()) {
+                if (chunk.type !== 'forest') continue;
+                const bounds = this.chunkManager.getChunkBounds(chunk.col, chunk.row);
+
+                const southChunk = this.chunkManager.getChunkAt(chunk.col, chunk.row + 1);
+                if (southChunk && southChunk.type === 'forest') {
+                    this.forestGenerator.generateNSSeamTrees(
+                        bounds.x, bounds.y, bounds.width, bounds.height
+                    );
+                }
+
+                const eastChunk = this.chunkManager.getChunkAt(chunk.col + 1, chunk.row);
+                if (eastChunk && eastChunk.type === 'forest') {
+                    this.forestGenerator.generateEWSeamTrees(
+                        bounds.x, bounds.y, bounds.width, bounds.height
+                    );
+                }
+            }
+
+            // Generate north edge trees (trunks at first row, crowns spill above chunk).
+            // Called for every forest chunk unconditionally:
+            //   - NS seam trees (trunks at chunkY-1) and north edge trees (trunks at chunkY)
+            //     occupy complementary diamond-grid positions ((x+y)%2 alternates), so they
+            //     coexist in treeMap without conflicts and fill all positions at the seam.
+            //   - Top-of-world chunks (row=0): crowns at y=-1 render into void (invisible)
+            //   - Farm-adjacent forest chunks (row=2): crowns at y=63 render over great path S-grass
+            for (const chunk of this.chunkManager.chunks.values()) {
+                if (chunk.type !== 'forest') continue;
+                const bounds = this.chunkManager.getChunkBounds(chunk.col, chunk.row);
+                this.forestGenerator.generateNorthEdgeTrees(bounds.x, bounds.y, bounds.width);
+            }
 
             // Initialize enemy manager before creating characters
             this.enemyManager = new EnemyManager(this.tilemap);
 
             // Track occupied base tiles to prevent overlapping spawns
-            const occupiedBaseTiles = new Set();
+            let occupiedBaseTiles = new Set();
 
             // Create characters at random positions
             await this.createCharacters(occupiedBaseTiles);
@@ -249,12 +314,26 @@ export class Game {
                 occupiedBaseTiles.add(`${pos.x},${pos.y}`);
             }
 
-            // Initialize tree manager and spawn one random tree
+            // Initialize tree manager (no initial TreeManager trees — south farm forest uses
+            // ForestGenerator-style trees for visual consistency with forest chunks)
             this.treeManager = new TreeManager(this.tilemap);
-            this.treeManager.spawnRandomTrees(1, occupiedBaseTiles);
-            // Update occupied tiles with tree base positions
-            for (const pos of this.treeManager.getOccupiedBaseTiles()) {
-                occupiedBaseTiles.add(pos);
+
+            // Spawn south farm forest using ForestGenerator so it looks identical to
+            // locked forest chunks (same diamond-grid density, trunk/crown/shadow tiles).
+            // Area: world x=30–59, y=80–93 (below house at y=67–72 and grass strip y=73–79).
+            // noPocket:true keeps the owned farm area free of inaccessible forest resources.
+            const southForestY  = this.tilemap.newHouseOffsetY - 2 + 15; // 67-2+15 = 80
+            const southForestH  = 14; // rows 80–93 (fits within farm chunk bottom)
+            const southForestX  = this.tilemap.newHouseOffsetX - 2;       // 32-2 = 30
+            const southForestW  = 30;
+            this.forestGenerator.generateForChunk(
+                southForestX, southForestY, southForestW, southForestH,
+                { density: 0.7, noPocket: true }
+            );
+
+            // Mark forest tree trunk positions as occupied to prevent ore/crop overlap
+            for (const key of this.forestGenerator.trunkTileMap.keys()) {
+                occupiedBaseTiles.add(key);
             }
 
             // Initialize crop manager and spawn crops (avoiding occupied tiles)
@@ -321,9 +400,17 @@ export class Game {
             this.flowerManager.setOreManager(this.oreManager);
             this.flowerManager.setEnemyManager(this.enemyManager);
             this.flowerManager.setForestGenerator(this.forestGenerator);
+            if (this.chunkManager) {
+                this.flowerManager.setChunkManager(this.chunkManager);
+            }
 
             // Connect flower manager to tile selector (for weed checking)
             this.tileSelector.setFlowerManager(this.flowerManager);
+
+            // Connect chunk manager to tile selector (for ownership gates)
+            if (this.chunkManager) {
+                this.tileSelector.setChunkManager(this.chunkManager);
+            }
 
             // Connect forest generator to tile selector (for forest tree selection)
             this.tileSelector.setForestGenerator(this.forestGenerator);
@@ -366,6 +453,7 @@ export class Game {
             // Initialize chimney smoke animation for the new house (tile 349 = chimney in Roof Detail)
             // Chimney is at Roof Detail local (2,2) = world (newHouseOffsetX+2, newHouseOffsetY+2).
             // Smoke renders on the tile ABOVE the chimney: world (newHouseOffsetX+2, newHouseOffsetY+1).
+            // In chunk map: newHouseOffsetX=32, newHouseOffsetY=67 → chimney at (34, 69), smoke at (34, 68).
             {
                 const tileSize = this.tilemap.tileSize;
                 const smokeWorldX = (this.tilemap.newHouseOffsetX + 2) * tileSize + tileSize / 2 - 1;
@@ -392,10 +480,10 @@ export class Game {
         await this.loadHumanSprites();
         log.debug(`Human placed at tile (${spawnPos.tileX}, ${spawnPos.tileY})`);
 
-        // Create Goblin NPC near the old home (same position as original human spawn)
-        // Anchored to the former home, not the new house, so it doesn't move when spawn changes.
-        const goblinTileX = this.tilemap.houseOffsetX + Math.floor(this.tilemap.houseWidth / 2) + 2;
-        const goblinTileY = this.tilemap.houseOffsetY + this.tilemap.houseHeight - 2;
+        // Create Goblin NPC near the town home entrance
+        // Town home approach path is at y=57 (just below home bottom y=56), goblin stands nearby
+        const goblinTileX = 46;
+        const goblinTileY = 55;
         const tileSize = this.tilemap.tileSize;
         this.goblinPosition = {
             x: goblinTileX * tileSize + tileSize / 2,
@@ -405,17 +493,7 @@ export class Game {
         await this.loadGoblinSprite();
         log.debug(`Goblin placed at tile (${goblinTileX}, ${goblinTileY})`);
 
-        // Create Skeleton enemy in the grass area via EnemyManager
-        let position;
-        let positionKey;
-        do {
-            position = this.tilemap.getRandomTilePosition();
-            positionKey = `${position.tileX},${position.tileY}`;
-        } while (occupiedBaseTiles.has(positionKey));
-        occupiedBaseTiles.add(positionKey);
-
-        await this.enemyManager.spawnEnemyAtWorld(position.x, position.y, 'skeleton');
-        log.debug(`Skeleton placed at tile (${position.tileX}, ${position.tileY})`);
+        // No initial skeleton enemy — enemies spawn from forest pockets only
     }
 
     // Spawn crops avoiding occupied base tiles
@@ -738,6 +816,15 @@ export class Game {
     }
 
     onWorldClick(worldX, worldY) {
+        // Check for chunk purchase sign clicks (always active)
+        if (this.chunkManager) {
+            const purchasableChunk = this.chunkManager.getPurchasableChunkAtWorld(worldX, worldY);
+            if (purchasableChunk) {
+                this.chunkManager.purchaseChunk(purchasableChunk.col, purchasableChunk.row);
+                return;
+            }
+        }
+
         // Check for interactable buildings first (works in any mode)
         const interactable = this.tilemap.getInteractableAt(worldX, worldY);
         if (interactable && interactable.action) {
@@ -821,6 +908,97 @@ export class Game {
             default:
                 log.warn('Unknown interactable action:', action);
         }
+    }
+
+    // Called when the player purchases a new chunk
+    _onChunkPurchased(chunk) {
+        log.info(`Chunk purchased: (${chunk.col}, ${chunk.row}) type=${chunk.type}`);
+        const bounds = this.chunkManager.getChunkBounds(chunk.col, chunk.row);
+
+        // Wire expansion path helpers into ChunkManager now that overlay/path are ready
+        this.chunkManager._pathPositions = this.pathPositions;
+        this.chunkManager._overlayManager = this.overlayManager;
+        this.chunkManager._getRandomPathTile = getRandomPathTile;
+
+        // Great path exclusion zone: exclude tree trunks landing ON the great path (y=60-63)
+        const pathYMin = CONFIG.chunks.mainPathY;                          // 60 inclusive
+        const pathYMax = CONFIG.chunks.mainPathY + CONFIG.chunks.mainPathGap; // 64 exclusive
+
+        const dirs8 = [
+            { dc: 0, dr: -1 }, { dc: 0, dr: 1 }, { dc: -1, dr: 0 }, { dc: 1, dr: 0 },
+            { dc: -1, dr: -1 }, { dc: 1, dr: -1 }, { dc: -1, dr: 1 }, { dc: 1, dr: 1 }
+        ];
+
+        // ── Generate content for the newly owned chunk ────────────────────────────
+        // chunk.generated is still false here (ChunkManager sets it true after this callback).
+        const gen = this.chunkGeneratorRegistry?.getGenerator(chunk.type);
+        if (gen && !chunk.generated) {
+            const needsPathExclude = (bounds.y + bounds.height) > pathYMin && bounds.y < pathYMax;
+            gen.generateContent(chunk.col, chunk.row, bounds, {
+                pathExcludeYMin: needsPathExclude ? pathYMin : null,
+                pathExcludeYMax: needsPathExclude ? pathYMax : null
+            });
+        }
+
+        // ── Generate content for newly created LOCKED neighbor chunks (8-way) ────
+        // purchaseChunk() allocates all 8 neighbors; those created fresh have generated=false
+        // and need content placed. Initial 3×4 chunks have generated=true and are skipped.
+        for (const { dc, dr } of dirs8) {
+            const nb = this.chunkManager.getChunkAt(chunk.col + dc, chunk.row + dr);
+            if (nb && !nb.generated) {
+                // Use exact generator lookup (no fallback) so town/farm chunks are skipped.
+                const nbGen = this.chunkGeneratorRegistry?.generators.get(nb.type) ?? null;
+                if (nbGen) {
+                    const nbBounds = this.chunkManager.getChunkBounds(nb.col, nb.row);
+                    const needsPathExclude = (nbBounds.y + nbBounds.height) > pathYMin && nbBounds.y < pathYMax;
+                    nbGen.generateContent(nb.col, nb.row, nbBounds, {
+                        pathExcludeYMin: needsPathExclude ? pathYMin : null,
+                        pathExcludeYMax: needsPathExclude ? pathYMax : null
+                    });
+                    nb.generated = true;
+                }
+            }
+        }
+
+        // ── Generate seam trees for the purchased chunk and all affected neighbors ─
+        // Iterate the purchased chunk + 8 neighbors; for each chunk with a registered
+        // generator, generate its S and E seams if the adjacent chunk also has one.
+        // The seam functions are idempotent so double-calling is safe.
+        const affectedCells = [
+            { col: chunk.col, row: chunk.row },
+            ...dirs8.map(({ dc, dr }) => ({ col: chunk.col + dc, row: chunk.row + dr }))
+        ];
+        for (const { col, row } of affectedCells) {
+            const c = this.chunkManager.getChunkAt(col, row);
+            if (!c) continue;
+            // Use exact lookup so town/farm chunks don't get forest seams generated.
+            const cGen = this.chunkGeneratorRegistry?.generators.get(c.type) ?? null;
+            if (!cGen) continue;
+
+            const cb = this.chunkManager.getChunkBounds(col, row);
+
+            const south = this.chunkManager.getChunkAt(col, row + 1);
+            const southGen = south
+                ? (this.chunkGeneratorRegistry?.generators.get(south.type) ?? null)
+                : null;
+            cGen.generateSeam('S', cb, southGen);
+
+            const east = this.chunkManager.getChunkAt(col + 1, row);
+            const eastGen = east
+                ? (this.chunkGeneratorRegistry?.generators.get(east.type) ?? null)
+                : null;
+            cGen.generateSeam('E', cb, eastGen);
+
+            // North edge trees: trunks at first row of chunk, crowns spill above.
+            // Always generated — NS seam trees (trunks at chunkY-1) and north edge trees
+            // (trunks at chunkY) are on complementary diamond-grid positions and coexist.
+            cGen.generateNorthEdge(cb);
+        }
+
+        // Great path (y=60-63) is a separate virtual tilemap — no setTileAt() needed.
+        // renderGreatPath() in TilemapRenderer automatically spans the full map width,
+        // so new columns are covered as soon as _updateMapBounds() expands mapWidth.
+        // Pathfinder speed boost at y=61-62 is provided by getTileAt() returning tile 482.
     }
 
     // Tool selection handlers (called by Toolbar)
@@ -1421,55 +1599,75 @@ export class Game {
     placePathTilesInMap() {
         this.pathPositions = [];
         const map = this.tilemap;
-        const ewPathY = map.storeOffsetY + map.storeHeight;                         // y=10
-        const houseEastEdge = map.houseOffsetX + map.houseWidth;                    // x=10
-        const pathX = houseEastEdge + 1;                                            // x=11
-        const houseCenterX = map.houseOffsetX + Math.floor(map.houseWidth / 2);    // x=5
-        const underHouseY = map.houseOffsetY + map.houseHeight;                     // y=21
+        const { townCol, townRow, farmCol, farmRow, mainPathY, size: chunkSize } = CONFIG.chunks;
 
-        // New house door geometry:
-        // Door tile is at local (1, 4) in the 6x6 house.tmx Roof layer (tile ID 2000).
-        // Tile underneath the door = local (1, 5) = world (newHouseOffsetX+1, newHouseOffsetY+5).
-        const underDoorX = map.newHouseOffsetX + 1;                                 // x=13
-        const underDoorY = map.newHouseOffsetY + map.newHouseHeight - 1;            // y=32 (bottom row)
+        // All coordinates are absolute world tile positions (90×124 total: 3 cols × 4 rows + 4-tile path gap).
+        //
+        // Town chunk: col=1, row=1 → x=30-59, y=30-59
+        // Great path: world y=60-63  (separate renderer — NOT set via setTileAt; handled by renderGreatPath())
+        // Farm chunk: col=1, row=2 → x=30-59, world y=64-93
+        //
+        // Path network:
+        //   1. Great path (y=60-63): separate tilemap, handled by TilemapRenderer.renderGreatPath()
+        //   2. Town E-W path (1 tile): inside town chunk, near center
+        //   3. Town N-S connector: from town E-W path down to y=59 (just above great path)
+        //   4. House approach N-S: from y=64 (just below great path) along east side of house
+        //   5. House front E-W: directly in front of door
+        //   6. Town home approach: branch east from N-S connector at y=57
 
-        // With the house at x=12-17, the south path at x=5 has Chebyshev dx=7 from the house
-        // at all y values — safely outside the 3-tile exclusion zone throughout. No bypass needed.
-        // approachFromY: 3 tiles south of house bottom (y=32) → dy=4 at y=36 (safe, dy>3).
-        const approachFromY = map.newHouseOffsetY + map.newHouseHeight + 3;        // y=36
+        const placeRow = (y, x0, x1) => {
+            for (let x = x0; x <= x1; x++) {
+                map.setTileAt(x, y, getRandomPathTile());
+                this.pathPositions.push({ x, y });
+            }
+        };
+        const placeCol = (x, y0, y1) => {
+            for (let y = y0; y <= y1; y++) {
+                map.setTileAt(x, y, getRandomPathTile());
+                this.pathPositions.push({ x, y });
+            }
+        };
 
-        // 1. E-W path between shop and house (full width, extends to map edges)
-        for (let x = 0; x < map.mapWidth; x++) {
-            map.setTileAt(x, ewPathY, getRandomPathTile());
-            this.pathPositions.push({ x, y: ewPathY });
-        }
-        // 2. N-S east-side path (1 tile gap from former home east edge, down to under-home)
-        for (let y = ewPathY + 1; y <= underHouseY; y++) {
-            map.setTileAt(pathX, y, getRandomPathTile());
-            this.pathPositions.push({ x: pathX, y });
-        }
-        // 3. E-W connector under former home (center to east path)
-        for (let x = houseCenterX; x < pathX; x++) {
-            map.setTileAt(x, underHouseY, getRandomPathTile());
-            this.pathPositions.push({ x, y: underHouseY });
-        }
-        // 4a. S from former home center all the way down to the approach row.
-        //     x=5 is 7 tiles west of house left edge (x=12), always outside the 3-tile zone.
-        for (let y = underHouseY + 1; y <= approachFromY; y++) {
-            map.setTileAt(houseCenterX, y, getRandomPathTile());
-            this.pathPositions.push({ x: houseCenterX, y });
-        }
-        // 4b. E along approach row from former-home center column to door column.
-        //     At y=36, dy=4 from house bottom — all outside the 3-tile exclusion zone.
-        for (let x = houseCenterX + 1; x <= underDoorX; x++) {
-            map.setTileAt(x, approachFromY, getRandomPathTile());
-            this.pathPositions.push({ x, y: approachFromY });
-        }
-        // 4c. Direct approach N to tile under door (within exclusion zone — allowed exception).
-        //     Approach is from south going north, never from north of the house.
-        for (let y = approachFromY - 1; y >= underDoorY; y--) {
-            map.setTileAt(underDoorX, y, getRandomPathTile());
-            this.pathPositions.push({ x: underDoorX, y });
+        // Calculate chunk boundaries
+        const townChunkX = townCol * chunkSize;      // 30
+        const townChunkY = townRow * chunkSize;      // 30
+        const farmChunkX = farmCol * chunkSize;      // 30
+        const farmChunkY = farmRow * chunkSize;      // 60
+        const townChunkRight = townChunkX + chunkSize;  // 60
+        const farmChunkRight = farmChunkX + chunkSize;  // 60
+
+        // 1. Great path (y=60-63) is a SEPARATE tilemap rendered by tilemap.renderGreatPath().
+        //    No setTileAt() calls here — it is handled entirely in TilemapRenderer.renderGreatPath().
+
+        // 2. Town E-W path — inside town chunk, near center
+        const townPathY = townChunkY + Math.floor(chunkSize / 2); // 30 + 15 = 45
+        placeRow(townPathY, townChunkX, townChunkRight - 1);
+
+        // 3. Town N-S connector — from town E-W path down to just above the great path (y=59)
+        //    Center of town chunk horizontally (connects store area to great path)
+        const townCenterX = townChunkX + Math.floor(chunkSize / 2); // 30 + 15 = 45
+        placeCol(townCenterX, townPathY + 1, mainPathY - 1); // From below town path to y=59 (just above great path y=60)
+
+        // 4. House approach N-S — from just below great path (y=64) along east side of house
+        //    House is at x=32-37, world y=67-72; path at x=38 (one tile east of house)
+        const houseEastX = map.newHouseOffsetX + map.newHouseWidth; // 32 + 6 = 38
+        const { mainPathGap } = CONFIG.chunks;
+        // Start at y=64 (first farm tile, one below great path bottom y=63)
+        placeCol(houseEastX, mainPathY + mainPathGap, map.newHouseOffsetY + map.newHouseHeight - 1);
+
+        // 5. House front E-W — directly in front of door
+        //    Door at local (1,4) → world (33, 71); front of door = (33, 72)
+        const houseFrontY = map.newHouseOffsetY + map.newHouseHeight - 1; // 67 + 6 - 1 = 72
+        const doorX = map.newHouseOffsetX + 1; // 33
+        placeRow(houseFrontY, doorX - 1, houseEastX); // From west of door to east approach
+
+        // 6. Town home approach — branch east from N-S connector to home entrance
+        //    Town home at x=48-57, y=47-56; approach row just below home at y=57
+        //    South connector already covers x=45,y=57; branch from x=46 east to home center x=52
+        if (map.townHomeWidth > 0) {
+            const homeApproachY = map.townHomeOffsetY + map.townHomeHeight; // 47 + 10 = 57
+            const homeEntranceX = map.townHomeOffsetX + Math.floor(map.townHomeWidth / 2); // 48+5=53
+            placeRow(homeApproachY, townCenterX + 1, homeEntranceX); // x=46 to 53 at y=57
         }
     }
 
@@ -1478,6 +1676,31 @@ export class Game {
 
         for (const pos of this.pathPositions) {
             this.overlayManager.markTileAsPath(pos.x, pos.y);
+        }
+
+        // Bridge the N-S paths into the great path strip:
+        //   Town connector (x=45) enters from the NORTH → mark y=60 (N-grass row) as path
+        //   Farm approach (x=38) enters from the SOUTH → mark y=63 (S-grass row) as path
+        // Only one grass row per column — marking both would cause edge overlays on the wrong side.
+        if (this.tilemap.mapType === 'chunk') {
+            const { mainPathY, mainPathGap } = CONFIG.chunks;
+            const map = this.tilemap;
+            const townCrossX = 30 + Math.floor(30 / 2); // 45 (town N-S connector column)
+            const farmCrossX = map.newHouseOffsetX + map.newHouseWidth; // 38 (farm approach column)
+            this.overlayManager.markTileAsPath(townCrossX, mainPathY);                   // (45, 60)
+            this.overlayManager.markTileAsPath(farmCrossX, mainPathY + mainPathGap - 1); // (38, 63)
+
+            // Clean up any path edge overlays that spilled sideways onto the great path strip.
+            // markTileAsPath places 'E'/'W' overlays on horizontal neighbours inside the strip
+            // (e.g. (44,60), (46,60), (37,63), (39,63)), but renderGreatPath owns those rows visually.
+            for (const [key] of this.overlayManager.overlays) {
+                const comma = key.indexOf(',');
+                const y = parseInt(key.slice(comma + 1), 10);
+                if (y >= mainPathY && y < mainPathY + mainPathGap) {
+                    const x = parseInt(key.slice(0, comma), 10);
+                    this.overlayManager.removePathEdgeOverlays(x, y);
+                }
+            }
         }
     }
 
@@ -1619,8 +1842,17 @@ export class Game {
         // Compute visible bounds once per frame and share with all render systems
         const renderBounds = this.camera.getVisibleBounds();
 
-        // Render tilemap
+        // Render tilemap (chunk tiles — great path zone y=60-63 is skipped here)
         this.tilemap.render(this.ctx, this.camera);
+
+        // Render the great path strip (y=60-63): separate 4-row tilemap between town and farm.
+        // Placed right after chunk tiles so tree backgrounds render OVER it (crowns/shadows).
+        this.tilemap.renderGreatPath(this.ctx, this.camera);
+
+        // Render chunk borders only (dashed outlines) — purchase signs rendered later above trees
+        if (this.chunkManager) {
+            this.chunkManager.render(this.ctx, this.camera);
+        }
 
         // Render forest grass layer (surrounding the playable area)
         if (this.forestGenerator) {
@@ -1833,6 +2065,11 @@ export class Game {
         // Render forest tree crowns (in front of characters)
         if (this.forestGenerator) {
             this.forestGenerator.renderAllTreeForegrounds(this.ctx, this.camera);
+        }
+
+        // Render chunk purchase signs above trees and all entities
+        if (this.chunkManager) {
+            this.chunkManager.renderPurchaseSigns(this.ctx, this.camera);
         }
 
         // Render upper layers (Buildings Upper) - above characters

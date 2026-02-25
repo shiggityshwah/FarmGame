@@ -1,19 +1,17 @@
 import { TOOLS } from './Toolbar.js';
+import { CONFIG } from './config.js';
+import { worldToTile } from './TileUtils.js';
 
-// Define which tiles are acceptable for each tool
+// Define which tiles are acceptable for each tool.
+// validTileIds are derived from CONFIG so there is a single source of truth.
 const ACCEPTABLE_TILES = {
     // Hoe can work on grass tiles (NOT already hoed ground/dirt tiles)
     hoe: {
-        // Grass tiles: 65, 66, 129, 130, 131, 132, 133, 134, 192, 193, 194, 195, 197, 199, 257, 258
-        // Exclude dirt tiles: 67, 449, 457, 458, 459, 521, 522
-        validTileIds: new Set([
-            65, 66, 129, 130, 131, 132, 133, 134, 192, 193, 194, 195, 197, 199, 257, 258
-        ])
+        validTileIds: new Set(CONFIG.tiles.grass)
     },
     // Shovel can work on hoed ground (all dirt tiles) that doesn't already have a hole
     shovel: {
-        // Dirt tiles: 67, 449, 457, 458, 459, 521, 522
-        validTileIds: new Set([67, 449, 457, 458, 459, 521, 522]),
+        validTileIds: new Set(CONFIG.tiles.hoedGround),
         // Also need to check overlay for holes - handled in isAcceptableTile
         checkOverlay: true
     },
@@ -59,6 +57,7 @@ export class TileSelector {
         this.treeManager = null;
         this.flowerManager = null;
         this.forestGenerator = null;
+        this.chunkManager = null;
 
         // Selection state
         this.isSelecting = false;
@@ -98,6 +97,10 @@ export class TileSelector {
 
     setForestGenerator(forestGenerator) {
         this.forestGenerator = forestGenerator;
+    }
+
+    setChunkManager(chunkManager) {
+        this.chunkManager = chunkManager;
     }
 
     setTool(tool) {
@@ -191,8 +194,8 @@ export class TileSelector {
     startSelection(worldX, worldY) {
         if (!this.currentTool) return;
 
-        const tileX = Math.floor(worldX / this.tilemap.tileSize);
-        const tileY = Math.floor(worldY / this.tilemap.tileSize);
+        const tileX = worldToTile(worldX, this.tilemap.tileSize);
+        const tileY = worldToTile(worldY, this.tilemap.tileSize);
 
         this.isSelecting = true;
         this.startTileX = tileX;
@@ -206,8 +209,8 @@ export class TileSelector {
     updateSelection(worldX, worldY) {
         if (!this.isSelecting) return;
 
-        const tileX = Math.floor(worldX / this.tilemap.tileSize);
-        const tileY = Math.floor(worldY / this.tilemap.tileSize);
+        const tileX = worldToTile(worldX, this.tilemap.tileSize);
+        const tileY = worldToTile(worldY, this.tilemap.tileSize);
 
         this.endTileX = tileX;
         this.endTileY = tileY;
@@ -334,6 +337,23 @@ export class TileSelector {
         }
         if (!this.currentTool) return false;
 
+        // Chunk ownership gate: restrict tools based on chunk ownership
+        if (this.chunkManager) {
+            const owned = this.chunkManager.isPlayerOwned(tileX, tileY);
+
+            if (!owned) {
+                // Non-owned chunk (forest or town): sword always OK; shovel only to clear weeds
+                if (this.currentTool.id !== 'sword') {
+                    if (this.currentTool.id === 'shovel') {
+                        const isWeed = this.flowerManager && this.flowerManager.getWeedAt(tileX, tileY) != null;
+                        if (!isWeed) return false;
+                    } else {
+                        return false;
+                    }
+                }
+            }
+        }
+
         const toolRules = ACCEPTABLE_TILES[this.currentTool.id];
         if (!toolRules) {
             // No rules defined - allow all tiles
@@ -431,6 +451,9 @@ export class TileSelector {
             if (this.flowerManager && this.flowerManager.getWeedAt(tileX, tileY)) {
                 return false;
             }
+            // Can't hoe on a tile occupied by an ore vein
+            if (this.oreManager && this.oreManager.getOreAt(tileX, tileY)) return false;
+            if (this.forestGenerator && this.forestGenerator.getPocketOreAt(tileX, tileY)) return false;
         }
 
         if (this.currentTool.id === 'shovel') {

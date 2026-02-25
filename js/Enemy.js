@@ -1,6 +1,7 @@
 import { SpriteAnimator } from './SpriteAnimator.js';
 import { CONFIG } from './config.js';
 import { Logger } from './Logger.js';
+import { worldToTile, manhattanDist } from './TileUtils.js';
 
 const log = Logger.create('Enemy');
 
@@ -176,24 +177,18 @@ export class Enemy {
 
     // Check if a target position is within vision range
     isInVisionRange(targetX, targetY, tileSize) {
-        const myTileX = Math.floor(this.x / tileSize);
-        const myTileY = Math.floor(this.y / tileSize);
-        const targetTileX = Math.floor(targetX / tileSize);
-        const targetTileY = Math.floor(targetY / tileSize);
-
-        const distance = Math.abs(myTileX - targetTileX) + Math.abs(myTileY - targetTileY);
-        return distance <= this.visionRange;
+        return manhattanDist(
+            worldToTile(this.x, tileSize), worldToTile(this.y, tileSize),
+            worldToTile(targetX, tileSize), worldToTile(targetY, tileSize)
+        ) <= this.visionRange;
     }
 
     // Check if target is within attack range (adjacent tile)
     isInAttackRange(targetX, targetY, tileSize) {
-        const myTileX = Math.floor(this.x / tileSize);
-        const myTileY = Math.floor(this.y / tileSize);
-        const targetTileX = Math.floor(targetX / tileSize);
-        const targetTileY = Math.floor(targetY / tileSize);
-
-        const distance = Math.abs(myTileX - targetTileX) + Math.abs(myTileY - targetTileY);
-        return distance <= this.attackRange;
+        return manhattanDist(
+            worldToTile(this.x, tileSize), worldToTile(this.y, tileSize),
+            worldToTile(targetX, tileSize), worldToTile(targetY, tileSize)
+        ) <= this.attackRange;
     }
 
     // Set a target to pursue and attack
@@ -217,10 +212,10 @@ export class Enemy {
         if (!this.target || !this.pathfinder || this.isDying || this.isAttacking) return;
 
         const currentTime = performance.now();
-        const targetTileX = Math.floor(this.target.x / tileSize);
-        const targetTileY = Math.floor(this.target.y / tileSize);
-        const myTileX = Math.floor(this.x / tileSize);
-        const myTileY = Math.floor(this.y / tileSize);
+        const targetTileX = worldToTile(this.target.x, tileSize);
+        const targetTileY = worldToTile(this.target.y, tileSize);
+        const myTileX = worldToTile(this.x, tileSize);
+        const myTileY = worldToTile(this.y, tileSize);
 
         // Check if we need a new path (with cooldown to prevent excessive pathfinding)
         if (!this.currentPath || this.currentPath.length === 0) {
@@ -411,18 +406,14 @@ export class Enemy {
 
     // Check if a point is within this enemy's tile
     containsPoint(worldX, worldY, tileSize) {
-        const enemyTileX = Math.floor(this.x / tileSize);
-        const enemyTileY = Math.floor(this.y / tileSize);
-        const clickTileX = Math.floor(worldX / tileSize);
-        const clickTileY = Math.floor(worldY / tileSize);
-
-        return enemyTileX === clickTileX && enemyTileY === clickTileY;
+        return worldToTile(this.x, tileSize) === worldToTile(worldX, tileSize) &&
+               worldToTile(this.y, tileSize) === worldToTile(worldY, tileSize);
     }
 
     getTilePosition(tileSize) {
         return {
-            x: Math.floor(this.x / tileSize),
-            y: Math.floor(this.y / tileSize)
+            x: worldToTile(this.x, tileSize),
+            y: worldToTile(this.y, tileSize)
         };
     }
 

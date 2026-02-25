@@ -14,15 +14,23 @@ Open `index.html` directly in a web browser. No build step required. Refresh bro
 
 ### Core Systems (js/)
 
-- **config.js** - Centralized game configuration constants (player stats, enemy stats, camera, tiles, path system, goblin stats). Import CONFIG object to access values
+- **config.js** - Centralized game configuration constants (player stats, enemy stats, camera, tiles, path system, goblin stats, chunk system). Import CONFIG object to access values
 - **main.js** - Entry point. DOMContentLoaded initialization of Game and CharacterCustomizer with error handling
 - **Game.js** - Main engine class. Manages game loop (update/render via requestAnimationFrame), initializes all subsystems, handles character loading, movement, and combat
 - **Camera.js** - Pan/zoom camera with world-to-screen coordinate conversion. Zoom range: 0.5x-4x
 - **InputManager.js** - Unified input handling for keyboard (WASD/arrows), mouse (drag/wheel/click), and touch (drag/pinch/tap). Supports drag callbacks and panning toggle
-- **TilemapRenderer.js** - Loads CSV tilemap and renders visible tiles from tileset PNG (16px tiles, 64x64 grid = 4096 tiles). Supports runtime tile modification via setTileAt(). Renders multi-layer TMX maps (home, store, new house ground/roof layers)
+- **TilemapRenderer.js** - Sparse chunk-based world renderer. `generateChunkMap()` creates the initial 3×4 grid using `chunkTiles` Map (sparse storage). Supports `setTileAt()`/`getTileAt()` for runtime tile modification. Renders multi-layer TMX maps (home, store, new house ground/roof layers). `renderGreatPath()` draws the y=60–63 path strip separately.
+- **TileUtils.js** - Pure stateless coordinate helpers: `worldToTile`, `tileToWorld`, `tileCenterWorld`, `manhattanDist`. Import instead of inlining `Math.floor(x/tileSize)`.
 - **SpriteAnimator.js** - Horizontal strip sprite animation with configurable FPS (default 8 FPS). Supports non-looping animations with completion callbacks
 - **CharacterCustomizer.js** - UI panel for hair style and animation selection
 - **Logger.js** - Structured logging with configurable log level (`CONFIG.debug.logLevel`). Use `Logger.create('ModuleName')` per module
+
+### Chunk World System (js/)
+
+- **ChunkManager.js** - Sparse dynamic chunk grid. Stores chunks in a `Map("col,row" → chunk)`. Initial 3×4 grid = 3,600 tiles (vs old 50,400). Chunk states: `OWNED`, `TOWN`, `PURCHASABLE`, `LOCKED`. Chunk types: `FARM`, `TOWN`, `FOREST`. Key methods: `initialize()`, `purchaseChunk()`, `getChunkForTile()`, `isPlayerOwned()`, `isTownChunk()`, `isAccessible()`, `getChunkBounds()`, `render()` (borders), `renderPurchaseSigns()`. Fires `onChunkPurchased` callback. Holds pluggable `generatorRegistry`.
+- **ChunkContentGenerator.js** - Base class/interface for per-biome chunk generators. Override `type`, `generateGround()`, `generateContent()`, `generateSeam()`, `generateNorthEdge()`. All methods are safe no-ops in the base class.
+- **ChunkGeneratorRegistry.js** - Maps biome type strings to `ChunkContentGenerator` instances. Resolves biome type via: (1) designer map override (`setDesignerMap()`), (2) deterministic weighted random hash of (col,row) (`setBiomeWeights()`). Methods: `register()`, `getGenerator()`, `resolveType()`.
+- **ForestChunkGenerator.js** - `ChunkContentGenerator` implementation for forest biome. Wraps `ForestGenerator` and delegates all tree/pocket/seam logic to it. Registered during `Game.init()` as `registry.register(new ForestChunkGenerator(this.forestGenerator))`.
 
 ### Inventory & UI Systems (js/)
 
@@ -37,7 +45,7 @@ Open `index.html` directly in a web browser. No build step required. Refresh bro
 
 - **CropManager.js** / **Crop.js** - Crop lifecycle: 5 growth stages (3 seconds each), harvest with floating "+1" feedback, post-harvest decay effects
 - **Flower.js** - Wild flower system with 3 rarity types: Blue (10%), Red (30%), White (60%). Each has 4 tile variations. Harvest yields 1-2 with fade-out animation
-- **FlowerManager.js** - Spawning and management of flowers and weeds. Dynamic spawn rate based on grass coverage. 75% weeds vs 25% flowers
+- **FlowerManager.js** - Spawning and management of flowers and weeds. Dynamic spawn rate based on grass coverage. 75% weeds vs 25% flowers. `_getSpawnAreas()` returns farm grass, town chunk, and all allocated forest chunk areas.
 - **Weed.js** - Invasive plants with 4 growth stages over 2 minutes. Each click regresses one stage. Multi-tile at stages 3-4 (2 tiles tall)
 
 ### Resource Gathering Systems (js/)
@@ -55,37 +63,50 @@ Open `index.html` directly in a web browser. No build step required. Refresh bro
 ### Tool & Job Systems (js/)
 
 - **Toolbar.js** - Bottom toolbar with tool icons extracted from tileset at 400% scale. Handles tool selection and cursor changes
-- **TileSelector.js** - Click/drag tile selection with rectangle highlight. Validates tiles against tool acceptability rules and resource occupancy
+- **TileSelector.js** - Click/drag tile selection with rectangle highlight. Validates tiles against tool acceptability rules and resource occupancy. Chunk ownership gate: non-owned forest chunks → sword + shovel-on-weed only; owned → all tools.
 - **JobManager.js** - Multi-queue job system. Queues: `all` (shared), `human`, `goblin`. Each worker tracks current job independently. Supports `isIdleJob` flag for idle-sourced jobs. Methods: `addJob()`, `addIdleJob()`, `cancelJob()`, `getAllJobsByQueue()`
 - **Pathfinder.js** - A* pathfinding with MinHeap for O(n log n) performance. Path tiles have 1.5x speed boost (lower cost). Finds paths avoiding obstacles. Returns null if no path found
 - **TileOverlayManager.js** - Manages sprite overlays on tiles (holes from digging, path edge sprites)
-- **IdleManager.js** - Autonomous idle activity system for the human character. State machine: `inactive → waiting (3-5s) → active`. Evaluates harvest, water, flower-pick, and weed-clear tasks using actual A* path lengths (not just Euclidean distance). Prefers tasks with path length ≤ 35 tiles. Backs off exponentially on failure. Returns home when nothing to do
+- **IdleManager.js** - Autonomous idle activity system for the human character. State machine: `inactive → waiting (3-5s) → active`. Evaluates harvest, water, flower-pick, and weed-clear tasks using actual A* path lengths (not just Euclidean distance). Prefers tasks with path length ≤ 35 tiles. Backs off exponentially on failure. Returns home when nothing to do. All activities filter to owned chunks; weed-clearing also allows town chunk.
 
-### Map Layout (home map, 20×43 tiles)
+### Chunk World Layout (initial 3×4 grid = 90 wide × 124 tall)
 
-- **y 0–9**: Store (10×10) at offsetX=2
-- **y 10**: E-W path (full width)
-- **y 11–20**: Former home area (10×10) at offsetX=0
-- **y 21–26**: Gap (6 tiles of grass)
-- **y 27–32**: New house/house.tmx (6×6) at offsetX=12
-- **y 33–42**: Farmable grass area
+- **Town chunk**: col=1, row=1 → world x=30–59, y=30–59
+- **Farm chunk**: col=1, row=2 → world x=30–59, world y=64–93 (shifted 4 tiles by `mainPathGap`)
+- **All other chunks**: forest type (LOCKED or PURCHASABLE)
+- **Great path strip**: world y=60–63 — SEPARATE tilemap, NOT chunk tiles (virtual in `getTileAt`)
+  - y=60: N-grass + `'S'` edge overlay; y=61–62: path tiles (speed boost); y=63: S-grass + `'N'` edge overlay
+  - Rendered by `tilemap.renderGreatPath()` after `tilemap.render()`
+- **Store** (10×10): world (34, 35) — in town chunk
+- **Town home** (home.tmx, 10×10): world (48, 47) — bottom-right of town chunk (`townHomeOffsetX=48, townHomeOffsetY=47`)
+- **New house** (house.tmx, 6×6): world (32, 67) — in farm chunk (`newHouseOffsetX=32, newHouseOffsetY=67`)
+- **Player spawn**: approx world tile (33, 70) in farm chunk
+- **Goblin NPC**: world (46, 55) near town home entrance
+- **Chimney smoke**: world tile (34, 68)
+
+### Farm Chunk Zones (within col=1 row=2)
+
+- **House footprint**: x=32–37, y=67–72
+- **Farm grass** (flowers/crops): y=73–79, x=30–59 (`grassStartY = newHouseOffsetY + newHouseHeight = 73`)
+- **South forest** (trees): y=80–93, x=30–59 — generated via `forestGenerator.generateForChunk(density=0.7, noPocket:true)`. Same tile art as forest chunks; choppable via axe.
 
 ### New House (house.tmx)
 
-- 6×6 tile footprint placed at world tile (12, 27)
+- 6×6 tile footprint placed at world tile (32, 67)
 - Layers: `Ground`, `Ground Detail`, `Wall`, `Wall Detail` (rendered above path overlays via `renderGroundLayers()`), `Roof`, `Roof Detail` (rendered above character, hidden when player inside)
-- Roof hidden when player tile is within x:12–17, y:27–32 (`isPlayerInsideNewHouse`)
-- Door at local tile (1,4) in Roof layer; path endpoint = world (13,32)
-- Player spawn = world tile (13,30)
-- Chimney smoke SpriteAnimator at world tile (14,28): `chimneysmoke_02_strip30.png`, 30 frames @ 12fps. Only shown when player is outside
+- Roof hidden when player tile is within x:32–37, y:67–72 (`isPlayerInsideNewHouse`)
+- Door at local tile (1,4) → world (33, 71); path endpoint = y=72 (under house tilemap bottom row)
+- Chimney smoke SpriteAnimator at world tile (34, 68): `chimneysmoke_02_strip30.png`, 30 frames @ 12fps. Only shown when player is outside
 
-### Path Routing
+### Path Routing (chunk world)
 
-- Path tiles IDs: `[482, 490, 491, 554, 555]`. Speed multiplier: 1.5x
-- E-W path at y=10 connects store ↔ rest of map
-- N-S connector at x=11 from y=10 to y=21, then E-W at y=21 (x=5→11)
-- South approach to new house: S@x=5 y=22→36, E@y=36 x=6→13, N@x=13 y=35→32
-- 3-tile exclusion zone around new house (except direct approach from south at x=13)
+- Path tile IDs: `[482, 490, 491, 554, 555]`. Speed multiplier: 1.5x
+- **Great path** (y=60–63): SEPARATE tilemap via `renderGreatPath()` — no `setTileAt` calls
+- **Town E-W path**: y=45, x=30–59
+- **Town N-S connector**: x=45, y=46–59 (terminates just above great path at y=60)
+- **Town home approach**: y=57 (branch east from connector at x=45), x=46–53
+- **House approach N-S**: x=38 (east of house), y=64–72
+- **House front E-W**: y=72, x=32–38
 
 ### Game.js Combat Properties
 
@@ -100,21 +121,26 @@ animationSession          // For stale callback invalidation
 
 ### Rendering Order
 1. Canvas clear
-2. `tilemap.render()` — base tiles + store/home building layers (Ground, Decor, Buildings Base/Detail)
-3. `overlayManager.renderEdgeOverlays()` — path edge sprites
-4. Forest tree backgrounds
-5. `overlayManager.renderNonEdgeOverlays()` — holes
-6. `tilemap.renderGroundLayers()` — new house floor/walls (ABOVE overlays)
-7. Depth-sorted entities (crops, flowers/weeds, trees, ore veins, tile highlight, characters, enemies, effects)
-8. Forest foregrounds
-9. `tilemap.renderUpperLayers()` — store/home upper building layers
-10. `tilemap.renderRoofLayers()` — new house roof (hidden when player inside)
-11. Chimney smoke (when player outside)
-12. UI
+2. `tilemap.render()` — base chunk tiles + store/home layers (Ground, Decor, Buildings Base/Detail); SKIPS y=60–63
+3. `tilemap.renderGreatPath()` — great path strip at y=60–63 (OVER chunk tiles)
+4. `chunkManager.render()` — ownership borders (OWNED chunks against non-OWNED neighbors)
+5. `overlayManager.renderEdgeOverlays()` — path edge sprites
+6. Forest tree backgrounds (shadows/trunks; render OVER great path)
+7. `overlayManager.renderNonEdgeOverlays()` — holes
+8. `tilemap.renderGroundLayers()` — new house floor/walls (ABOVE overlays)
+9. Depth-sorted entities (crops, flowers/weeds, trees, ore veins, tile highlight, characters, enemies, effects)
+10. Forest foregrounds (tree crowns; render OVER great path)
+11. `chunkManager.renderPurchaseSigns()` — purchase "?" signs ABOVE trees
+12. `tilemap.renderUpperLayers()` — store/home upper building layers
+13. `tilemap.renderRoofLayers()` — new house roof (hidden when player inside)
+14. Chimney smoke (when player outside)
+15. UI
 
 ### Coordinate Systems
 - World coordinates (pixels) ↔ Tile coordinates (grid positions) ↔ Screen coordinates (canvas viewport)
 - Camera class provides conversion methods
+- `TileUtils.js` provides pure helpers: `worldToTile(px, tileSize)`, `tileToWorld(tx, tileSize)`, `tileCenterWorld(tx, tileSize)`, `manhattanDist(ax, ay, bx, by)`
+- `mapStartX`/`mapStartY` on TilemapRenderer are in tile units and may be negative when world expands left/north
 
 ## Asset Structure
 
@@ -122,10 +148,10 @@ animationSession          // For stale callback invalidation
 - **Characters/Skeleton/PNG/** - Enemy character with animations: idle, walk, attack, hurt, death, jump
 - **Characters/Goblin/PNG/** - NPC with full 20 animation set (some multi-row sprites; see GOBLIN_ANIMATION_DATA in Game.js)
 - **Elements/Crops/** - Crop growth stage sprites
-- **Tileset/** - `spr_tileset_sunnysideworld_16px.png` (1024x1024), `testing.csv` (main tilemap)
+- **Tileset/** - `spr_tileset_sunnysideworld_16px.png` (1024x1024)
 - **Tileset/store*.csv** - Store map layers: `store_Ground.csv`, `store_Buildings (Upper).csv`, `store_Decor.csv`
 - **Tileset/house.tmx** - New house map (6×6). Layers: Ground, Ground Detail, Wall, Wall Detail, Roof, Roof Detail. Exported as `house_[Layer].csv`
-- **Tileset/home.tmx** - Home map. Layers: Ground, Decor, Buildings (Base/Detail/Upper)
+- **Tileset/home.tmx** - Town home map (10×10). Layers: Ground, Decor, Buildings (Base/Detail/Upper)
 - **Elements/chimney/** - `chimneysmoke_02_strip30.png` (300×30, 30 frames)
 - **UI/** - Interface elements
 
@@ -148,9 +174,20 @@ import { CONFIG, getRandomDirtTile, getRandomPathTile } from './config.js';
 
 **CONFIG.path** - `speedMultiplier: 1.5` — speed boost on path tiles
 
-**CONFIG.tiles** - Common tile IDs (hoedGround array, holeOverlay, path IDs, pathEdgeOverlays directions)
+**CONFIG.tiles** - Common tile IDs (grass: 16 IDs, hoedGround: 7 IDs, holeOverlay, path IDs, pathEdgeOverlays directions). Single source of truth — do NOT redefine in other files.
 
 **CONFIG.pathfinding** - maxIterations to prevent infinite loops
+
+**CONFIG.forestPockets** - enemySpawnChance (0.4), minEnemiesPerPocket (1), maxEnemiesPerPocket (3)
+
+**CONFIG.chunks** - Chunk world constants:
+- `size: 30` — tiles per chunk side
+- `initialGridCols: 3`, `initialGridRows: 4` — initial sparse grid (3×4 = 12 chunks, 3,600 tiles)
+- `townCol: 1`, `townRow: 1` — town chunk position (world x=30–59, y=30–59)
+- `farmCol: 1`, `farmRow: 2` — farm chunk position (world x=30–59, y=64–93)
+- `mainPathY: 60` — world Y of great path top row
+- `mainPathGap: 4` — world tile rows reserved for great path between townRow and farmRow
+- Gap formula: `worldY(row) = row * 30 + (row > townRow ? mainPathGap : 0)`
 
 **CONFIG.debug** - logLevel, showFps, showPathfinding
 
@@ -199,7 +236,7 @@ Animation filenames have inconsistencies the code handles:
 
 **Adding a new tool action**: In JobManager.js applyToolEffect(), add case for tool.id
 
-**Acceptable tiles**: Defined in TileSelector.js ACCEPTABLE_TILES object per tool. Also checks for resource occupancy (trees, ore, enemies)
+**Acceptable tiles**: Defined in TileSelector.js ACCEPTABLE_TILES object per tool. Also checks for resource occupancy (trees, ore, enemies). Hoe extra exclusion: ore vein tiles always block hoe.
 
 ## Idle System
 
@@ -222,7 +259,7 @@ The `IdleManager` gives the human character autonomous behavior when no player j
 
 **New enemy type**: Add stats to CONFIG.enemy in config.js, add animations to ENEMY_ANIMATIONS in Enemy.js, spawn via EnemyManager
 
-**Modify tilemap**: Edit testing.csv (comma-separated tile IDs), refresh browser
+**New biome type**: Create a class extending `ChunkContentGenerator`, implement `get type()`, `generateGround()`, `generateContent()`, `generateSeam()`. Register with `chunkGeneratorRegistry.register(new YourGenerator(...))` in Game.init(). Optionally add to `setBiomeWeights()` or `setDesignerMap()`.
 
 **New tool**: Add to TOOLS in Toolbar.js, add acceptable tiles in TileSelector.js, add action in JobManager.js
 
@@ -250,8 +287,24 @@ The `IdleManager` gives the human character autonomous behavior when no player j
 - `engagedEnemies` in Game.js is a Set (not Array) for O(1) lookup/add/delete
 - Pathfinder uses MinHeap for O(log n) node extraction instead of array sort
 - JobManager uses `workers` Map (workerId → state) and `queues` object (all/human/goblin)
+- ChunkManager uses sparse `Map("col,row" → chunk)` — unallocated chunks return default grass (tile 65) when read
+- TilemapRenderer uses `chunkTiles` Map (`"col,row"` → Uint16Array(900)) for sparse tile storage
+- `getTileAt`/`setTileAt` support negative tile coords (chunk mode) — no `x<0||y<0` guard
+
+### Chunk Ownership Rules
+- **OWNED** chunks: full farming/gathering access for all tools
+- **TOWN** chunk: walk-through + weed-clearing only (no farming or resource gathering)
+- **PURCHASABLE** chunks: displayed with "?" sign; click to purchase
+- **LOCKED** chunks: walk-through only, shown as forest; must be adjacent to OWNED to become PURCHASABLE
+- Purchasing a chunk allocates all 8 neighbor chunks (if they don't exist) and fires `onChunkPurchased`
 
 ### Logging
 - Use `Logger.create('ModuleName')` at the top of each file
 - Log level configured via `CONFIG.debug.logLevel` ('debug', 'info', 'warn', 'error', 'none')
 - Prefer `log.debug()` for frequent/verbose output, `log.info()` for significant events
+
+## Tests
+
+Tests live in `tests/`. Run by opening `tests/index.html` in a browser (uses a lightweight `TestRunner.js`).
+
+- **tests/ChunkSystem.test.js** - Unit tests for `ChunkContentGenerator`, `ChunkGeneratorRegistry`, and `ForestChunkGenerator`. All tests use plain mock objects — no canvas, tilemap, or DOM required.

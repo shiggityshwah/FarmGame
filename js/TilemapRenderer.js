@@ -1,10 +1,13 @@
 import { Logger } from './Logger.js';
+import { CONFIG } from './config.js';
 
 const log = Logger.create('TilemapRenderer');
 
 export class TilemapRenderer {
     constructor() {
-        this.tileData = null;        // Base layer (grass)
+        this.tileData = null;        // Base layer (grass) — used by CSV/procedural maps
+        this.CHUNK_SIZE = 30;        // Tile width/height of one chunk (matches CONFIG.chunks.size)
+        this.chunkTiles = new Map(); // Sparse storage for 'chunk' maps: "col,row" → Uint16Array(900)
         this.layers = [];            // Additional layers rendered on top
         this.upperLayers = [];       // Layers rendered above character (Buildings Upper)
         this.boundaryData = null;    // Collision/boundary layer
@@ -42,6 +45,12 @@ export class TilemapRenderer {
         this.newHouseOffsetY = 0;
         this.newHouseWidth = 0;
         this.newHouseHeight = 0;
+
+        // Town home (home.tmx) - 10x10 building in bottom-right of town chunk
+        this.townHomeOffsetX = 0;
+        this.townHomeOffsetY = 0;
+        this.townHomeWidth = 0;
+        this.townHomeHeight = 0;
 
         // Map type tracking - 'procedural' for generated maps, 'home' for premade maps
         this.mapType = null;
@@ -484,15 +493,136 @@ export class TilemapRenderer {
     }
 
     getTileAt(x, y) {
+        if (this.mapType === 'chunk') {
+            const { mainPathY, mainPathGap } = CONFIG.chunks;
+            const gapEnd = mainPathY + mainPathGap; // 64
+
+            // Great path zone (y=60-63): return virtual tile IDs for pathfinder/walkability.
+            // Actual visual is rendered by renderGreatPath() — not stored in chunkTiles.
+            if (y >= mainPathY && y < gapEnd) {
+                // y=60: N-grass, y=61-62: path tiles (speed boost), y=63: S-grass
+                return (y === mainPathY + 1 || y === mainPathY + 2) ? 482 : 65;
+            }
+
+            // For world rows below the gap, subtract the gap to get chunk-space Y
+            const adjY = y >= gapEnd ? y - mainPathGap : y;
+            const cs = this.CHUNK_SIZE;
+            const col = Math.floor(x / cs);
+            const row = Math.floor(adjY / cs);
+            const chunk = this.chunkTiles.get(`${col},${row}`);
+            if (!chunk) return 65; // unallocated chunk → default grass
+            // Calculate local coordinates within chunk
+            const localX = x - col * cs;
+            const localY = adjY - row * cs;
+            // Convert to 1D index: row * width + col
+            const index = localY * cs + localX;
+            return chunk[index];
+        }
         if (x < 0 || x >= this.mapWidth || y < 0 || y >= this.mapHeight) {
+            return null;
+        }
+        if (!this.tileData || !this.tileData[y]) {
             return null;
         }
         return this.tileData[y][x];
     }
 
     setTileAt(x, y, tileId) {
+        if (this.mapType === 'chunk') {
+            const { mainPathY, mainPathGap, townRow } = CONFIG.chunks;
+            const gapEnd = mainPathY + mainPathGap; // 64
+
+            // Great path zone: these are virtual tiles — no chunk storage, ignore writes
+            if (y >= mainPathY && y < gapEnd) return;
+
+            // For world rows below the gap, subtract gap to get chunk-space Y
+            const adjY = y >= gapEnd ? y - mainPathGap : y;
+            const cs = this.CHUNK_SIZE;
+            const col = Math.floor(x / cs);
+            const row = Math.floor(adjY / cs);
+            const key = `${col},${row}`;
+            if (!this.chunkTiles.has(key)) {
+                // Allocate this chunk on first write — fills with default grass
+                const newChunk = new Uint16Array(cs * cs).fill(65);
+                this.chunkTiles.set(key, newChunk);
+                // Blend edges with neighboring chunks if they exist
+                this._blendChunkEdges(col, row, newChunk);
+            }
+            const chunk = this.chunkTiles.get(key);
+            if (!chunk) {
+                log.error(`Chunk ${key} not found after allocation attempt`);
+                return;
+            }
+            // Calculate local coordinates within chunk
+            const localX = x - col * cs;
+            const localY = adjY - row * cs;
+            // Convert to 1D index: row * width + col
+            const index = localY * cs + localX;
+            chunk[index] = tileId;
+            // Expand logical map bounds — add mainPathGap for chunk rows below townRow
+            const newMaxX = (col + 1) * cs;
+            const newMaxY = (row + 1) * cs + (row > townRow ? mainPathGap : 0);
+            if (newMaxX > this.mapWidth)  this.mapWidth  = newMaxX;
+            if (newMaxY > this.mapHeight) this.mapHeight = newMaxY;
+            return;
+        }
         if (x >= 0 && x < this.mapWidth && y >= 0 && y < this.mapHeight) {
+            if (!this.tileData || !this.tileData[y]) {
+                log.error(`Cannot set tile at (${x}, ${y}): tileData is null or row ${y} doesn't exist`);
+                return;
+            }
             this.tileData[y][x] = tileId;
+        }
+    }
+
+    /**
+     * Blend chunk edges with neighboring chunks to ensure visual continuity.
+     * When generating a new chunk, inspect neighboring chunks (if they exist)
+     * and match terrain type along borders. Does NOT regenerate neighbor tiles,
+     * only ensures edge continuity of the new chunk.
+     */
+    _blendChunkEdges(chunkCol, chunkRow, chunkData) {
+        const cs = this.CHUNK_SIZE;
+        const commonGrassTiles = [66, 129, 130, 131, 192, 193, 194, 195, 197, 199, 257, 258];
+
+        // Check each edge and blend with neighbor if it exists
+        const edges = [
+            { dir: 'N', neighborKey: `${chunkCol},${chunkRow - 1}`, edgeTiles: [] }, // Top edge
+            { dir: 'S', neighborKey: `${chunkCol},${chunkRow + 1}`, edgeTiles: [] }, // Bottom edge
+            { dir: 'W', neighborKey: `${chunkCol - 1},${chunkRow}`, edgeTiles: [] }, // Left edge
+            { dir: 'E', neighborKey: `${chunkCol + 1},${chunkRow}`, edgeTiles: [] }  // Right edge
+        ];
+
+        for (const edge of edges) {
+            const neighborChunk = this.chunkTiles.get(edge.neighborKey);
+            if (!neighborChunk) continue; // No neighbor to blend with
+
+            // Sample edge tiles from neighbor and match them in this chunk
+            if (edge.dir === 'N') {
+                // Top edge: match neighbor's bottom row
+                for (let x = 0; x < cs; x++) {
+                    const neighborTile = neighborChunk[(cs - 1) * cs + x]; // Bottom row of neighbor
+                    chunkData[0 * cs + x] = neighborTile; // Top row of this chunk
+                }
+            } else if (edge.dir === 'S') {
+                // Bottom edge: match neighbor's top row
+                for (let x = 0; x < cs; x++) {
+                    const neighborTile = neighborChunk[0 * cs + x]; // Top row of neighbor
+                    chunkData[(cs - 1) * cs + x] = neighborTile; // Bottom row of this chunk
+                }
+            } else if (edge.dir === 'W') {
+                // Left edge: match neighbor's right column
+                for (let y = 0; y < cs; y++) {
+                    const neighborTile = neighborChunk[y * cs + (cs - 1)]; // Right column of neighbor
+                    chunkData[y * cs + 0] = neighborTile; // Left column of this chunk
+                }
+            } else if (edge.dir === 'E') {
+                // Right edge: match neighbor's left column
+                for (let y = 0; y < cs; y++) {
+                    const neighborTile = neighborChunk[y * cs + 0]; // Left column of neighbor
+                    chunkData[y * cs + (cs - 1)] = neighborTile; // Right column of this chunk
+                }
+            }
         }
     }
 
@@ -543,19 +673,39 @@ export class TilemapRenderer {
         const bounds = camera.getVisibleBounds();
 
         // Calculate which tiles are visible
-        const startCol = Math.max(0, Math.floor(bounds.left / this.tileSize));
-        const endCol = Math.min(this.mapWidth - 1, Math.ceil(bounds.right / this.tileSize));
-        const startRow = Math.max(0, Math.floor(bounds.top / this.tileSize));
-        const endRow = Math.min(this.mapHeight - 1, Math.ceil(bounds.bottom / this.tileSize));
-
+        // In chunk mode, only render tiles within allocated chunks.
+        // mapStartX/Y are in tile units; may be negative when world expands left/north.
+        const mapStartTileX = this.mapStartX || 0;
+        const mapStartTileY = this.mapStartY || 0;
+        let startCol = Math.max(mapStartTileX, Math.floor(bounds.left / this.tileSize));
+        let endCol   = Math.min(this.mapWidth  - 1, Math.ceil(bounds.right  / this.tileSize));
+        let startRow = Math.max(mapStartTileY, Math.floor(bounds.top    / this.tileSize));
+        let endRow   = Math.min(this.mapHeight - 1, Math.ceil(bounds.bottom / this.tileSize));
+        
         // Small overlap to prevent subpixel gaps between tiles.
         // Since we use a padded tileset, we can safely sample slightly beyond
         // the tile boundary - the padding contains the correct edge pixels.
         const overlap = 0.5;
 
-        // Render base layer
+        // Render base layer - only render tiles within allocated chunks
         for (let row = startRow; row <= endRow; row++) {
             for (let col = startCol; col <= endCol; col++) {
+                // In chunk mode, only render if the chunk is allocated
+                if (this.mapType === 'chunk') {
+                    // Skip the great path zone — rendered separately by renderGreatPath()
+                    const { mainPathY, mainPathGap } = CONFIG.chunks;
+                    if (row >= mainPathY && row < mainPathY + mainPathGap) continue;
+                    const chunkCol = Math.floor(col / this.CHUNK_SIZE);
+                    // Adjust row to chunk-space for the key lookup
+                    const adjRow = row >= mainPathY + mainPathGap ? row - mainPathGap : row;
+                    const chunkRow = Math.floor(adjRow / this.CHUNK_SIZE);
+                    const chunkKey = `${chunkCol},${chunkRow}`;
+                    if (!this.chunkTiles.has(chunkKey)) {
+                        // Skip unallocated chunks - don't render default grass beyond map bounds
+                        continue;
+                    }
+                }
+                
                 const tileId = this.getTileAt(col, row);
                 if (tileId === null || tileId === -1) continue;
 
@@ -608,6 +758,78 @@ export class TilemapRenderer {
                     worldX - overlap, worldY - overlap,
                     this.tileSize + overlap * 2, this.tileSize + overlap * 2
                 );
+            }
+        }
+    }
+
+    /**
+     * Render the great path strip — a 4-row separate tilemap spanning the full allocated width.
+     * Rows: y=mainPathY (N-grass + S-border), y+1 and y+2 (path tiles), y+3 (S-grass + N-border).
+     * Call this AFTER tilemap.render() so it draws over any virtual tile renders in the path zone.
+     * Tree backgrounds (shadows/trunks) render after this — crowns/shadows from adjacent chunks
+     * naturally render over this strip.
+     */
+    renderGreatPath(ctx, camera) {
+        if (this.mapType !== 'chunk') return;
+        const { mainPathY, mainPathGap } = CONFIG.chunks;
+        const tileSize = this.tileSize;
+        const bounds = camera.getVisibleBounds();
+        const overlap = 0.5;
+
+        const pathStartRow = mainPathY;               // 60
+        const pathEndRow   = mainPathY + mainPathGap - 1; // 63
+
+        if (bounds.bottom < pathStartRow * tileSize || bounds.top > (pathEndRow + 1) * tileSize) return;
+
+        const startRow = Math.max(pathStartRow, Math.floor(bounds.top / tileSize));
+        const endRow   = Math.min(pathEndRow,   Math.ceil(bounds.bottom / tileSize));
+        const mapStartTileX = this.mapStartX || 0;
+        const startCol = Math.max(mapStartTileX, Math.floor(bounds.left / tileSize));
+        const endCol   = Math.min(this.mapWidth - 1, Math.ceil(bounds.right / tileSize));
+
+        // Deterministic tile selection — same tile each frame, no flicker
+        const getGrassTile = (x) => {
+            const variants = [65, 66, 129, 130, 131, 192, 193, 194, 195, 197, 199, 257, 258];
+            return variants[((x * 2654435761) >>> 0) % variants.length];
+        };
+        const getPathTile = (x) => {
+            const rare = [490, 491, 554, 555];
+            return ((x * 1234567891) >>> 0) % 10 < 6 ? 482 : rare[((x * 987654321) >>> 0) % 4];
+        };
+
+        const drawTile = (tileId, worldX, worldY) => {
+            const src = this.getTilesetSourceRectWithPadding(tileId, overlap);
+            ctx.drawImage(
+                this.tilesetImage,
+                src.x, src.y, src.width, src.height,
+                worldX - overlap, worldY - overlap,
+                tileSize + overlap * 2, tileSize + overlap * 2
+            );
+        };
+
+        // Crossing columns: town N-S connector enters at y=60 (N-grass), farm approach at y=63 (S-grass)
+        const townCrossX = Math.floor(this.storeOffsetX / this.CHUNK_SIZE) * this.CHUNK_SIZE
+                         + Math.floor(this.CHUNK_SIZE / 2); // 45
+        const farmCrossX = this.newHouseOffsetX + this.newHouseWidth; // 38
+
+        for (let row = startRow; row <= endRow; row++) {
+            const rowOffset = row - mainPathY; // 0=N-grass, 1-2=path, 3=S-grass
+            for (let col = startCol; col <= endCol; col++) {
+                const worldX = col * tileSize;
+                const worldY = row * tileSize;
+                // Center rows are always path; outer grass rows become path only at their entry column:
+                //   rowOffset=0 (y=60): town connector (x=45) enters from north
+                //   rowOffset=3 (y=63): farm approach  (x=38) enters from south
+                const isBridge = (rowOffset === 0 && col === townCrossX)
+                               || (rowOffset === 3 && col === farmCrossX);
+                if (rowOffset === 1 || rowOffset === 2 || isBridge) {
+                    drawTile(getPathTile(col), worldX, worldY);
+                } else {
+                    // Grass row with inward-facing border overlay
+                    drawTile(getGrassTile(col), worldX, worldY);
+                    const overlayKey = rowOffset === 0 ? 'S' : 'N';
+                    drawTile(CONFIG.tiles.pathEdgeOverlays[overlayKey], worldX, worldY);
+                }
             }
         }
     }
@@ -668,11 +890,23 @@ export class TilemapRenderer {
                tileY >= this.newHouseOffsetY && tileY < this.newHouseOffsetY + this.newHouseHeight;
     }
 
-    // Returns true if the tile is occupied by a custom tilemap (e.g. house.tmx)
+    // Returns true if the tile is occupied by a custom tilemap (e.g. house.tmx, home.tmx, store.tmx)
     isCustomTilemapTile(tileX, tileY) {
         if (this.newHouseWidth > 0 && this.newHouseHeight > 0) {
             if (tileX >= this.newHouseOffsetX && tileX < this.newHouseOffsetX + this.newHouseWidth &&
                 tileY >= this.newHouseOffsetY && tileY < this.newHouseOffsetY + this.newHouseHeight) {
+                return true;
+            }
+        }
+        if (this.townHomeWidth > 0 && this.townHomeHeight > 0) {
+            if (tileX >= this.townHomeOffsetX && tileX < this.townHomeOffsetX + this.townHomeWidth &&
+                tileY >= this.townHomeOffsetY && tileY < this.townHomeOffsetY + this.townHomeHeight) {
+                return true;
+            }
+        }
+        if (this.storeWidth > 0 && this.storeHeight > 0) {
+            if (tileX >= this.storeOffsetX && tileX < this.storeOffsetX + this.storeWidth &&
+                tileY >= this.storeOffsetY && tileY < this.storeOffsetY + this.storeHeight) {
                 return true;
             }
         }
@@ -689,6 +923,10 @@ export class TilemapRenderer {
 
     // Get the center of the house for camera positioning
     getHouseCenter() {
+        if (this.mapType === 'chunk') {
+            // Use new house position in chunk map
+            return this.getNewHouseCenter();
+        }
         const centerX = (this.houseOffsetX + this.houseWidth / 2) * this.tileSize;
         const centerY = (this.houseOffsetY + this.houseHeight / 2) * this.tileSize;
         return { x: centerX, y: centerY };
@@ -698,8 +936,8 @@ export class TilemapRenderer {
     getPlayerSpawnPosition() {
         // Door is at local (1, 4) in house.tmx Roof layer.
         // One tile above the door = local (1, 3) = the indoor tile in front of the door.
-        const spawnTileX = this.newHouseOffsetX + 1; // x=13 with newHouseOffsetX=12
-        const spawnTileY = this.newHouseOffsetY + 3; // y=30 (local row 3, one above door at row 4)
+        const spawnTileX = this.newHouseOffsetX + 1;
+        const spawnTileY = this.newHouseOffsetY + 3;
 
         return {
             x: spawnTileX * this.tileSize + this.tileSize / 2,
@@ -710,7 +948,23 @@ export class TilemapRenderer {
     }
 
     getRandomTilePosition() {
-        // Only return positions in the grass area (below the new house)
+        if (this.mapType === 'chunk') {
+            // Farm chunk: col=1, row=2 → x=30-59, world y=64-93; grass below house starts at y=73
+            const { farmCol, farmRow, mainPathGap } = CONFIG.chunks;
+            const farmLeft = farmCol * this.CHUNK_SIZE;  // 30 (farm chunk start)
+            const farmWidth = this.CHUNK_SIZE; // 30
+            const grassStartY = this.newHouseOffsetY + this.newHouseHeight; // 67 + 6 = 73
+            const farmChunkBottom = (farmRow + 1) * this.CHUNK_SIZE + mainPathGap; // 3*30+4 = 94
+            const x = farmLeft + Math.floor(Math.random() * farmWidth);
+            const y = grassStartY + Math.floor(Math.random() * (farmChunkBottom - grassStartY));
+            return {
+                x: x * this.tileSize + this.tileSize / 2,
+                y: y * this.tileSize + this.tileSize / 2,
+                tileX: x,
+                tileY: y
+            };
+        }
+        // Legacy: positions in the grass area (below the new house)
         const grassStartY = this.newHouseOffsetY + this.newHouseHeight;
         const x = Math.floor(Math.random() * this.mapWidth);
         const y = grassStartY + Math.floor(Math.random() * (this.mapHeight - grassStartY));
@@ -738,7 +992,265 @@ export class TilemapRenderer {
             return tileY >= grassStartY;
         }
 
+        if (this.mapType === 'chunk') {
+            // Farm chunk bounds: col=1, row=2 → x=30-59, world y=64-93. Farmable area is below the house.
+            const { farmCol } = CONFIG.chunks;
+            const grassStartY = this.newHouseOffsetY + this.newHouseHeight; // 67 + 6 = 73
+            const farmLeft = farmCol * this.CHUNK_SIZE;   // 30
+            const farmRight = farmLeft + this.CHUNK_SIZE;  // 60
+            return tileX >= farmLeft && tileX < farmRight && tileY >= grassStartY;
+        }
+
         // CSV or other map types - not farmable
         return false;
+    }
+
+    /**
+     * generateChunkMap — Sparse chunk-based world generation.
+     *
+     * ARCHITECTURAL OVERVIEW:
+     * =======================
+     * This system uses SPARSE chunk storage - only 3×4 chunks are allocated initially.
+     * Chunks are stored in a Map: "col,row" → Uint16Array(900).
+     * Unallocated chunks return default grass tile (65) when read.
+     *
+     * World layout (3 cols × 4 rows + 4-tile great path gap → 90×124 total):
+     *   Town chunk: col=1, row=1 → x=30-59, world y=30-59
+     *   Great path strip: world y=60-63 (separate renderer, not chunk tiles)
+     *   Farm chunk: col=1, row=2 → x=30-59, world y=64-93
+     *
+     * Key positions (tile coordinates):
+     *   Store (10×10):   x=34-43, y=35-44  (town chunk, centered)
+     *   House (6×6):     x=32-37, world y=67-72 (farm chunk, 3-tile gap from corner)
+     *   Player spawn:    (33, 70)            house.tmx local (1,3)
+     *   Great path:      world y=60-63 (y=60 N-grass, y=61-62 path tiles, y=63 S-grass)
+     */
+    async generateChunkMap(tilesetPath) {
+        try {
+            // Set map type FIRST so setTileAt() knows we're in chunk mode
+            this.mapType = 'chunk';
+            
+            // Load tileset image
+            this.tilesetImage = await this.loadImage(tilesetPath);
+            this.tilesPerRow = Math.floor(this.tilesetImage.width / this.paddedTileSize);
+
+            // Load TMX files (store + house + home for town building)
+            const [storeTmxResponse, houseTmxResponse, homeTmxResponse] = await Promise.all([
+                fetch('Tileset/store.tmx'),
+                fetch('Tileset/house.tmx'),
+                fetch('Tileset/home.tmx')
+            ]);
+            const storeData = this.parseTmx(await storeTmxResponse.text());
+            const houseData = this.parseTmx(await houseTmxResponse.text());
+            const homeData  = this.parseTmx(await homeTmxResponse.text());
+
+            // --- Map dimensions: 3×4 chunks + 4-tile great path gap = 90×124 tiles ---
+            const { initialGridCols, initialGridRows, townCol, townRow, farmCol, farmRow, mainPathGap } = CONFIG.chunks;
+            this.mapStartX = 0;                                               // left edge (tile units); may go negative on left-expansion
+            this.mapStartY = 0;                                               // top edge (tile units); may go negative on north-expansion
+            this.mapWidth  = initialGridCols * this.CHUNK_SIZE;               // 3 × 30 = 90
+            this.mapHeight = initialGridRows * this.CHUNK_SIZE + mainPathGap;  // 4 × 30 + 4 = 124
+
+            // --- Store placement in town chunk (col=1, row=1, x=30-59, y=30-59) ---
+            this.storeWidth  = storeData.width;   // 10
+            this.storeHeight = storeData.height;  // 10
+            this.storeOffsetX = townCol * this.CHUNK_SIZE + 4;  // 30 + 4 = 34 (centered in chunk)
+            this.storeOffsetY = townRow * this.CHUNK_SIZE + 5;  // 30 + 5 = 35
+
+            // --- New house (house.tmx) in farm chunk (col=1, row=2, world x=30-59, world y=64-93) ---
+            this.newHouseWidth  = houseData.width;  // 6
+            this.newHouseHeight = houseData.height; // 6
+            this.newHouseOffsetX = farmCol * this.CHUNK_SIZE + 2;              // 30 + 2 = 32
+            this.newHouseOffsetY = farmRow * this.CHUNK_SIZE + mainPathGap + 3; // 60 + 4 + 3 = 67
+
+            // --- Town home (home.tmx) in bottom-right of town chunk (col=1, row=1, x=30-59, y=30-59) ---
+            // Place 10×10 building at x=48-57, y=47-56 (bottom-right quadrant, 2-tile margins)
+            this.townHomeWidth  = homeData.width;   // 10
+            this.townHomeHeight = homeData.height;  // 10
+            this.townHomeOffsetX = townCol * this.CHUNK_SIZE + 18; // 30 + 18 = 48
+            this.townHomeOffsetY = townRow * this.CHUNK_SIZE + 17; // 30 + 17 = 47
+
+            // Alias so legacy code using houseOffsetY + houseHeight still works
+            this.houseOffsetX = this.newHouseOffsetX;
+            this.houseOffsetY = this.newHouseOffsetY;
+            this.houseWidth   = this.newHouseWidth;
+            this.houseHeight  = this.newHouseHeight;
+
+            // --- Sparse tile storage: allocate ALL 3×4 chunks initially ---
+            // This replaces the old 50,400-tile pre-allocation with 3,600 tiles (12 chunks).
+            const commonGrassTiles = [66, 129, 130, 131, 192, 193, 194, 195, 197, 199, 257, 258];
+            const storeGroundLayer = storeData.tileLayers.find(l => l.name === 'Ground');
+            const cs = this.CHUNK_SIZE; // 30
+
+            this.chunkTiles = new Map();
+            this.tileData   = null; // unused in chunk mode
+
+            // Allocate all 3×4 chunks with random grass
+            const fillChunkGrass = (col, row) => {
+                const key = `${col},${row}`;
+                const chunk = new Uint16Array(cs * cs);
+                for (let i = 0; i < cs * cs; i++) {
+                    chunk[i] = commonGrassTiles[Math.floor(Math.random() * commonGrassTiles.length)];
+                }
+                this.chunkTiles.set(key, chunk);
+            };
+
+            // Allocate all initial chunks
+            for (let row = 0; row < initialGridRows; row++) {
+                for (let col = 0; col < initialGridCols; col++) {
+                    fillChunkGrass(col, row);
+                }
+            }
+
+            // Composite store ground layer into the town chunk via setTileAt
+            if (storeGroundLayer) {
+                for (let ly = 0; ly < this.storeHeight; ly++) {
+                    for (let lx = 0; lx < this.storeWidth; lx++) {
+                        const tile = storeGroundLayer.data[ly][lx];
+                        if (tile >= 0) {
+                            this.setTileAt(this.storeOffsetX + lx, this.storeOffsetY + ly, tile);
+                        }
+                    }
+                }
+            }
+
+            // Composite town home ground layer into the town chunk via setTileAt
+            const homeGroundLayer = homeData.tileLayers.find(l => l.name === 'Ground');
+            if (homeGroundLayer) {
+                for (let ly = 0; ly < this.townHomeHeight; ly++) {
+                    for (let lx = 0; lx < this.townHomeWidth; lx++) {
+                        const tile = homeGroundLayer.data[ly][lx];
+                        if (tile >= 0) {
+                            this.setTileAt(this.townHomeOffsetX + lx, this.townHomeOffsetY + ly, tile);
+                        }
+                    }
+                }
+            }
+
+            // --- Layers below character: store + town home Decor + Buildings (Base/Detail) ---
+            this.layers = [];
+            const addLayersFromTmx = (tmxData, offsetX, offsetY) => {
+                const names = ['Decor', 'Buildings (Base)', 'Buildings (Detail)'];
+                for (const name of names) {
+                    const layer = tmxData.tileLayers.find(l => l.name === name);
+                    if (layer) this.layers.push({ data: layer.data, offsetX, offsetY });
+                }
+            };
+            addLayersFromTmx(storeData, this.storeOffsetX, this.storeOffsetY);
+            addLayersFromTmx(homeData, this.townHomeOffsetX, this.townHomeOffsetY);
+
+            // --- New house ground/floor layers (rendered AFTER path overlays) ---
+            this.groundLayers = [];
+            for (const name of ['Ground', 'Ground Detail', 'Wall', 'Wall Detail']) {
+                const layer = houseData.tileLayers.find(l => l.name === name);
+                if (layer) {
+                    this.groundLayers.push({
+                        data: layer.data,
+                        offsetX: this.newHouseOffsetX,
+                        offsetY: this.newHouseOffsetY
+                    });
+                }
+            }
+
+            // --- Layers above character: store + town home upper, house roof ---
+            this.upperLayers = [];
+            const addUpperLayersFromTmx = (tmxData, offsetX, offsetY) => {
+                const layer = tmxData.tileLayers.find(l => l.name === 'Buildings (Upper)');
+                if (layer) this.upperLayers.push({ data: layer.data, offsetX, offsetY });
+            };
+            addUpperLayersFromTmx(storeData, this.storeOffsetX, this.storeOffsetY);
+            addUpperLayersFromTmx(homeData, this.townHomeOffsetX, this.townHomeOffsetY);
+
+            this.roofLayers = [];
+            for (const name of ['Roof', 'Roof Detail']) {
+                const layer = houseData.tileLayers.find(l => l.name === name);
+                if (layer) {
+                    this.roofLayers.push({
+                        data: layer.data,
+                        offsetX: this.newHouseOffsetX,
+                        offsetY: this.newHouseOffsetY
+                    });
+                }
+            }
+
+            // --- Collision rectangles ---
+            this.collisionRects = [];
+
+            for (const rect of storeData.collisionRects) {
+                this.collisionRects.push({
+                    x: rect.x + this.storeOffsetX * this.tileSize,
+                    y: rect.y + this.storeOffsetY * this.tileSize,
+                    width: rect.width, height: rect.height
+                });
+            }
+
+            for (const rect of homeData.collisionRects) {
+                this.collisionRects.push({
+                    x: rect.x + this.townHomeOffsetX * this.tileSize,
+                    y: rect.y + this.townHomeOffsetY * this.tileSize,
+                    width: rect.width, height: rect.height
+                });
+            }
+
+            // New house: tile-based collision from Wall layer
+            const houseWallLayer = houseData.tileLayers.find(l => l.name === 'Wall');
+            if (houseWallLayer) {
+                for (let localY = 0; localY < this.newHouseHeight; localY++) {
+                    for (let localX = 0; localX < this.newHouseWidth; localX++) {
+                        if (houseWallLayer.data[localY][localX] >= 0) {
+                            this.collisionRects.push({
+                                x: (this.newHouseOffsetX + localX) * this.tileSize,
+                                y: (this.newHouseOffsetY + localY) * this.tileSize,
+                                width: this.tileSize, height: this.tileSize
+                            });
+                        }
+                    }
+                }
+            }
+
+            // --- Interactables ---
+            this.interactables = [];
+            for (const interactable of storeData.interactables) {
+                this.interactables.push({
+                    x: interactable.x + this.storeOffsetX * this.tileSize,
+                    y: interactable.y + this.storeOffsetY * this.tileSize,
+                    width: interactable.width, height: interactable.height,
+                    action: interactable.action
+                });
+            }
+            for (const interactable of homeData.interactables) {
+                this.interactables.push({
+                    x: interactable.x + this.townHomeOffsetX * this.tileSize,
+                    y: interactable.y + this.townHomeOffsetY * this.tileSize,
+                    width: interactable.width, height: interactable.height,
+                    action: interactable.action
+                });
+            }
+            for (const interactable of houseData.interactables) {
+                this.interactables.push({
+                    x: interactable.x + this.newHouseOffsetX * this.tileSize,
+                    y: interactable.y + this.newHouseOffsetY * this.tileSize,
+                    width: interactable.width, height: interactable.height,
+                    action: interactable.action
+                });
+            }
+
+            this.loaded = true;
+            // mapType was already set at the start of this function
+            log.debug(`Chunk map generated: ${this.mapWidth}×${this.mapHeight} tiles`);
+            log.debug(`Store: ${this.storeWidth}×${this.storeHeight} at (${this.storeOffsetX},${this.storeOffsetY})`);
+            log.debug(`Town home: ${this.townHomeWidth}×${this.townHomeHeight} at (${this.townHomeOffsetX},${this.townHomeOffsetY})`);
+            log.debug(`New house: ${this.newHouseWidth}×${this.newHouseHeight} at (${this.newHouseOffsetX},${this.newHouseOffsetY})`);
+        } catch (error) {
+            log.error('Failed to generate chunk map:', error);
+            throw error;
+        }
+    }
+
+    // Get the center of the new house for camera positioning (used in chunk map mode)
+    getNewHouseCenter() {
+        const centerX = (this.newHouseOffsetX + this.newHouseWidth / 2) * this.tileSize;
+        const centerY = (this.newHouseOffsetY + this.newHouseHeight / 2) * this.tileSize;
+        return { x: centerX, y: centerY };
     }
 }

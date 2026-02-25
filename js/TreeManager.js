@@ -79,6 +79,38 @@ export class TreeManager {
         return localOccupied;
     }
 
+    // Spawn trees in a specific rectangular area (for south forest area, purchased chunks, etc.)
+    // Returns the updated occupied set with new tree positions added
+    spawnTreesInArea(x, y, w, h, count = 5, occupiedSet = new Set()) {
+        const localOccupied = new Set(occupiedSet);
+        let placed = 0;
+
+        for (let i = 0; i < count * 3 && placed < count; i++) {
+            const treeType = getRandomTreeType();
+            const tileX = x + Math.floor(Math.random() * Math.max(1, w - treeType.width + 1));
+            const tileY = y + Math.floor(Math.random() * Math.max(1, h));
+
+            let conflict = false;
+            for (let dx = 0; dx < treeType.width; dx++) {
+                if (localOccupied.has(`${tileX + dx},${tileY}`)) {
+                    conflict = true;
+                    break;
+                }
+            }
+            if (conflict) continue;
+
+            for (let dx = 0; dx < treeType.width; dx++) {
+                localOccupied.add(`${tileX + dx},${tileY}`);
+            }
+
+            this.spawnTree(tileX, tileY, treeType);
+            placed++;
+        }
+
+        log.debug(`spawnTreesInArea: placed ${placed}/${count} trees in (${x},${y}) ${w}×${h}`);
+        return localOccupied;
+    }
+
     // Get tree at a tile position (checks all tiles of each tree)
     getTreeAt(tileX, tileY) {
         for (const tree of this.trees) {

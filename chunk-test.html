@@ -1,0 +1,1491 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Chunk Generator Test</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+
+        body {
+            background: #0d1117;
+            color: #c9d1d9;
+            font-family: 'Segoe UI', system-ui, sans-serif;
+            display: flex;
+            align-items: flex-start;
+            justify-content: center;
+            min-height: 100vh;
+            padding: 24px;
+            gap: 20px;
+        }
+
+        #canvas-wrap {
+            flex-shrink: 0;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        #canvas-scroll {
+            overflow: auto;
+            max-height: calc(100vh - 72px);
+            max-width: calc(100vw - 316px);
+            border: 2px solid #30363d;
+            border-radius: 4px;
+            background: #000;
+        }
+
+        #chunk-canvas {
+            display: block;
+            image-rendering: pixelated;
+            image-rendering: crisp-edges;
+        }
+
+        #canvas-label {
+            font-size: 11px;
+            color: #8b949e;
+            text-align: center;
+            letter-spacing: 0.5px;
+        }
+
+        #panel {
+            width: 256px;
+            flex-shrink: 0;
+            display: flex;
+            flex-direction: column;
+            gap: 0;
+        }
+
+        .panel-box {
+            background: #161b22;
+            border: 1px solid #30363d;
+            border-radius: 8px;
+            padding: 14px 16px;
+            margin-bottom: 10px;
+        }
+
+        .panel-box h2 {
+            font-size: 11px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 1.5px;
+            color: #58a6ff;
+            margin-bottom: 12px;
+            padding-bottom: 8px;
+            border-bottom: 1px solid #21262d;
+        }
+
+        .field { margin-bottom: 11px; }
+        .field:last-child { margin-bottom: 0; }
+
+        .field label {
+            display: block;
+            font-size: 10px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.8px;
+            color: #8b949e;
+            margin-bottom: 5px;
+        }
+
+        select {
+            width: 100%;
+            background: #0d1117;
+            color: #c9d1d9;
+            border: 1px solid #30363d;
+            border-radius: 5px;
+            padding: 6px 8px;
+            font-size: 12px;
+            cursor: pointer;
+            appearance: none;
+            -webkit-appearance: none;
+            background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%238b949e'/%3E%3C/svg%3E");
+            background-repeat: no-repeat;
+            background-position: right 8px center;
+            padding-right: 24px;
+        }
+        select:focus { outline: none; border-color: #58a6ff; }
+        optgroup { color: #8b949e; font-size: 10px; }
+        option   { color: #c9d1d9; background: #161b22; }
+
+        .range-row {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .range-row input[type="range"] {
+            flex: 1;
+            accent-color: #58a6ff;
+            cursor: pointer;
+            height: 4px;
+        }
+        .range-val {
+            font-size: 12px;
+            font-weight: 700;
+            color: #58a6ff;
+            width: 36px;
+            text-align: right;
+            flex-shrink: 0;
+        }
+
+        .toggle-row { display: flex; align-items: center; justify-content: space-between; }
+        .toggle-label { font-size: 12px; color: #c9d1d9; }
+        .toggle { position: relative; display: inline-block; width: 38px; height: 20px; }
+        .toggle input { opacity: 0; width: 0; height: 0; }
+        .tog-slider {
+            position: absolute;
+            cursor: pointer;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: #21262d;
+            border: 1px solid #30363d;
+            border-radius: 20px;
+            transition: 0.25s;
+        }
+        .tog-slider:before {
+            position: absolute; content: "";
+            height: 14px; width: 14px;
+            left: 2px; bottom: 2px;
+            background: #8b949e;
+            border-radius: 50%;
+            transition: 0.25s;
+        }
+        .toggle input:checked + .tog-slider { background: #1f6feb; border-color: #58a6ff; }
+        .toggle input:checked + .tog-slider:before { transform: translateX(18px); background: #fff; }
+
+        .btn {
+            width: 100%;
+            padding: 9px;
+            border-radius: 6px;
+            font-size: 12px;
+            font-weight: 600;
+            cursor: pointer;
+            text-transform: uppercase;
+            letter-spacing: 0.8px;
+            transition: background 0.15s, border-color 0.15s, color 0.15s;
+        }
+        .btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+        #btn-regen {
+            background: #238636;
+            color: #fff;
+            border: 1px solid #2ea043;
+        }
+        #btn-regen:not(:disabled):hover { background: #2ea043; }
+
+        .dpad {
+            display: grid;
+            grid-template-columns: 1fr 1fr 1fr;
+            grid-template-rows: auto auto auto;
+            gap: 4px;
+            margin-bottom: 8px;
+        }
+        .dpad-btn {
+            padding: 8px 4px;
+            font-size: 11px;
+            background: #1f6feb;
+            color: #fff;
+            border: 1px solid #58a6ff;
+        }
+        .dpad-btn:not(:disabled):hover { background: #388bfd; }
+        #btn-north { grid-column: 2; grid-row: 1; }
+        #btn-west  { grid-column: 1; grid-row: 2; }
+        #btn-east  { grid-column: 3; grid-row: 2; }
+        #btn-south { grid-column: 2; grid-row: 3; }
+        .dpad-center {
+            grid-column: 2; grid-row: 2;
+            background: #0d1117;
+            border: 1px solid #21262d;
+            border-radius: 6px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 9px;
+            font-weight: 700;
+            letter-spacing: 1px;
+            color: #30363d;
+        }
+
+        #btn-path {
+            background: #1f6feb;
+            color: #fff;
+            border: 1px solid #58a6ff;
+            margin-bottom: 6px;
+        }
+        #btn-path:not(:disabled):hover { background: #388bfd; }
+        #btn-path.active {
+            background: transparent;
+            color: #f0883e;
+            border-color: #f0883e;
+        }
+        #btn-path.active:not(:disabled):hover { background: rgba(240,136,62,0.1); }
+
+        #btn-clear {
+            background: transparent;
+            color: #8b949e;
+            border: 1px solid #30363d;
+        }
+        #btn-clear:not(:disabled):hover { background: #2d1a1a; color: #f85149; border-color: #f85149; }
+
+        .forest-only { transition: opacity 0.2s; }
+        .forest-only.dimmed { opacity: 0.3; pointer-events: none; }
+
+        #status-box {
+            background: #161b22;
+            border: 1px solid #30363d;
+            border-radius: 6px;
+            padding: 8px 12px;
+            font-size: 11px;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px 14px;
+            margin-top: 10px;
+        }
+        .stat-item { display: flex; gap: 4px; align-items: center; }
+        .stat-key { color: #8b949e; }
+        .stat-val { color: #58a6ff; font-weight: 700; }
+
+        #stack-info {
+            font-size: 11px;
+            color: #8b949e;
+            margin-bottom: 10px;
+            min-height: 16px;
+        }
+
+        #loading {
+            position: fixed;
+            inset: 0;
+            background: rgba(13,17,23,0.88);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            gap: 16px;
+            z-index: 100;
+            font-size: 14px;
+            color: #8b949e;
+        }
+        .spinner {
+            width: 32px; height: 32px;
+            border: 3px solid #30363d;
+            border-top-color: #58a6ff;
+            border-radius: 50%;
+            animation: spin 0.7s linear infinite;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        #loading.hidden { display: none; }
+    </style>
+</head>
+<body>
+
+<div id="loading"><div class="spinner"></div>Loading tileset…</div>
+
+<div id="canvas-wrap">
+    <div id="canvas-scroll">
+        <canvas id="chunk-canvas" width="480" height="480"></canvas>
+    </div>
+    <div id="canvas-label">30 × 30 tiles · 1 chunk</div>
+</div>
+
+<div id="panel">
+
+    <div class="panel-box">
+        <h2>Chunk Generator</h2>
+        <div class="field">
+            <label>Chunk Type</label>
+            <select id="sel-type">
+                <option value="forest">Forest</option>
+                <option value="farm">Farm</option>
+                <option value="town">Town</option>
+            </select>
+        </div>
+    </div>
+
+    <div class="panel-box forest-only" id="forest-options">
+        <h2>Forest Options</h2>
+        <div class="field">
+            <label>Clearing Resource</label>
+            <select id="sel-resource">
+                <optgroup label="Crops">
+                    <option value="crop_PUMPKIN">Pumpkins</option>
+                    <option value="crop_CARROT">Carrots</option>
+                    <option value="crop_SUNFLOWER">Sunflowers</option>
+                    <option value="crop_CAULIFLOWER">Cauliflower</option>
+                    <option value="crop_WHEAT">Wheat</option>
+                </optgroup>
+                <optgroup label="Ores">
+                    <option value="ore_IRON">Iron Ore</option>
+                    <option value="ore_COAL">Coal Ore</option>
+                    <option value="ore_MITHRIL">Mithril Ore</option>
+                    <option value="ore_GOLD">Gold Ore</option>
+                    <option value="ore_STONE">Stone</option>
+                </optgroup>
+                <optgroup label="Other">
+                    <option value="blank">Blank Grass</option>
+                </optgroup>
+            </select>
+        </div>
+        <div class="field">
+            <label>Forest Density</label>
+            <div class="range-row">
+                <input type="range" id="sl-density" min="20" max="90" value="70" step="5">
+                <span class="range-val" id="val-density">70%</span>
+            </div>
+        </div>
+        <div class="field">
+            <label>Clearing Radius (tiles)</label>
+            <div class="range-row">
+                <input type="range" id="sl-radius" min="3" max="11" value="7" step="1">
+                <span class="range-val" id="val-radius">7</span>
+            </div>
+        </div>
+    </div>
+
+    <div class="panel-box">
+        <h2>Global Options</h2>
+        <div class="field">
+            <div class="toggle-row">
+                <span class="toggle-label">Flowers &amp; Weeds</span>
+                <label class="toggle">
+                    <input type="checkbox" id="chk-flora" checked>
+                    <span class="tog-slider"></span>
+                </label>
+            </div>
+        </div>
+    </div>
+
+    <button id="btn-regen" class="btn">⟳ Regenerate</button>
+
+    <div class="panel-box" style="margin-top:10px;">
+        <h2>Stack</h2>
+        <div id="stack-info">No chunks locked</div>
+        <div class="dpad">
+            <button id="btn-north" class="btn dpad-btn">↑ N</button>
+            <button id="btn-west"  class="btn dpad-btn">← W</button>
+            <div class="dpad-center">SET</div>
+            <button id="btn-east"  class="btn dpad-btn">E →</button>
+            <button id="btn-south" class="btn dpad-btn">↓ S</button>
+        </div>
+        <button id="btn-path"  class="btn">+ Path Below</button>
+        <button id="btn-clear" class="btn">✕ Clear All</button>
+    </div>
+
+    <div id="status-box">
+        <span class="stat-item"><span class="stat-key">Ready</span></span>
+    </div>
+
+</div>
+
+<script type="module">
+// ============================================================
+// CONSTANTS
+// ============================================================
+const CHUNK_SIZE = 30;
+const TILE_SIZE  = 16;
+const CSS_SCALE  = 720;            // CSS px per chunk
+const CSS_PER_TILE = CSS_SCALE / CHUNK_SIZE; // 24 CSS px per tile
+
+const GRASS_TILES      = [66, 129, 130, 131, 192, 193, 194, 195, 197, 199, 257, 258];
+const RARE_GRASS_TILES = [132, 133, 134];
+const PATH_TILES       = [482, 490, 491, 554, 555];
+
+// Tree tile IDs
+const T = {
+    CROWN_L: 119, CROWN_R: 120, CROWN_L_LIT: 115, CROWN_R_LIT: 116,
+    TRUNK_L: 183, TRUNK_R: 186,
+    SHADOW_L: 501, SHADOW_R: 502,
+};
+
+// Path edge overlay tile IDs (drawn on top of grass tiles)
+const PATH_EDGE = {
+    N: 550, S: 485, E: 487, W: 548,
+    NE: 486, NW: 546, SE: 483, SW: 484,
+};
+
+const ORE_DEFS = {
+    IRON:    { tiles: [1393, 1394, 1457, 1458] },
+    COAL:    { tiles: [1521, 1522, 1585, 1586] },
+    MITHRIL: { tiles: [1649, 1650, 1713, 1714] },
+    GOLD:    { tiles: [1777, 1778, 1841, 1842] },
+    STONE:   { tiles: [1905, 1906, 1969, 1970] },
+};
+
+const CROP_DEFS = {
+    PUMPKIN:     { index: 2 }, CARROT:      { index: 0 },
+    SUNFLOWER:   { index: 3 }, CAULIFLOWER: { index: 1 }, WHEAT: { index: 9 },
+};
+const HARVEST_TOP_BASE = 1075;
+const HARVEST_BOT_BASE = 1139;
+
+const FLOWER_TILES = {
+    BLUE: [95,96,97,98], RED: [159,160,161,162], WHITE: [223,224,225,226],
+};
+
+const WEED_TILES_MAP = {
+    1: [{ id: 829,  dy:  0 }],
+    2: [{ id: 893,  dy:  0 }],
+    3: [{ id: 957,  dy: -1 }, { id: 1021, dy: 0 }],
+    4: [{ id: 1085, dy: -1 }, { id: 1149, dy: 0 }],
+};
+
+// ============================================================
+// UTILITIES
+// ============================================================
+function randomFrom(arr)  { return arr[Math.floor(Math.random() * arr.length)]; }
+function randomGrass()    { return Math.random() < 0.01 ? randomFrom(RARE_GRASS_TILES) : randomFrom(GRASS_TILES); }
+function randomPath()     { return Math.random() < 0.6 ? 482 : randomFrom(PATH_TILES.slice(1)); }
+function isGrassTile(id)  { return GRASS_TILES.includes(id) || RARE_GRASS_TILES.includes(id); }
+function inBounds(x, y)   { return x >= 0 && x < CHUNK_SIZE && y >= 0 && y < CHUNK_SIZE; }
+
+// ============================================================
+// CHUNK DATA
+// ============================================================
+class ChunkData {
+    constructor() {
+        this.groundLayers = [];
+        this.upperLayers  = [];
+        this.trees   = [];
+        this.ores    = [];
+        this.crops   = [];
+        this.flowers = [];
+        this.weeds   = [];
+        this._occ    = new Set();
+
+        // Seam tiles: half-trees that straddle chunk boundaries.
+        // Each entry: { id, tx, ty } — only rendered if within [0, CHUNK_SIZE).
+        this.seamTiles = {
+            N: { trunks: [], crowns: [] },
+            S: { trunks: [], crowns: [] },
+            E: { trunks: [], crowns: [] },
+            W: { trunks: [], crowns: [] },
+        };
+        this._seamOcc = new Set(); // occupancy for seam tiles only
+    }
+
+    addGroundLayer() {
+        const l = new Int16Array(CHUNK_SIZE * CHUNK_SIZE).fill(-1);
+        this.groundLayers.push(l); return l;
+    }
+    addUpperLayer() {
+        const l = new Int16Array(CHUNK_SIZE * CHUNK_SIZE).fill(-1);
+        this.upperLayers.push(l); return l;
+    }
+
+    occupy(x, y)          { this._occ.add(`${x},${y}`); }
+    isOccupied(x, y)      { return this._occ.has(`${x},${y}`); }
+    seamOccupy(x, y)      { this._seamOcc.add(`${x},${y}`); }
+    isSeamOccupied(x, y)  { return this._seamOcc.has(`${x},${y}`); }
+
+    /** Clear seam data for one direction and rebuild _seamOcc from remaining. */
+    clearSeam(dir) {
+        this.seamTiles[dir] = { trunks: [], crowns: [] };
+        this._seamOcc = new Set();
+        for (const d of ['N','S','E','W']) {
+            for (const t of [...this.seamTiles[d].trunks, ...this.seamTiles[d].crowns])
+                this._seamOcc.add(`${t.tx},${t.ty}`);
+        }
+    }
+}
+
+// ============================================================
+// CSV LOADER
+// ============================================================
+async function loadCSV(path) {
+    try {
+        const r = await fetch(path);
+        if (!r.ok) return null;
+        return (await r.text()).trim().split('\n').map(row =>
+            row.split(',').map(v => parseInt(v.trim(), 10))
+        );
+    } catch { return null; }
+}
+
+function compositeCSV(layer, csv, ox, oy) {
+    if (!csv) return;
+    for (let row = 0; row < csv.length; row++)
+        for (let col = 0; col < csv[row].length; col++) {
+            const id = csv[row][col];
+            if (id >= 0) {
+                const tx = ox + col, ty = oy + row;
+                if (inBounds(tx, ty)) layer[ty * CHUNK_SIZE + tx] = id;
+            }
+        }
+}
+
+// ============================================================
+// INTERIOR TREE PLACEMENT
+// ============================================================
+function placeForestTrees(chunk, isBlocked, density) {
+    const treeMap = new Map();
+
+    for (let y = 0; y < CHUNK_SIZE - 1; y++) {
+        for (let x = 0; x < CHUNK_SIZE - 1; x++) {
+            if ((x + y) % 2 !== 0) continue;
+            let blocked = false;
+            outer: for (let dx = 0; dx <= 1; dx++)
+                for (let dy = -1; dy <= 1; dy++)
+                    if (isBlocked(x + dx, y + dy)) { blocked = true; break outer; }
+            if (blocked) continue;
+
+            if (Math.random() < density) {
+                const tree = {
+                    baseX: x, baseY: y,
+                    isLit: Math.random() < 0.3,
+                    hasTopLeft: false, hasTopRight: false,
+                    hasBottomLeft: false, hasBottomRight: false,
+                    bottomLeftIsLit: false, bottomRightIsLit: false,
+                };
+                chunk.trees.push(tree);
+                treeMap.set(`${x},${y}`, tree);
+                for (let dx = 0; dx <= 1; dx++)
+                    for (let dy = -1; dy <= 1; dy++)
+                        chunk.occupy(x + dx, y + dy);
+            }
+        }
+    }
+
+    // Pass 1: neighbour presence + lit eligibility
+    for (const tree of chunk.trees) {
+        const { baseX: bx, baseY: by } = tree;
+        tree.hasTopLeft     = treeMap.has(`${bx-1},${by-1}`);
+        tree.hasTopRight    = treeMap.has(`${bx+1},${by-1}`);
+        tree.hasBottomLeft  = treeMap.has(`${bx-1},${by+1}`);
+        tree.hasBottomRight = treeMap.has(`${bx+1},${by+1}`);
+        if (tree.isLit && !(tree.hasTopLeft && tree.hasTopRight &&
+                            tree.hasBottomLeft && tree.hasBottomRight))
+            tree.isLit = false;
+    }
+    // Pass 2: resolve lit conflicts
+    const confirmedLit = new Set();
+    for (const tree of chunk.trees) {
+        if (!tree.isLit) continue;
+        const { baseX: bx, baseY: by } = tree;
+        const hasLitNeighbour = [[-1,-1],[1,-1],[-1,1],[1,1]].some(([dx,dy]) =>
+            confirmedLit.has(treeMap.get(`${bx+dx},${by+dy}`))
+        );
+        if (hasLitNeighbour) tree.isLit = false;
+        else confirmedLit.add(tree);
+    }
+    // Pass 3: bottomLit flags
+    for (const tree of chunk.trees) {
+        const { baseX: bx, baseY: by } = tree;
+        const bl = treeMap.get(`${bx-1},${by+1}`);
+        const br = treeMap.get(`${bx+1},${by+1}`);
+        tree.bottomLeftIsLit  = bl?.isLit || false;
+        tree.bottomRightIsLit = br?.isLit || false;
+    }
+}
+
+// ============================================================
+// CROSS-CHUNK SEAM TREES
+//
+// Trees that straddle a chunk boundary are split in half.
+// Each chunk stores only the tiles that fall within its bounds.
+// These are rendered AFTER regular trees so they always appear
+// on top of any grass that the forest placed at the edge rows.
+// ============================================================
+
+/**
+ * N-S seam: topChunk is ABOVE bottomChunk.
+ * Straddling trees have baseY=29.
+ *   topChunk    → crown at row 28, trunk at row 29
+ *   bottomChunk → shadow at row 0
+ * Diamond grid (29 is odd) → baseX must be ODD.
+ */
+function placeNSSeamTrees(topChunk, bottomChunk, density) {
+    if (density <= 0) return;
+    const placed = new Set();
+
+    for (let x = 0; x < CHUNK_SIZE - 1; x++) {
+        if ((x + 29) % 2 !== 0) continue; // x must be odd
+        if (placed.has(x) || placed.has(x + 1)) continue;
+        // Only block on trunk row of each side to avoid interior-tree over-exclusion
+        if (topChunk.isSeamOccupied(x, 29) || topChunk.isSeamOccupied(x + 1, 29)) continue;
+        if (bottomChunk.isSeamOccupied(x, 0) || bottomChunk.isSeamOccupied(x + 1, 0)) continue;
+        if (Math.random() > density) continue;
+
+        placed.add(x); placed.add(x + 1);
+
+        // Top chunk → S seam: crown + trunk
+        topChunk.seamTiles.S.crowns.push(
+            { id: T.CROWN_L, tx: x,     ty: 28 },
+            { id: T.CROWN_R, tx: x + 1, ty: 28 },
+        );
+        topChunk.seamTiles.S.trunks.push(
+            { id: T.TRUNK_L, tx: x,     ty: 29 },
+            { id: T.TRUNK_R, tx: x + 1, ty: 29 },
+        );
+        topChunk.seamOccupy(x, 28); topChunk.seamOccupy(x + 1, 28);
+        topChunk.seamOccupy(x, 29); topChunk.seamOccupy(x + 1, 29);
+
+        // Bottom chunk → N seam: shadow
+        bottomChunk.seamTiles.N.trunks.push(
+            { id: T.SHADOW_L, tx: x,     ty: 0 },
+            { id: T.SHADOW_R, tx: x + 1, ty: 0 },
+        );
+        bottomChunk.seamOccupy(x, 0); bottomChunk.seamOccupy(x + 1, 0);
+    }
+}
+
+/**
+ * E-W seam: leftChunk is WEST of rightChunk.
+ * Straddling trees have baseX=29.
+ *   leftChunk  → crown_L at col 29, trunk_L at col 29, shadow_L at col 29
+ *   rightChunk → crown_R at col 0,  trunk_R at col 0,  shadow_R at col 0
+ * Diamond grid (29 is odd) → baseY must be ODD.
+ */
+function placeEWSeamTrees(leftChunk, rightChunk, density) {
+    if (density <= 0) return;
+    const placed = new Set();
+
+    for (let y = 1; y < CHUNK_SIZE - 1; y++) {
+        if ((29 + y) % 2 !== 0) continue; // y must be odd
+        if (placed.has(y)) continue;
+        if (leftChunk.isSeamOccupied(29, y) || rightChunk.isSeamOccupied(0, y)) continue;
+        if (Math.random() > density) continue;
+
+        placed.add(y);
+
+        // Left chunk → E seam: left column of tree
+        leftChunk.seamTiles.E.trunks.push(
+            { id: T.TRUNK_L,  tx: 29, ty: y     },
+            { id: T.SHADOW_L, tx: 29, ty: y + 1 },
+        );
+        leftChunk.seamTiles.E.crowns.push(
+            { id: T.CROWN_L,  tx: 29, ty: y - 1 },
+        );
+        leftChunk.seamOccupy(29, y - 1);
+        leftChunk.seamOccupy(29, y);
+        leftChunk.seamOccupy(29, y + 1);
+
+        // Right chunk → W seam: right column of tree
+        rightChunk.seamTiles.W.trunks.push(
+            { id: T.TRUNK_R,  tx: 0, ty: y     },
+            { id: T.SHADOW_R, tx: 0, ty: y + 1 },
+        );
+        rightChunk.seamTiles.W.crowns.push(
+            { id: T.CROWN_R,  tx: 0, ty: y - 1 },
+        );
+        rightChunk.seamOccupy(0, y - 1);
+        rightChunk.seamOccupy(0, y);
+        rightChunk.seamOccupy(0, y + 1);
+    }
+}
+
+/** Seam density based on the active (newer) chunk's current settings. */
+function getSeamDensity() {
+    const type = document.getElementById('sel-type').value;
+    if (type === 'town') return 0;
+    if (type === 'farm') return 0.35;
+    return parseInt(document.getElementById('sl-density').value, 10) / 100;
+}
+
+// ============================================================
+// RESOURCE PLACEMENT
+// ============================================================
+function placeOres(chunk, oreKey, inArea) {
+    const def = ORE_DEFS[oreKey];
+    if (!def) return;
+    const placed = new Set();
+    let count = 0;
+    for (let attempt = 0; attempt < 500 && count < 8; attempt++) {
+        let x, y, found = false;
+        for (let t = 0; t < 30; t++) {
+            const tx = Math.floor(Math.random() * CHUNK_SIZE);
+            const ty = Math.floor(Math.random() * CHUNK_SIZE);
+            if (inArea(tx, ty)) { x = tx; y = ty; found = true; break; }
+        }
+        if (!found || !inBounds(x + 1, y + 1)) continue;
+        let clear = true;
+        for (let dx = -1; dx <= 2 && clear; dx++)
+            for (let dy = -1; dy <= 2 && clear; dy++)
+                if (placed.has(`${x+dx},${y+dy}`) || chunk.isOccupied(x+dx, y+dy))
+                    clear = false;
+        if (!clear) continue;
+        chunk.ores.push({ tileX: x, tileY: y, tiles: def.tiles });
+        for (let dx = -1; dx <= 2; dx++) for (let dy = -1; dy <= 2; dy++) placed.add(`${x+dx},${y+dy}`);
+        for (let dx = 0;  dx <  2; dx++) for (let dy = 0;  dy <  2; dy++) chunk.occupy(x+dx, y+dy);
+        count++;
+    }
+}
+
+function placeCrops(chunk, cropKey, inArea) {
+    const def = CROP_DEFS[cropKey];
+    if (!def) return;
+    const topTile = HARVEST_TOP_BASE + def.index;
+    const botTile = HARVEST_BOT_BASE + def.index;
+    let count = 0;
+    for (let attempt = 0; attempt < 500 && count < 18; attempt++) {
+        let x, y, found = false;
+        for (let t = 0; t < 30; t++) {
+            const tx = Math.floor(Math.random() * CHUNK_SIZE);
+            const ty = Math.floor(Math.random() * CHUNK_SIZE);
+            if (inArea(tx, ty)) { x = tx; y = ty; found = true; break; }
+        }
+        if (!found || !inBounds(x, y - 1)) continue;
+        if (chunk.isOccupied(x, y) || chunk.isOccupied(x, y - 1)) continue;
+        chunk.crops.push({ tileX: x, tileY: y, topTile, botTile });
+        chunk.occupy(x, y); chunk.occupy(x, y - 1);
+        count++;
+    }
+}
+
+// ============================================================
+// FLORA
+// ============================================================
+function placeFlora(chunk) {
+    for (let y = 0; y < CHUNK_SIZE; y++) {
+        for (let x = 0; x < CHUNK_SIZE; x++) {
+            if (chunk.isOccupied(x, y)) continue;
+            let groundId = -1;
+            for (let i = chunk.groundLayers.length - 1; i >= 0 && groundId < 0; i--) {
+                const id = chunk.groundLayers[i][y * CHUNK_SIZE + x];
+                if (id >= 0) groundId = id;
+            }
+            if (!isGrassTile(groundId) || Math.random() > 0.12) continue;
+
+            if (Math.random() < 0.25) {
+                const rng = Math.random();
+                const tiles = rng < 0.10 ? FLOWER_TILES.BLUE
+                            : rng < 0.40 ? FLOWER_TILES.RED
+                                         : FLOWER_TILES.WHITE;
+                chunk.flowers.push({ tileX: x, tileY: y, tileId: randomFrom(tiles) });
+                chunk.occupy(x, y);
+            } else {
+                const stage = 1 + Math.floor(Math.random() * 4);
+                if (stage >= 3 && (!inBounds(x, y - 1) || chunk.isOccupied(x, y - 1))) continue;
+                if (stage >= 3) chunk.occupy(x, y - 1);
+                chunk.weeds.push({ tileX: x, tileY: y, tiles: WEED_TILES_MAP[stage] });
+                chunk.occupy(x, y);
+            }
+        }
+    }
+}
+
+// ============================================================
+// PATH STRIP GENERATION
+// A 4-row horizontal strip: [grass+Nedge, path, path, grass+Sedge]
+// Flora (stage 1-2 only) allowed in edge rows (0 and 3).
+// Width is determined dynamically in renderAll from grid bounds.
+// ============================================================
+function generatePathStrip(width) {
+    // Base tile rows
+    const rows = [
+        new Int16Array(width), // row 0: grass (edge overlay drawn separately)
+        new Int16Array(width), // row 1: path
+        new Int16Array(width), // row 2: path
+        new Int16Array(width), // row 3: grass (edge overlay drawn separately)
+    ];
+    for (let x = 0; x < width; x++) {
+        rows[0][x] = randomGrass();
+        rows[1][x] = randomPath();
+        rows[2][x] = randomPath();
+        rows[3][x] = randomGrass();
+    }
+
+    // Flora on edge rows only (stage 1-2 so dy=-1 never hits a path tile)
+    const flowers = [], weeds = [];
+    const occ = new Set();
+    for (const edgeRow of [0, 3]) {
+        for (let x = 0; x < width; x++) {
+            if (occ.has(`${x},${edgeRow}`) || Math.random() > 0.10) continue;
+            if (Math.random() < 0.25) {
+                const rng = Math.random();
+                const tiles = rng < 0.10 ? FLOWER_TILES.BLUE
+                            : rng < 0.40 ? FLOWER_TILES.RED
+                                         : FLOWER_TILES.WHITE;
+                flowers.push({ tx: x, ty: edgeRow, id: randomFrom(tiles) });
+                occ.add(`${x},${edgeRow}`);
+            } else {
+                const stage = Math.random() < 0.5 ? 1 : 2; // stage 1-2 only
+                weeds.push({ tx: x, ty: edgeRow, tiles: WEED_TILES_MAP[stage] });
+                occ.add(`${x},${edgeRow}`);
+            }
+        }
+    }
+
+    return { width, rows, flowers, weeds };
+}
+
+// ============================================================
+// GENERATORS
+// ============================================================
+function generateForestChunk({ resource, density, clearRadius, showFlora }) {
+    const chunk = new ChunkData();
+    const base  = chunk.addGroundLayer();
+    for (let i = 0; i < CHUNK_SIZE * CHUNK_SIZE; i++) base[i] = randomGrass();
+
+    const cx = Math.floor(CHUNK_SIZE / 2), cy = Math.floor(CHUNK_SIZE / 2);
+    const r  = clearRadius;
+    const inClearing = (x, y) => (x-cx)**2 + (y-cy)**2 <= r*r;
+
+    placeForestTrees(chunk, inClearing, density);
+
+    if (resource.startsWith('ore_'))       placeOres(chunk, resource.slice(4), inClearing);
+    else if (resource.startsWith('crop_')) placeCrops(chunk, resource.slice(5), inClearing);
+
+    if (showFlora) placeFlora(chunk);
+    return chunk;
+}
+
+async function generateFarmChunk({ showFlora }) {
+    const chunk    = new ChunkData();
+    const base     = chunk.addGroundLayer();
+    const building = chunk.addGroundLayer();
+    const upper    = chunk.addUpperLayer();
+
+    for (let i = 0; i < CHUNK_SIZE * CHUNK_SIZE; i++) base[i] = randomGrass();
+
+    const HX = 2, HY = 2, HW = 6, HH = 6;
+    const [hGround, hGroundD, hWall, hWallD, hRoof, hRoofD] = await Promise.all([
+        loadCSV('Tileset/house_Ground.csv'),       loadCSV('Tileset/house_Ground Detail.csv'),
+        loadCSV('Tileset/house_Wall.csv'),          loadCSV('Tileset/house_Wall Detail.csv'),
+        loadCSV('Tileset/house_Roof.csv'),          loadCSV('Tileset/house_Roof Detail.csv'),
+    ]);
+    compositeCSV(building, hGround,  HX, HY); compositeCSV(building, hGroundD, HX, HY);
+    compositeCSV(building, hWall,    HX, HY); compositeCSV(building, hWallD,   HX, HY);
+    compositeCSV(upper,    hRoof,    HX, HY); compositeCSV(upper,    hRoofD,   HX, HY);
+    for (let hy = HY; hy < HY + HH; hy++) for (let hx = HX; hx < HX + HW; hx++) chunk.occupy(hx, hy);
+
+    for (let y = 0; y <= 8; y++) { building[y * CHUNK_SIZE + 8] = 482; chunk.occupy(8, y); }
+    for (let x = 2; x <= 8; x++) { building[8 * CHUNK_SIZE + x] = 482; chunk.occupy(x, 8); }
+
+    placeForestTrees(chunk, (_x, y) => y < 16, 0.5);
+    if (showFlora) placeFlora(chunk);
+    return chunk;
+}
+
+async function generateTownChunk({ showFlora }) {
+    const chunk    = new ChunkData();
+    const base     = chunk.addGroundLayer();
+    const building = chunk.addGroundLayer();
+    const upper    = chunk.addUpperLayer();
+
+    for (let i = 0; i < CHUNK_SIZE * CHUNK_SIZE; i++) base[i] = randomGrass();
+
+    const SX = 4, SY = 3, SW = 10, SH = 10;
+    const [sGround, sDecor, sBase, sDet, sUpper] = await Promise.all([
+        loadCSV('Tileset/store_Ground.csv'),              loadCSV('Tileset/store_Decor.csv'),
+        loadCSV('Tileset/store_Buildings (Base).csv'),    loadCSV('Tileset/store_Buildings (Detail).csv'),
+        loadCSV('Tileset/store_Buildings (Upper).csv'),
+    ]);
+    compositeCSV(building, sGround, SX, SY); compositeCSV(building, sDecor, SX, SY);
+    compositeCSV(building, sBase,   SX, SY); compositeCSV(building, sDet,   SX, SY);
+    compositeCSV(upper,    sUpper,  SX, SY);
+    for (let hy = SY; hy < SY + SH; hy++) for (let hx = SX; hx < SX + SW; hx++) chunk.occupy(hx, hy);
+
+    const MX = 18, MY = 17, MW = 10, MH = 10;
+    const [mGround, mDecor, mBase, mDet, mUpper] = await Promise.all([
+        loadCSV('Tileset/home_Ground.csv'),               loadCSV('Tileset/home_Decor.csv'),
+        loadCSV('Tileset/home_Buildings (Base).csv'),     loadCSV('Tileset/home_Buildings (Detail).csv'),
+        loadCSV('Tileset/home_Buildings (Upper).csv'),
+    ]);
+    compositeCSV(building, mGround, MX, MY); compositeCSV(building, mDecor, MX, MY);
+    compositeCSV(building, mBase,   MX, MY); compositeCSV(building, mDet,   MX, MY);
+    compositeCSV(upper,    mUpper,  MX, MY);
+    for (let hy = MY; hy < MY + MH; hy++) for (let hx = MX; hx < MX + MW; hx++) chunk.occupy(hx, hy);
+
+    for (let x = 0; x < CHUNK_SIZE; x++) { building[15 * CHUNK_SIZE + x] = 482; chunk.occupy(x, 15); }
+    for (let y = 16; y < CHUNK_SIZE; y++) { building[y * CHUNK_SIZE + 15] = 482; chunk.occupy(15, y); }
+    for (let x = 16; x <= 23; x++)
+        if (!chunk.isOccupied(x, 27)) { building[27 * CHUNK_SIZE + x] = 482; chunk.occupy(x, 27); }
+
+    if (showFlora) placeFlora(chunk);
+    return chunk;
+}
+
+// ============================================================
+// RENDERER
+// ============================================================
+class ChunkRenderer {
+    constructor(canvas, tilesetImg) {
+        this.ctx         = canvas.getContext('2d');
+        this.img         = tilesetImg;
+        this.tilesPerRow = Math.floor(tilesetImg.width / 18);
+    }
+
+    src(tileId) {
+        const col = tileId % this.tilesPerRow;
+        const row = Math.floor(tileId / this.tilesPerRow);
+        return { sx: col * 18 + 1, sy: row * 18 + 1 };
+    }
+
+    drawTile(tileId, tileX, tileY) {
+        if (tileId < 0) return;
+        const { sx, sy } = this.src(tileId);
+        this.ctx.drawImage(this.img, sx, sy, 16, 16,
+            tileX * TILE_SIZE, tileY * TILE_SIZE, TILE_SIZE, TILE_SIZE);
+    }
+
+    renderLayer(layer) {
+        for (let y = 0; y < CHUNK_SIZE; y++)
+            for (let x = 0; x < CHUNK_SIZE; x++)
+                this.drawTile(layer[y * CHUNK_SIZE + x], x, y);
+    }
+
+    /**
+     * Render one chunk starting at canvas origin.
+     * Caller must ctx.translate to the desired position first.
+     */
+    renderChunk(chunk, skipSeamDirs = null) {
+        // 1. Ground layers
+        for (const layer of chunk.groundLayers) this.renderLayer(layer);
+
+        // 2. Tree trunks + shadows
+        for (const tree of chunk.trees) {
+            const { baseX: bx, baseY: by, bottomLeftIsLit: bll, bottomRightIsLit: brl } = tree;
+            if (!bll) this.drawTile(T.TRUNK_L, bx,     by);
+            if (!brl) this.drawTile(T.TRUNK_R, bx + 1, by);
+            this.drawTile(T.SHADOW_L, bx,     by + 1);
+            this.drawTile(T.SHADOW_R, bx + 1, by + 1);
+        }
+        // 2b. Seam tree trunks/shadows (rendered after interior trees)
+        for (const dir of ['N','S','E','W']) {
+            if (skipSeamDirs?.has(dir)) continue;
+            for (const { id, tx, ty } of chunk.seamTiles[dir].trunks)
+                if (tx >= 0 && tx < CHUNK_SIZE && ty >= 0 && ty < CHUNK_SIZE)
+                    this.drawTile(id, tx, ty);
+        }
+
+        // 3. Ores
+        for (const { tileX: ox, tileY: oy, tiles } of chunk.ores) {
+            this.drawTile(tiles[0], ox,     oy);     this.drawTile(tiles[1], ox + 1, oy);
+            this.drawTile(tiles[2], ox,     oy + 1); this.drawTile(tiles[3], ox + 1, oy + 1);
+        }
+
+        // 4. Crops
+        for (const { tileX, tileY, topTile, botTile } of chunk.crops) {
+            this.drawTile(topTile, tileX, tileY - 1);
+            this.drawTile(botTile, tileX, tileY);
+        }
+
+        // 5. Tree crowns (trees at baseY=0 are deferred to renderOverhangCrowns post-pass)
+        for (const { baseX: bx, baseY: by, isLit, hasTopLeft: htl, hasTopRight: htr } of chunk.trees) {
+            if (by === 0) continue;
+            this.drawTile(isLit && htl ? T.CROWN_L_LIT : T.CROWN_L, bx,     by - 1);
+            this.drawTile(isLit && htr ? T.CROWN_R_LIT : T.CROWN_R, bx + 1, by - 1);
+        }
+        // 5b. Seam tree crowns
+        for (const dir of ['N','S','E','W']) {
+            if (skipSeamDirs?.has(dir)) continue;
+            for (const { id, tx, ty } of chunk.seamTiles[dir].crowns)
+                if (tx >= 0 && tx < CHUNK_SIZE && ty >= 0 && ty < CHUNK_SIZE)
+                    this.drawTile(id, tx, ty);
+        }
+
+        // 6. Flowers
+        for (const { tileX, tileY, tileId } of chunk.flowers)
+            this.drawTile(tileId, tileX, tileY);
+
+        // 7. Weeds
+        for (const { tileX, tileY, tiles } of chunk.weeds)
+            for (const { id, dy } of tiles)
+                this.drawTile(id, tileX, tileY + dy);
+
+        // 8. Upper layers (roofs etc.)
+        for (const layer of chunk.upperLayers) this.renderLayer(layer);
+    }
+
+    /**
+     * Draws only the crowns of trees whose base is at row 0 (crown renders at row -1,
+     * one tile above the chunk). Called in a post-pass so they appear above all tilemaps.
+     */
+    renderOverhangCrowns(chunk) {
+        for (const { baseX: bx, baseY: by, isLit, hasTopLeft: htl, hasTopRight: htr } of chunk.trees) {
+            if (by !== 0) continue;
+            this.drawTile(isLit && htl ? T.CROWN_L_LIT : T.CROWN_L, bx,     by - 1);
+            this.drawTile(isLit && htr ? T.CROWN_R_LIT : T.CROWN_R, bx + 1, by - 1);
+        }
+    }
+
+    /**
+     * Render the 4-row path strip.
+     * Caller must ctx.translate to (stripStartPx, stripYPx) first.
+     * `strip.width` is in tiles; strip is always 4 tiles tall.
+     */
+    renderPathStrip(strip) {
+        const { width, rows, flowers, weeds } = strip;
+
+        // Base tiles (rows 0-3)
+        for (let row = 0; row < 4; row++)
+            for (let x = 0; x < width; x++)
+                this.drawTile(rows[row][x], x, row);
+
+        // Path edge overlays on the actual path tiles — mark north/south boundary of the path
+        for (let x = 0; x < width; x++) {
+            const isLeft  = x === 0;
+            const isRight = x === width - 1;
+            // Row 1 (top path tile): N edge — northern boundary of path
+            const topEdge = isLeft ? PATH_EDGE.NW : isRight ? PATH_EDGE.NE : PATH_EDGE.N;
+            this.drawTile(topEdge, x, 1);
+            // Row 2 (bottom path tile): S edge — southern boundary of path
+            const botEdge = isLeft ? PATH_EDGE.SW : isRight ? PATH_EDGE.SE : PATH_EDGE.S;
+            this.drawTile(botEdge, x, 2);
+        }
+
+        // Flora (edge rows only)
+        for (const { tx, ty, id } of flowers)
+            this.drawTile(id, tx, ty);
+        for (const { tx, ty, tiles } of weeds)
+            for (const { id, dy } of tiles)
+                this.drawTile(id, tx, ty + dy);
+    }
+}
+
+// ============================================================
+// GRID STATE
+// ============================================================
+let renderer     = null;
+let currentChunk = null;
+let placedChunks = new Map(); // "col,row" → ChunkData
+let activeCol    = 0;
+let activeRow    = 0;
+
+let hasPathBelow = false;
+let pathStripData = null; // generated strip (width may change as grid grows)
+let hasTopEdgeOverhang = false; // true when top-row chunk has trees at baseY=0 (crown overhangs above)
+
+function getGridBounds() {
+    let minC = activeCol, maxC = activeCol;
+    let minR = activeRow, maxR = activeRow;
+    for (const key of placedChunks.keys()) {
+        const [c, r] = key.split(',').map(Number);
+        if (c < minC) minC = c; if (c > maxC) maxC = c;
+        if (r < minR) minR = r; if (r > maxR) maxR = r;
+    }
+    return { minC, maxC, minR, maxR };
+}
+
+/**
+ * Returns true if any chunk at the topmost grid row has trees with baseY=0
+ * (crown at row -1) and no placed northern neighbor to render them via the seam system.
+ * When true, all chunks are shifted down by TILE_SIZE to reveal the overhanging crowns.
+ */
+function computeTopEdgeOverhang() {
+    const { minR } = getGridBounds();
+    // Check active chunk
+    if (activeRow === minR && !placedChunks.has(`${activeCol},${activeRow - 1}`)) {
+        if (currentChunk && currentChunk.trees.some(t => t.baseY === 0)) {
+            hasTopEdgeOverhang = true;
+            return;
+        }
+    }
+    // Check placed chunks at the top row
+    for (const [key, chunk] of placedChunks) {
+        const [c, r] = key.split(',').map(Number);
+        if (r === minR && !placedChunks.has(`${c},${r - 1}`)) {
+            if (chunk.trees.some(t => t.baseY === 0)) {
+                hasTopEdgeOverhang = true;
+                return;
+            }
+        }
+    }
+    hasTopEdgeOverhang = false;
+}
+
+/**
+ * Pixel Y of a chunk row within the canvas (internal coordinates).
+ * Chunks below the active row are shifted down by PATH_ROWS * TILE_SIZE when the
+ * path strip is active. All chunks shift down by TILE_SIZE when hasTopEdgeOverhang
+ * so tree crowns overhanging row -1 become visible.
+ */
+const PATH_ROWS = 4;
+function getChunkPxY(row, minR) {
+    let y = (row - minR) * CHUNK_SIZE * TILE_SIZE;
+    if (hasTopEdgeOverhang) y += TILE_SIZE;
+    if (hasPathBelow && row > activeRow) y += PATH_ROWS * TILE_SIZE;
+    return y;
+}
+
+/**
+ * Compute the width (in tiles) and start x-offset (in tiles from canvas left)
+ * of the path strip, based on which chunks are adjacent to the seam.
+ */
+function getPathStripTileBounds() {
+    const { minC, maxC, minR } = getGridBounds();
+    // Strip spans columns touched by active row OR active row+1
+    let pMinC = activeCol, pMaxC = activeCol;
+    for (const key of placedChunks.keys()) {
+        const [c, r] = key.split(',').map(Number);
+        if (r === activeRow || r === activeRow + 1) {
+            if (c < pMinC) pMinC = c;
+            if (c > pMaxC) pMaxC = c;
+        }
+    }
+    const startTile = (pMinC - minC) * CHUNK_SIZE;
+    const width     = (pMaxC - pMinC + 1) * CHUNK_SIZE;
+    return { startTile, width };
+}
+
+// ============================================================
+// CANVAS SIZE
+// ============================================================
+function updateCanvasSize() {
+    const canvas = document.getElementById('chunk-canvas');
+    const { minC, maxC, minR, maxR } = getGridBounds();
+    const cols = maxC - minC + 1;
+    const rows = maxR - minR + 1;
+
+    const wPx = cols * CHUNK_SIZE * TILE_SIZE;
+    const hPx = rows * CHUNK_SIZE * TILE_SIZE
+        + (hasPathBelow      ? PATH_ROWS * TILE_SIZE : 0)
+        + (hasTopEdgeOverhang ? TILE_SIZE            : 0);
+    canvas.width  = wPx;
+    canvas.height = hPx;
+    canvas.style.width  = (cols * CSS_SCALE) + 'px';
+    canvas.style.height = (rows * CSS_SCALE
+        + (hasPathBelow      ? PATH_ROWS * CSS_PER_TILE : 0)
+        + (hasTopEdgeOverhang ? CSS_PER_TILE            : 0)) + 'px';
+
+    const total = placedChunks.size + 1;
+    document.getElementById('canvas-label').textContent =
+        total === 1 && !hasPathBelow
+            ? `30 × 30 tiles · 1 chunk`
+            : `${cols * 30} × ${rows * 30 + (hasPathBelow ? PATH_ROWS : 0)} tiles · ${total} chunk${total > 1 ? 's' : ''}${hasPathBelow ? ' + path' : ''}`;
+}
+
+// ============================================================
+// RENDER ALL
+// ============================================================
+function renderAll() {
+    if (!renderer || !currentChunk) return;
+
+    const ctx = renderer.ctx;
+    const cPx = CHUNK_SIZE * TILE_SIZE;
+    const { minC, maxC, minR, maxR } = getGridBounds();
+
+    ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
+
+    // ── Placed (locked) chunks ──
+    let setIndex = 1;
+    for (const [key, chunk] of placedChunks) {
+        const [c, r] = key.split(',').map(Number);
+        const px = (c - minC) * cPx;
+        const py = getChunkPxY(r, minR);
+
+        // When path strip is active, suppress the N-seam shadows of the chunk directly
+        // below the active chunk — the shadow post-pass renders them on path strip row 0 instead.
+        const skipDirs = (hasPathBelow && r === activeRow + 1 && c === activeCol)
+            ? new Set(['N']) : null;
+
+        ctx.save();
+        ctx.translate(px, py);
+        renderer.renderChunk(chunk, skipDirs);
+        ctx.restore();
+
+        ctx.fillStyle = 'rgba(0,0,0,0.22)';
+        ctx.fillRect(px, py, cPx, cPx);
+
+        ctx.save();
+        ctx.fillStyle = 'rgba(88,166,255,0.55)';
+        ctx.font = 'bold 7px monospace';
+        ctx.textAlign = 'right';
+        ctx.fillText(`SET ${setIndex++}`, px + cPx - 2, py + 8);
+        ctx.restore();
+    }
+
+    // ── Active chunk ──
+    const ax = (activeCol - minC) * cPx;
+    const ay = getChunkPxY(activeRow, minR);
+    ctx.save();
+    ctx.translate(ax, ay);
+    renderer.renderChunk(currentChunk);
+    ctx.restore();
+
+    // ── Path strip (between active row and row below) ──
+    if (hasPathBelow && pathStripData) {
+        const { startTile } = getPathStripTileBounds();
+        const stripPxX = startTile * TILE_SIZE;
+        const stripPxY = ay + cPx; // directly below active chunk
+
+        ctx.save();
+        ctx.translate(stripPxX, stripPxY);
+        renderer.renderPathStrip(pathStripData);
+        ctx.restore();
+
+        // Dashed seam lines around the strip
+        ctx.save();
+        ctx.strokeStyle = 'rgba(240,136,62,0.45)';
+        ctx.lineWidth = 1;
+        ctx.setLineDash([3, 5]);
+        ctx.beginPath(); ctx.moveTo(0, stripPxY);
+        ctx.lineTo(ctx.canvas.width, stripPxY); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(0, stripPxY + PATH_ROWS * TILE_SIZE);
+        ctx.lineTo(ctx.canvas.width, stripPxY + PATH_ROWS * TILE_SIZE); ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.restore();
+    }
+
+    // ── Overhang crown post-pass ──
+    // baseY=0 tree crowns render at tileY=-1 (one row above the chunk).
+    // Drawn after path strip so they appear on top of path tiles at path strip row 3.
+    for (const [key, chunk] of placedChunks) {
+        if (!chunk.trees.some(t => t.baseY === 0)) continue;
+        const [c, r] = key.split(',').map(Number);
+        ctx.save();
+        ctx.translate((c - minC) * cPx, getChunkPxY(r, minR));
+        renderer.renderOverhangCrowns(chunk);
+        ctx.restore();
+    }
+    if (currentChunk.trees.some(t => t.baseY === 0)) {
+        ctx.save();
+        ctx.translate(ax, ay);
+        renderer.renderOverhangCrowns(currentChunk);
+        ctx.restore();
+    }
+
+    // ── Seam shadow post-pass ──
+    // When a path strip is present, the S-seam trunks sit at the bottom of the active chunk
+    // but their corresponding shadows belong at path strip row 0 (visually adjacent to trunk).
+    // Re-draw those shadows after path strip so they overlay the top grass row of the path.
+    if (hasPathBelow && currentChunk.seamTiles.S.trunks.length > 0) {
+        ctx.save();
+        ctx.translate(ax, ay);
+        for (const { id, tx, ty } of currentChunk.seamTiles.S.trunks) {
+            if (ty !== CHUNK_SIZE - 1) continue;
+            const shadowId = id === T.TRUNK_L ? T.SHADOW_L : T.SHADOW_R;
+            renderer.drawTile(shadowId, tx, ty + 1); // ty+1 = CHUNK_SIZE, lands on path strip row 0
+        }
+        ctx.restore();
+    }
+
+    // ── Seam lines between chunk rows/columns ──
+    ctx.save();
+    ctx.strokeStyle = 'rgba(88,166,255,0.28)';
+    ctx.lineWidth = 1;
+    ctx.setLineDash([3, 5]);
+    for (let c = minC + 1; c <= maxC; c++) {
+        const x = (c - minC) * cPx;
+        ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, ctx.canvas.height); ctx.stroke();
+    }
+    for (let r = minR + 1; r <= maxR; r++) {
+        const y = getChunkPxY(r, minR);
+        ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(ctx.canvas.width, y); ctx.stroke();
+    }
+    ctx.setLineDash([]);
+    ctx.restore();
+
+    // ── Blue border around active chunk ──
+    ctx.strokeStyle = 'rgba(88,166,255,0.7)';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(ax + 1, ay + 1, cPx - 2, cPx - 2);
+}
+
+// ============================================================
+// UI HELPERS
+// ============================================================
+function setStats(chunk) {
+    const rows = [
+        ['Trees', chunk.trees.length],
+        ['Ores',  chunk.ores.length],
+        ['Crops', chunk.crops.length],
+        ['Flora', chunk.flowers.length + chunk.weeds.length],
+    ];
+    document.getElementById('status-box').innerHTML = rows.map(([k, v]) =>
+        `<span class="stat-item"><span class="stat-key">${k}</span><span class="stat-val">${v}</span></span>`
+    ).join('');
+}
+
+function updateStackInfo() {
+    const n = placedChunks.size;
+    if (n === 0) {
+        document.getElementById('stack-info').textContent = 'No chunks locked';
+    } else {
+        const { minC, maxC, minR, maxR } = getGridBounds();
+        document.getElementById('stack-info').textContent =
+            `${n} locked · ${maxC - minC + 1}×${maxR - minR + 1} grid`;
+    }
+    document.getElementById('btn-clear').disabled = n === 0 && !hasPathBelow;
+    document.getElementById('btn-north').disabled = placedChunks.has(`${activeCol},${activeRow - 1}`);
+    document.getElementById('btn-south').disabled = placedChunks.has(`${activeCol},${activeRow + 1}`);
+    document.getElementById('btn-west').disabled  = placedChunks.has(`${activeCol - 1},${activeRow}`);
+    document.getElementById('btn-east').disabled  = placedChunks.has(`${activeCol + 1},${activeRow}`);
+}
+
+function updatePathButton() {
+    const btn = document.getElementById('btn-path');
+    if (hasPathBelow) {
+        btn.textContent = '- Remove Path Below';
+        btn.classList.add('active');
+    } else {
+        btn.textContent = '+ Path Below';
+        btn.classList.remove('active');
+    }
+}
+
+function getOptions() {
+    return {
+        chunkType:   document.getElementById('sel-type').value,
+        resource:    document.getElementById('sel-resource').value,
+        density:     parseInt(document.getElementById('sl-density').value, 10) / 100,
+        clearRadius: parseInt(document.getElementById('sl-radius').value, 10),
+        showFlora:   document.getElementById('chk-flora').checked,
+    };
+}
+
+function updateForestVisibility() {
+    const isForest = document.getElementById('sel-type').value === 'forest';
+    document.getElementById('forest-options').classList.toggle('dimmed', !isForest);
+}
+
+// ============================================================
+// ACTIONS
+// ============================================================
+async function regenerate() {
+    if (!renderer) return;
+    document.getElementById('status-box').innerHTML =
+        '<span class="stat-item"><span class="stat-key" style="color:#f0883e">Generating…</span></span>';
+
+    const opts = getOptions();
+    try {
+        let chunk;
+        if      (opts.chunkType === 'forest') chunk = generateForestChunk(opts);
+        else if (opts.chunkType === 'farm')   chunk = await generateFarmChunk(opts);
+        else                                   chunk = await generateTownChunk(opts);
+
+        // Add cross-chunk seam trees against each adjacent placed neighbor.
+        // Run N/S before E/W so corners are claimed by the first function.
+        const d = getSeamDensity();
+        const nb = (dc, dr) => `${activeCol + dc},${activeRow + dr}`;
+
+        if (placedChunks.has(nb(0, -1))) {
+            const nc = placedChunks.get(nb(0, -1));
+            nc.clearSeam('S');
+            placeNSSeamTrees(nc, chunk, d);   // nc = top, chunk = bottom
+        }
+        if (placedChunks.has(nb(0, 1))) {
+            const sc = placedChunks.get(nb(0, 1));
+            sc.clearSeam('N');
+            placeNSSeamTrees(chunk, sc, d);   // chunk = top, sc = bottom
+        }
+        if (placedChunks.has(nb(-1, 0))) {
+            const wc = placedChunks.get(nb(-1, 0));
+            wc.clearSeam('E');
+            placeEWSeamTrees(wc, chunk, d);   // wc = left, chunk = right
+        }
+        if (placedChunks.has(nb(1, 0))) {
+            const ec = placedChunks.get(nb(1, 0));
+            ec.clearSeam('W');
+            placeEWSeamTrees(chunk, ec, d);   // chunk = left, ec = right
+        }
+
+        // Regenerate path strip width (grid may have changed)
+        if (hasPathBelow) {
+            const { width } = getPathStripTileBounds();
+            pathStripData = generatePathStrip(width);
+        }
+
+        currentChunk = chunk;
+        computeTopEdgeOverhang();
+        updateCanvasSize();
+        renderAll();
+        setStats(chunk);
+    } catch (e) {
+        console.error(e);
+        document.getElementById('status-box').innerHTML =
+            `<span class="stat-item"><span class="stat-key" style="color:#f85149">Error: ${e.message}</span></span>`;
+    }
+}
+
+async function setChunk(dir) {
+    if (!currentChunk) return;
+
+    ['north','south','east','west','regen','clear','path'].forEach(id => {
+        const el = document.getElementById(`btn-${id}`);
+        if (el) el.disabled = true;
+    });
+
+    const [dc, dr] = { north: [0,-1], south: [0,1], east: [1,0], west: [-1,0] }[dir];
+    placedChunks.set(`${activeCol},${activeRow}`, currentChunk);
+    activeCol += dc;
+    activeRow += dr;
+
+    updateCanvasSize();
+
+    await regenerate();
+
+    updateStackInfo();
+    document.getElementById('btn-regen').disabled = false;
+    document.getElementById('btn-path').disabled  = false;
+
+    const { minC, minR } = getGridBounds();
+    const scroll = document.getElementById('canvas-scroll');
+    const ax = (activeCol - minC) * CSS_SCALE;
+    const ay = getChunkPxY(activeRow, minR) * (CSS_SCALE / (CHUNK_SIZE * TILE_SIZE));
+    setTimeout(() => {
+        scroll.scrollLeft = ax - (scroll.clientWidth  - CSS_SCALE) / 2;
+        scroll.scrollTop  = ay - (scroll.clientHeight - CSS_SCALE) / 2;
+    }, 16);
+}
+
+function togglePath() {
+    hasPathBelow = !hasPathBelow;
+    if (hasPathBelow) {
+        const { width } = getPathStripTileBounds();
+        pathStripData = generatePathStrip(width);
+    } else {
+        pathStripData = null;
+    }
+    updateCanvasSize();
+    updateStackInfo();
+    updatePathButton();
+    renderAll();
+}
+
+function clearLocked() {
+    placedChunks.clear();
+    activeCol = 0;
+    activeRow = 0;
+    hasPathBelow = false;
+    pathStripData = null;
+    computeTopEdgeOverhang();
+    updateCanvasSize();
+    updateStackInfo();
+    updatePathButton();
+    renderAll();
+}
+
+// ============================================================
+// INIT
+// ============================================================
+async function init() {
+    const img = new Image();
+    img.src = 'Tileset/spr_tileset_sunnysideworld_16px.png';
+    await new Promise((res, rej) => { img.onload = res; img.onerror = rej; });
+
+    const canvas = document.getElementById('chunk-canvas');
+    renderer = new ChunkRenderer(canvas, img);
+    document.getElementById('loading').classList.add('hidden');
+
+    const slDensity = document.getElementById('sl-density');
+    const slRadius  = document.getElementById('sl-radius');
+    slDensity.addEventListener('input', () => document.getElementById('val-density').textContent = slDensity.value + '%');
+    slRadius.addEventListener('input',  () => document.getElementById('val-radius').textContent  = slRadius.value);
+
+    slDensity.addEventListener('change', regenerate);
+    slRadius.addEventListener('change', regenerate);
+    document.getElementById('sel-type').addEventListener('change', () => { updateForestVisibility(); regenerate(); });
+    document.getElementById('sel-resource').addEventListener('change', regenerate);
+    document.getElementById('chk-flora').addEventListener('change', regenerate);
+    document.getElementById('btn-regen').addEventListener('click', regenerate);
+
+    document.getElementById('btn-north').addEventListener('click', () => setChunk('north'));
+    document.getElementById('btn-south').addEventListener('click', () => setChunk('south'));
+    document.getElementById('btn-east').addEventListener('click',  () => setChunk('east'));
+    document.getElementById('btn-west').addEventListener('click',  () => setChunk('west'));
+    document.getElementById('btn-path').addEventListener('click',  togglePath);
+    document.getElementById('btn-clear').addEventListener('click', clearLocked);
+
+    updateForestVisibility();
+    updateCanvasSize();
+    updateStackInfo();
+    updatePathButton();
+    await regenerate();
+}
+
+init().catch(e => {
+    document.getElementById('loading').textContent = 'Failed to load: ' + e.message;
+    console.error(e);
+});
+</script>
+</body>
+</html>

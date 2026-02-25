@@ -1,6 +1,7 @@
 import { getRandomDirtTile, CONFIG } from './config.js';
 import { RESOURCE_TYPES } from './Inventory.js';
 import { Logger } from './Logger.js';
+import { worldToTile, tileToWorld, tileCenterWorld } from './TileUtils.js';
 
 // Create logger for this module
 const log = Logger.create('JobManager');
@@ -238,15 +239,15 @@ export class JobManager {
                 return;
             }
 
-            const enemyTileX = Math.floor(enemy.x / tileSize);
-            const enemyTileY = Math.floor(enemy.y / tileSize);
+            const enemyTileX = worldToTile(enemy.x, tileSize);
+            const enemyTileY = worldToTile(enemy.y, tileSize);
 
             job.currentTargetEnemy = enemy;
             job.workTileX = enemyTileX;
             job.workTileY = enemyTileY;
 
-            const targetX = enemyTileX * tileSize + tileSize / 2;
-            const targetY = enemyTileY * tileSize + tileSize / 2;
+            const targetX = tileCenterWorld(enemyTileX, tileSize);
+            const targetY = tileCenterWorld(enemyTileY, tileSize);
 
             this.moveWorkerTo(workerId, targetX, targetY);
             return;
@@ -992,9 +993,7 @@ export class JobManager {
         // Helper to add enemy's current position
         const addEnemyPosition = (enemy) => {
             if (enemy && enemy.isAlive) {
-                const enemyTileX = Math.floor(enemy.x / tileSize);
-                const enemyTileY = Math.floor(enemy.y / tileSize);
-                tiles.push({ x: enemyTileX, y: enemyTileY });
+                tiles.push({ x: worldToTile(enemy.x, tileSize), y: worldToTile(enemy.y, tileSize) });
             }
         };
 

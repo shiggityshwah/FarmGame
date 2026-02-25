@@ -246,6 +246,7 @@
         import './Integration.test.js';
         import './Combat.test.js';
         import './CropManager.test.js';
+        import './ChunkSystem.test.js';
 
         // Store results for display
         let testResults = [];
@@ -329,6 +330,7 @@
             await import('./Integration.test.js?' + Date.now());
             await import('./Combat.test.js?' + Date.now());
             await import('./CropManager.test.js?' + Date.now());
+            await import('./ChunkSystem.test.js?' + Date.now());
 
             captureOutput();
 
