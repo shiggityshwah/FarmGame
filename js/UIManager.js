@@ -59,6 +59,9 @@ export class UIManager {
         this.activeMenu = null;
         this.menuContainer = null;
         this.purchasedUpgrades = new Set();
+        this.activeStand = null;
+        this.standSlotSubmenu = null;
+        this._standSubmenuOutsideClickHandler = null;
 
         // Store bound event handlers for proper cleanup
         this._boundHandlers = {
@@ -93,6 +96,8 @@ export class UIManager {
             this.renderCraftingMenu();
         } else if (this.activeMenu === 'shop') {
             this.renderShopMenu(this.shopActiveTab || 'buy');
+        } else if (this.activeMenu === 'stand' && this.activeStand) {
+            this.renderStandMenu(this.activeStand);
         }
     }
 
@@ -186,6 +191,8 @@ export class UIManager {
     }
 
     closeMenu() {
+        this._closeStandSlotSubmenu();
+        this.activeStand = null;
         this.activeMenu = null;
         this.menuContainer.style.display = 'none';
     }
@@ -665,6 +672,197 @@ export class UIManager {
 
         // Re-render shop menu preserving tab and scroll
         this.renderShopMenu(this.shopActiveTab || 'sell');
+    }
+
+    // === Roadside Stand Menu ===
+
+    openStand(stand) {
+        this.activeMenu = 'stand';
+        this.activeStand = stand;
+        this.renderStandMenu(stand);
+        this.menuContainer.style.display = 'flex';
+    }
+
+    renderStandMenu(stand) {
+        this._closeStandSlotSubmenu();
+
+        let html = `
+            <div style="background: linear-gradient(180deg, #8b7355 0%, #6b5a45 100%); color: #f5e6c8; padding: 12px 16px; text-align: center; border-bottom: 3px solid #5a4a38;">
+                <span style="font-size: 18px; font-weight: bold; text-shadow: 1px 1px 2px rgba(0,0,0,0.5);">Roadside Stand</span>
+                <button id="close-menu-btn" style="float: right; background: #c9403a; border: 2px solid #8b2a25; border-radius: 4px; color: white; font-weight: bold; cursor: pointer; padding: 2px 8px;">X</button>
+            </div>
+            <div style="padding: 16px; max-height: 60vh; overflow-y: auto;">
+                <p style="color: #5a4a38; font-size: 12px; margin: 0 0 12px 0; text-align: center;">Choose items to sell. Travelers will stop and buy them!</p>
+                <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-bottom: 8px;">
+        `;
+
+        for (let i = 0; i < 6; i++) {
+            const r = stand.slots[i].resource;
+            if (r) {
+                html += `
+                    <div style="position: relative; background: linear-gradient(180deg, #fff 0%, #e8e0d0 100%); border: 2px solid #4a7c59; border-radius: 8px; padding: 8px; text-align: center; cursor: pointer;" class="stand-slot-btn" data-slot="${i}">
+                        <div style="width: 32px; height: 32px; margin: 0 auto 4px auto; display: flex; align-items: center; justify-content: center;">
+                            <div style="width: 16px; height: 16px; image-rendering: pixelated; background-image: url('Tileset/spr_tileset_sunnysideworld_16px.png'); background-position: ${this.getTilePosition(r.tileId)}; background-size: 1024px 1024px; transform: scale(2);"></div>
+                        </div>
+                        <div style="font-size: 10px; color: #5a4a38;">${r.name}</div>
+                        <div style="display: flex; align-items: center; justify-content: center; gap: 2px; margin-top: 2px;">
+                            <div style="width: 10px; height: 10px; image-rendering: pixelated; background-image: url('Tileset/spr_tileset_sunnysideworld_16px.png'); background-position: ${this.getTilePosition(RESOURCE_TYPES.GOLD.tileId)}; background-size: 1024px 1024px;"></div>
+                            <span style="font-size: 11px; color: #2d4d1f; font-weight: bold;">${r.sell_price}</span>
+                        </div>
+                        <button class="stand-slot-clear" data-slot="${i}" style="position: absolute; top: 2px; right: 2px; background: #c9403a; border: 1px solid #8b2a25; border-radius: 3px; color: white; font-size: 9px; font-weight: bold; cursor: pointer; padding: 1px 4px; line-height: 1;">×</button>
+                    </div>
+                `;
+            } else {
+                html += `
+                    <div style="background: linear-gradient(180deg, #f0e8d8 0%, #e0d4b8 100%); border: 2px dashed #a89070; border-radius: 8px; padding: 8px; text-align: center; cursor: pointer; min-height: 72px; display: flex; align-items: center; justify-content: center;" class="stand-slot-btn" data-slot="${i}">
+                        <span style="font-size: 24px; color: #a89070; line-height: 1;">+</span>
+                    </div>
+                `;
+            }
+        }
+
+        html += `</div></div>`;
+        this.menuPanel.innerHTML = html;
+
+        document.getElementById('close-menu-btn')?.addEventListener('click', () => this.closeMenu());
+
+        // Slot click opens submenu
+        for (const btn of this.menuPanel.querySelectorAll('.stand-slot-btn')) {
+            btn.addEventListener('click', (e) => {
+                if (e.target.classList.contains('stand-slot-clear')) return;
+                const slotIndex = parseInt(btn.dataset.slot);
+                this._openStandSlotSubmenu(slotIndex, stand);
+            });
+        }
+
+        // Clear button clears the slot
+        for (const btn of this.menuPanel.querySelectorAll('.stand-slot-clear')) {
+            btn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                const slotIndex = parseInt(btn.dataset.slot);
+                stand.clearSlot(slotIndex);
+                this.renderStandMenu(stand);
+            });
+        }
+    }
+
+    _openStandSlotSubmenu(slotIndex, stand) {
+        this._closeStandSlotSubmenu();
+
+        const inventory = this.game.inventory;
+
+        // Count resources already claimed by other slots
+        const claimedCounts = {};
+        for (let i = 0; i < stand.slots.length; i++) {
+            if (i === slotIndex) continue;
+            const r = stand.slots[i].resource;
+            if (r) claimedCounts[r.id] = (claimedCounts[r.id] || 0) + 1;
+        }
+
+        // Build list of resources that can be assigned: have sell_price and player owns at least one unclaimed
+        const available = Object.values(RESOURCE_TYPES).filter(r => {
+            if (r.sell_price === undefined) return false;
+            const owned = inventory.getCount(r);
+            const claimed = claimedCounts[r.id] || 0;
+            return owned - claimed > 0;
+        });
+
+        const submenu = document.createElement('div');
+        submenu.id = 'stand-slot-submenu';
+        submenu.style.cssText = `
+            position: fixed;
+            background: linear-gradient(180deg, #f5e6c8 0%, #e8d4a8 100%);
+            border: 3px solid #8b7355;
+            border-radius: 10px;
+            box-shadow: 0 6px 20px rgba(0,0,0,0.5);
+            padding: 10px;
+            z-index: 300;
+            max-height: 60vh;
+            overflow-y: auto;
+            min-width: 200px;
+            max-width: 280px;
+        `;
+
+        // Position it to the right of the menu panel, centered vertically
+        const panelRect = this.menuPanel.getBoundingClientRect();
+        submenu.style.left = `${panelRect.right + 8}px`;
+        submenu.style.top = `${Math.max(8, panelRect.top)}px`;
+
+        let innerHtml = `<div style="font-size: 13px; font-weight: bold; color: #5a4a38; margin-bottom: 8px; text-align: center; border-bottom: 2px solid #c4a882; padding-bottom: 6px;">Choose Item for Slot ${slotIndex + 1}</div>`;
+
+        if (available.length === 0) {
+            innerHtml += `<p style="color: #7a6a5a; font-size: 12px; text-align: center; font-style: italic;">No sellable items available</p>`;
+        } else {
+            innerHtml += `<div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px;">`;
+            for (const r of available) {
+                const owned = inventory.getCount(r);
+                const claimed = claimedCounts[r.id] || 0;
+                const net = owned - claimed;
+                innerHtml += `
+                    <div class="stand-item-choice" data-resource-id="${r.id}" style="background: linear-gradient(180deg, #fff 0%, #e8e0d0 100%); border: 2px solid #a89070; border-radius: 6px; padding: 6px; text-align: center; cursor: pointer; transition: border-color 0.1s;">
+                        <div style="width: 28px; height: 28px; margin: 0 auto 3px auto; display: flex; align-items: center; justify-content: center;">
+                            <div style="width: 16px; height: 16px; image-rendering: pixelated; background-image: url('Tileset/spr_tileset_sunnysideworld_16px.png'); background-position: ${this.getTilePosition(r.tileId)}; background-size: 1024px 1024px; transform: scale(1.75);"></div>
+                        </div>
+                        <div style="font-size: 9px; color: #5a4a38; line-height: 1.2;">${r.name}</div>
+                        <div style="font-size: 9px; color: #7a6a5a;">x${net}</div>
+                        <div style="display: flex; align-items: center; justify-content: center; gap: 2px; margin-top: 2px;">
+                            <div style="width: 8px; height: 8px; image-rendering: pixelated; background-image: url('Tileset/spr_tileset_sunnysideworld_16px.png'); background-position: ${this.getTilePosition(RESOURCE_TYPES.GOLD.tileId)}; background-size: 1024px 1024px;"></div>
+                            <span style="font-size: 9px; color: #2d4d1f; font-weight: bold;">${r.sell_price}</span>
+                        </div>
+                    </div>
+                `;
+            }
+            innerHtml += `</div>`;
+        }
+
+        submenu.innerHTML = innerHtml;
+        document.body.appendChild(submenu);
+        this.standSlotSubmenu = submenu;
+
+        // Item selection handler
+        for (const btn of submenu.querySelectorAll('.stand-item-choice')) {
+            btn.addEventListener('mouseenter', () => { btn.style.borderColor = '#4a7c59'; });
+            btn.addEventListener('mouseleave', () => { btn.style.borderColor = '#a89070'; });
+            btn.addEventListener('click', () => {
+                const resourceId = btn.dataset.resourceId;
+                const resource = Object.values(RESOURCE_TYPES).find(r => r.id === resourceId);
+                if (resource) {
+                    stand.slots[slotIndex].resource = resource;
+                    this._closeStandSlotSubmenu();
+                    this.renderStandMenu(stand);
+                }
+            });
+        }
+
+        // Close submenu when clicking outside of it.
+        // We track this listener explicitly so it can be removed in _closeStandSlotSubmenu,
+        // preventing stale listeners from accumulating when the menu re-renders due to
+        // inventory changes while a submenu is open.
+        const closeOnOutside = (e) => {
+            if (this.standSlotSubmenu && !this.standSlotSubmenu.contains(e.target)) {
+                this._closeStandSlotSubmenu();
+            }
+        };
+        // Defer one tick so the current click event that opened the submenu doesn't immediately close it.
+        setTimeout(() => {
+            // Only attach if this submenu is still the current one (not already replaced)
+            if (this.standSlotSubmenu === submenu) {
+                this._standSubmenuOutsideClickHandler = closeOnOutside;
+                document.addEventListener('mousedown', closeOnOutside);
+            }
+        }, 0);
+    }
+
+    _closeStandSlotSubmenu() {
+        // Always remove the tracked outside-click listener first to prevent accumulation
+        if (this._standSubmenuOutsideClickHandler) {
+            document.removeEventListener('mousedown', this._standSubmenuOutsideClickHandler);
+            this._standSubmenuOutsideClickHandler = null;
+        }
+        if (this.standSlotSubmenu) {
+            this.standSlotSubmenu.remove();
+            this.standSlotSubmenu = null;
+        }
     }
 
     // Get tile position for CSS background

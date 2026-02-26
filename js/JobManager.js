@@ -64,7 +64,9 @@ export class JobManager {
             currentJob: null,
             isProcessing: false,
             isPausedForCombat: false,
-            savedJobState: null
+            isPausedForStand: false,
+            savedJobState: null,
+            pendingStandService: null   // stand service job waiting for current animation to finish
         });
         log.debug(` Registered worker: ${workerId}`);
     }
@@ -163,7 +165,7 @@ export class JobManager {
     // Try to assign jobs to any idle workers
     tryAssignJobs() {
         for (const [workerId, workerState] of this.workers) {
-            if (!workerState.isProcessing && !workerState.isPausedForCombat) {
+            if (!workerState.isProcessing && !workerState.isPausedForCombat && !workerState.isPausedForStand) {
                 this.assignJobToWorker(workerId);
             }
         }
@@ -172,7 +174,7 @@ export class JobManager {
     // Assign a job to a specific worker
     assignJobToWorker(workerId) {
         const workerState = this.workers.get(workerId);
-        if (!workerState || workerState.isProcessing || workerState.isPausedForCombat) {
+        if (!workerState || workerState.isProcessing || workerState.isPausedForCombat || workerState.isPausedForStand) {
             return false;
         }
 
@@ -202,6 +204,65 @@ export class JobManager {
         job.status = JOB_STATUS.WALKING;
         workerState.currentJob = job;
         workerState.isProcessing = true;
+
+        // Sort non-sword job tiles by greedy nearest-neighbor from the worker's current position
+        if (job.tiles && job.tiles.length > 1 && job.tool.id !== 'sword') {
+            const workerPosition = this.getWorkerPosition(workerId);
+            if (workerPosition) {
+                const tileSize = this.game.tilemap.tileSize;
+                let curX = worldToTile(workerPosition.x, tileSize);
+                let curY = worldToTile(workerPosition.y, tileSize);
+
+                const remaining = [...job.tiles];
+                const sorted = [];
+
+                while (remaining.length > 0) {
+                    // Find the closest tile to the current position
+                    let closestIdx = 0;
+                    let closestDist = Infinity;
+                    for (let i = 0; i < remaining.length; i++) {
+                        const t = remaining[i];
+                        let dist;
+                        if (t.multiTileBaseTiles && t.multiTileBaseTiles.length > 0) {
+                            // Use min distance to any base tile of this multi-tile object
+                            dist = Infinity;
+                            for (const bt of t.multiTileBaseTiles) {
+                                const d = Math.abs(bt.x - curX) + Math.abs(bt.y - curY);
+                                if (d < dist) dist = d;
+                            }
+                        } else {
+                            dist = Math.abs(t.x - curX) + Math.abs(t.y - curY);
+                        }
+                        if (dist < closestDist) {
+                            closestDist = dist;
+                            closestIdx = i;
+                        }
+                    }
+
+                    const next = remaining.splice(closestIdx, 1)[0];
+                    sorted.push(next);
+
+                    // Advance current position to the chosen tile
+                    if (next.multiTileBaseTiles && next.multiTileBaseTiles.length > 0) {
+                        let minDist = Infinity;
+                        for (const bt of next.multiTileBaseTiles) {
+                            const d = Math.abs(bt.x - curX) + Math.abs(bt.y - curY);
+                            if (d < minDist) {
+                                minDist = d;
+                                curX = bt.x;
+                                curY = bt.y;
+                            }
+                        }
+                    } else {
+                        curX = next.x;
+                        curY = next.y;
+                    }
+                }
+
+                job.tiles = sorted;
+                log.debug(` [${workerId}] Sorted ${sorted.length} job tiles by proximity`);
+            }
+        }
 
         log.debug(` Starting job ${job.id} for worker: ${workerId}`);
 
@@ -280,6 +341,12 @@ export class JobManager {
         job.workTileX = targetTileX;
         job.workTileY = targetTileY;
 
+        // Stand service: walk directly to the service tile (no adjacent-tile search)
+        if (job.isStandServiceJob) {
+            this.moveWorkerToExact(workerId, targetTileX, targetTileY);
+            return;
+        }
+
         const targetX = targetTileX * tileSize + tileSize / 2;
         const targetY = targetTileY * tileSize + tileSize / 2;
 
@@ -305,6 +372,50 @@ export class JobManager {
         }
     }
 
+    // Move a worker directly to an exact tile (bypasses findAdjacentStandingTile)
+    moveWorkerToExact(workerId, tileX, tileY) {
+        if (workerId === 'human') {
+            this.game.moveCharacterToTile(tileX, tileY);
+        } else if (workerId === 'goblin') {
+            this.game.moveGoblinToTile(tileX, tileY);
+        }
+    }
+
+    // If a stand service is pending for this worker, interrupt the current job after
+    // the current animation completes and start the service immediately.
+    // tileCompleted: true  = current tile's work is fully done (advance tile index)
+    //               false = tile is mid-progress (re-queue at same tile index)
+    // Returns true if an interrupt was performed (caller should return).
+    _checkInterruptForStand(workerId, tileCompleted) {
+        const workerState = this.workers.get(workerId);
+        if (!workerState?.pendingStandService) return false;
+
+        const serviceJob = workerState.pendingStandService;
+        workerState.pendingStandService = null;
+
+        const job = workerState.currentJob;
+        if (tileCompleted) job.currentTileIndex++;
+
+        const totalTargets = (job.tool.id === 'sword' && job.targetEnemies)
+            ? job.targetEnemies.length : job.tiles.length;
+
+        // Put the current job back at the front so it resumes after service
+        if (!tileCompleted || job.currentTileIndex < totalTargets) {
+            job.status = JOB_STATUS.PENDING;
+            this.queues[workerId].unshift(job);
+        }
+
+        // Clear work tile
+        if (workerId === 'human') this.game.currentWorkTile = null;
+        else if (workerId === 'goblin') this.game.goblinCurrentWorkTile = null;
+
+        workerState.currentJob = null;
+        workerState.isProcessing = false;
+        if (this.onQueueChange) this.onQueueChange();
+        this.startJobForWorker(workerId, serviceJob);
+        return true;
+    }
+
     // Set animation for a worker
     async setWorkerAnimation(workerId, animation, loop, onComplete, speedMultiplier) {
         if (workerId === 'human') {
@@ -325,6 +436,18 @@ export class JobManager {
         }
 
         const job = workerState.currentJob;
+
+        // Stand service: execute transaction immediately on tile-reach, no animation needed
+        if (job.tool.id === 'stand_service') {
+            job.status = JOB_STATUS.WORKING;
+            const slotIndex = job.transactionData?.slotIndex ?? -1;
+            this.pauseWorkerForStand(workerId);
+            this.applyToolEffect(job.tool, job.tiles[0].x, job.tiles[0].y, workerId);
+            this.completeJobForWorker(workerId);
+            this.game.onStandServiceComplete(workerId, slotIndex);
+            return;
+        }
+
         job.status = JOB_STATUS.WORKING;
         const animation = job.tool.animation;
         const toolId = job.tool.id;
@@ -364,6 +487,8 @@ export class JobManager {
             if (job.plantingPhase === 1) {
                 this.applyPlantPhase1(tool, workX, workY);
                 job.plantingPhase = 2;
+                // Check for stand interrupt after phase 1 (tile not yet complete)
+                if (this._checkInterruptForStand(workerId, false)) return;
                 this.setWorkerAnimation(workerId, tool.animation, false, () => {
                     this.onAnimationCompleteForWorker(workerId);
                 }, speedMultiplier);
@@ -376,6 +501,8 @@ export class JobManager {
             const targetEnemy = job.currentTargetEnemy;
             const shouldContinue = this.attackEnemyTargetForWorker(workerId, targetEnemy);
             if (shouldContinue) {
+                // One attack complete, enemy alive — interrupt for stand if pending
+                if (this._checkInterruptForStand(workerId, false)) return;
                 this.setWorkerAnimation(workerId, tool.animation, false, () => {
                     this.onAnimationCompleteForWorker(workerId);
                 }, speedMultiplier);
@@ -385,6 +512,8 @@ export class JobManager {
         } else if (tool.id === 'pickaxe') {
             const shouldContinue = this.mineOre(workX, workY);
             if (shouldContinue) {
+                // One mine swing done, ore remains — interrupt for stand if pending
+                if (this._checkInterruptForStand(workerId, false)) return;
                 this.setWorkerAnimation(workerId, tool.animation, false, () => {
                     this.onAnimationCompleteForWorker(workerId);
                 }, speedMultiplier);
@@ -393,13 +522,15 @@ export class JobManager {
         } else if (tool.id === 'axe') {
             const shouldContinue = this.chopTree(workX, workY);
             if (shouldContinue) {
+                // One chop done, tree still alive — interrupt for stand if pending
+                if (this._checkInterruptForStand(workerId, false)) return;
                 this.setWorkerAnimation(workerId, tool.animation, false, () => {
                     this.onAnimationCompleteForWorker(workerId);
                 }, speedMultiplier);
                 return;
             }
         } else {
-            this.applyToolEffect(tool, workX, workY);
+            this.applyToolEffect(tool, workX, workY, workerId);
         }
 
         // Clear work tile and move to next
@@ -408,6 +539,9 @@ export class JobManager {
         } else if (workerId === 'goblin') {
             this.game.goblinCurrentWorkTile = null;
         }
+
+        // Tile fully complete — interrupt for stand service if pending
+        if (this._checkInterruptForStand(workerId, true)) return;
 
         this.moveToNextTileForWorker(workerId);
     }
@@ -576,7 +710,7 @@ export class JobManager {
         this.moveToNextTileForWorker('human');
     }
 
-    applyToolEffect(tool, tileX, tileY) {
+    applyToolEffect(tool, tileX, tileY, workerId = 'human') {
         log.debug(`Applying ${tool.name} effect at (${tileX}, ${tileY})`);
 
         switch (tool.id) {
@@ -671,6 +805,21 @@ export class JobManager {
             case 'idle_return':
                 // No work action – character simply walks home and plays one IDLE cycle
                 break;
+
+            case 'stand_service': {
+                const ws = this.workers.get(workerId);
+                const job = ws?.currentJob;
+                if (!job?.transactionData) break;
+                const { slotIndex, resource, price } = job.transactionData;
+                const stand = this.game.roadsideStand;
+                if (stand?.slots[slotIndex]?.resource?.id === resource.id) {
+                    this.game.inventory.remove(resource, 1);
+                    this.game.inventory.addGold(price);
+                    stand.clearSlot(slotIndex);
+                    log.info(`Stand sale: ${resource.name} for ${price}g at slot ${slotIndex}`);
+                }
+                break;
+            }
 
             // Other tools can be implemented later
             default:
@@ -971,58 +1120,58 @@ export class JobManager {
     }
 
     // Get all tiles that are queued or being worked on (for overlay display)
-    // For multi-tile objects, this expands to show all base tiles
+    // Returns { x, y, assignedTo } where assignedTo is 'human'|'goblin'|null (unassigned)
+    // For multi-tile objects, expands to show all base tiles
     // For sword jobs with enemies, shows enemy's current position
     getAllQueuedTiles() {
         const tiles = [];
         const tileSize = this.game.tilemap.tileSize;
 
         // Helper to add tile(s) - expands multi-tile objects to all their base tiles
-        const addTileOrExpand = (tile, _job) => {
+        const addTileOrExpand = (tile, assignedTo) => {
             if (tile.multiTileBaseTiles && tile.multiTileBaseTiles.length > 0) {
-                // Multi-tile object: add all base tiles for display
                 for (const baseTile of tile.multiTileBaseTiles) {
-                    tiles.push({ x: baseTile.x, y: baseTile.y });
+                    tiles.push({ x: baseTile.x, y: baseTile.y, assignedTo });
                 }
             } else {
-                // Regular tile
-                tiles.push({ x: tile.x, y: tile.y });
+                tiles.push({ x: tile.x, y: tile.y, assignedTo });
             }
         };
 
         // Helper to add enemy's current position
-        const addEnemyPosition = (enemy) => {
+        const addEnemyPosition = (enemy, assignedTo) => {
             if (enemy && enemy.isAlive) {
-                tiles.push({ x: worldToTile(enemy.x, tileSize), y: worldToTile(enemy.y, tileSize) });
+                tiles.push({ x: worldToTile(enemy.x, tileSize), y: worldToTile(enemy.y, tileSize), assignedTo });
             }
         };
 
-        // Add tiles from current job (remaining tiles/enemies)
-        if (this.currentJob) {
-            if (this.currentJob.tool.id === 'sword' && this.currentJob.targetEnemies) {
-                // For sword jobs, show enemy current positions
-                for (let i = this.currentJob.currentTileIndex; i < this.currentJob.targetEnemies.length; i++) {
-                    addEnemyPosition(this.currentJob.targetEnemies[i]);
+        // Add tiles from each worker's active (claimed) job
+        for (const [workerId, workerState] of this.workers) {
+            const job = workerState.currentJob;
+            if (!job) continue;
+            const assignedTo = workerId; // 'human' or 'goblin'
+            if (job.tool.id === 'sword' && job.targetEnemies) {
+                for (let i = job.currentTileIndex; i < job.targetEnemies.length; i++) {
+                    addEnemyPosition(job.targetEnemies[i], assignedTo);
                 }
             } else {
-                // Standard job - show tile positions
-                for (let i = this.currentJob.currentTileIndex; i < this.currentJob.tiles.length; i++) {
-                    addTileOrExpand(this.currentJob.tiles[i], this.currentJob);
+                for (let i = job.currentTileIndex; i < job.tiles.length; i++) {
+                    addTileOrExpand(job.tiles[i], assignedTo);
                 }
             }
         }
 
-        // Add tiles from queued jobs
-        for (const job of this.queue) {
-            if (job.tool.id === 'sword' && job.targetEnemies) {
-                // For sword jobs, show enemy current positions
-                for (const enemy of job.targetEnemies) {
-                    addEnemyPosition(enemy);
-                }
-            } else {
-                // Standard job - show tile positions
-                for (const tile of job.tiles) {
-                    addTileOrExpand(tile, job);
+        // Add tiles from all queues (pending/unassigned — assignedTo null)
+        for (const queueKey of ['all', 'human', 'goblin']) {
+            for (const job of this.queues[queueKey]) {
+                if (job.tool.id === 'sword' && job.targetEnemies) {
+                    for (const enemy of job.targetEnemies) {
+                        addEnemyPosition(enemy, null);
+                    }
+                } else {
+                    for (const tile of job.tiles) {
+                        addTileOrExpand(tile, null);
+                    }
                 }
             }
         }
@@ -1147,6 +1296,75 @@ export class JobManager {
         this.cancelCurrentJob();
 
         if (this.onQueueChange) this.onQueueChange();
+    }
+
+    // Dispatch a stand service job to a specific worker, interrupting their current activity
+    dispatchStandService(workerId, standTileX, standTileY, transactionData) {
+        const workerState = this.workers.get(workerId);
+        if (!workerState) return;
+
+        const serviceJob = {
+            id: `job_${this.jobIdCounter++}`,
+            tool: { id: 'stand_service', name: 'Stand Service', animation: 'IDLE' },
+            tiles: [{ x: standTileX, y: standTileY }],
+            currentTileIndex: 0,
+            status: JOB_STATUS.PENDING,
+            assignedTo: workerId,
+            targetQueue: workerId,
+            createdAt: Date.now(),
+            isStandServiceJob: true,
+            transactionData
+        };
+
+        const currentJob = workerState.currentJob;
+
+        if (currentJob?.status === JOB_STATUS.WORKING) {
+            // Mid-animation: flag the pending service. _checkInterruptForStand() will fire
+            // as soon as the current animation cycle completes, then start service immediately.
+            workerState.pendingStandService = serviceJob;
+        } else if (currentJob?.status === JOB_STATUS.WALKING) {
+            // Walking: cancel walk, push current job back, put service job in front
+            if (workerId === 'human') {
+                this.game.currentPath = null;
+                this.game.currentWorkTile = null;
+            } else if (workerId === 'goblin') {
+                this.game.goblinCurrentPath = null;
+                this.game.goblinCurrentWorkTile = null;
+            }
+            // Retry the interrupted tile
+            currentJob.status = JOB_STATUS.PENDING;
+            currentJob.currentTileIndex = Math.max(0, currentJob.currentTileIndex - 1);
+            this.queues[workerId].unshift(currentJob);
+            this.queues[workerId].unshift(serviceJob);
+            workerState.currentJob = null;
+            workerState.isProcessing = false;
+            this.tryAssignJobs();
+        } else {
+            // Idle: start immediately
+            this.startJobForWorker(workerId, serviceJob);
+        }
+
+        if (this.onQueueChange) this.onQueueChange();
+    }
+
+    // Pause worker so they wait at the stand (prevents tryAssignJobs from reassigning them)
+    pauseWorkerForStand(workerId) {
+        const ws = this.workers.get(workerId);
+        if (ws) {
+            ws.isPausedForStand = true;
+            log.debug(`[${workerId}] Paused for stand`);
+        }
+    }
+
+    // Resume worker from stand pause and pick up their next job (or go idle)
+    resumeWorkerFromStand(workerId) {
+        const ws = this.workers.get(workerId);
+        if (!ws || !ws.isPausedForStand) return;
+        ws.isPausedForStand = false;
+        if (!this.assignJobToWorker(workerId)) {
+            this.setWorkerAnimation(workerId, 'IDLE', true);
+        }
+        log.debug(`[${workerId}] Resumed from stand`);
     }
 
     // Check if a specific worker is working

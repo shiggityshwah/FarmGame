@@ -137,6 +137,7 @@ export class Pathfinder {
         this.forestGenerator = null;
         this.treeManager = null;
         this.oreManager = null;
+        this.roadsideStand = null;
     }
 
     /**
@@ -154,6 +155,11 @@ export class Pathfinder {
     /** Set the ore manager so ore vein bottom tiles block pathfinding */
     setOreManager(oreManager) {
         this.oreManager = oreManager;
+    }
+
+    /** Set the roadside stand so its collision tiles block pathfinding */
+    setRoadsideStand(stand) {
+        this.roadsideStand = stand;
     }
 
     findPath(startX, startY, endX, endY) {
@@ -290,6 +296,11 @@ export class Pathfinder {
                 return false;
             }
             if (this.forestGenerator && this.forestGenerator.isPocketOreObstacle(x, y)) {
+                return false;
+            }
+
+            // Check roadside stand collision tiles (the two 2470 middle table tiles)
+            if (this.roadsideStand && this.roadsideStand.isObstacle(x, y)) {
                 return false;
             }
 

@@ -192,9 +192,13 @@ export class IdleManager {
             return;
         }
 
+        // Weed-clearing is lowest priority — only do it when nothing else is available
+        const nonWeed = evaluations.filter(e => e.key !== 'weed');
+        const pool0   = nonWeed.length > 0 ? nonWeed : evaluations;
+
         // Prefer activities with a short enough path; fall back to any
-        const short = evaluations.filter(e => e.pathLength <= MAX_IDLE_PATH_LENGTH);
-        const pool  = short.length > 0 ? short : evaluations;
+        const short = pool0.filter(e => e.pathLength <= MAX_IDLE_PATH_LENGTH);
+        const pool  = short.length > 0 ? short : pool0;
 
         const selected = this._weightedSelectFromPool(pool);
         const job = this._createJobForEvaluation(selected);

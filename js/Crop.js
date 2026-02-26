@@ -170,12 +170,12 @@ export class Crop {
         if (this.isHarvested) {
             switch (this.harvestStage) {
                 case HARVEST_STAGE.LARGE_HOLE:
-                    return [{ id: DIRT_TILES.LARGE_HOLE, offsetY: 0 }];
+                    return [{ id: DIRT_TILES.LARGE_HOLE, offsetY: 0, isGround: true }];
                 case HARVEST_STAGE.SMALL_HOLE:
-                    return [{ id: DIRT_TILES.SMALL_HOLE, offsetY: 0 }];
+                    return [{ id: DIRT_TILES.SMALL_HOLE, offsetY: 0, isGround: true }];
                 case HARVEST_STAGE.DRY_DIRT:
                 case HARVEST_STAGE.FADING:
-                    return [{ id: DIRT_TILES.DRY, offsetY: 0 }];
+                    return [{ id: DIRT_TILES.DRY, offsetY: 0, isGround: true }];
                 default:
                     return [];
             }
@@ -187,43 +187,43 @@ export class Crop {
             case GROWTH_STAGE.PLANTING_PHASE1:
                 // First phase of planting, show half-closed hole (1010)
                 return [
-                    { id: DIRT_TILES.SMALL_HOLE, offsetY: 0 }
+                    { id: DIRT_TILES.SMALL_HOLE, offsetY: 0, isGround: true }
                 ];
 
             case GROWTH_STAGE.PLANTED:
                 // Fully planted, show closed dry hole (818), needs watering
                 return [
-                    { id: DIRT_TILES.DRY, offsetY: 0 }
+                    { id: DIRT_TILES.DRY, offsetY: 0, isGround: true }
                 ];
 
             case GROWTH_STAGE.SEED:
                 // After watering, show closed wet hole (no visible seed yet)
                 return [
-                    { id: DIRT_TILES.WET, offsetY: 0 }
+                    { id: DIRT_TILES.WET, offsetY: 0, isGround: true }
                 ];
 
             case GROWTH_STAGE.SEEDLING:
                 return [
-                    { id: DIRT_TILES.WET, offsetY: 0 },
+                    { id: DIRT_TILES.WET, offsetY: 0, isGround: true },
                     { id: TILE_BASE.SEEDLING + offset, offsetY: 0 }
                 ];
 
             case GROWTH_STAGE.EARLY_GROWTH:
                 return [
-                    { id: DIRT_TILES.WET, offsetY: 0 },
+                    { id: DIRT_TILES.WET, offsetY: 0, isGround: true },
                     { id: TILE_BASE.EARLY_GROWTH + offset, offsetY: 0 }
                 ];
 
             case GROWTH_STAGE.ALMOST_HARVESTABLE:
                 return [
-                    { id: DIRT_TILES.WET, offsetY: 0 },
+                    { id: DIRT_TILES.WET, offsetY: 0, isGround: true },
                     { id: TILE_BASE.ALMOST_TOP + offset, offsetY: -1 },
                     { id: TILE_BASE.ALMOST_BOTTOM + offset, offsetY: 0 }
                 ];
 
             case GROWTH_STAGE.HARVESTABLE:
                 return [
-                    { id: DIRT_TILES.DRY, offsetY: 0 },
+                    { id: DIRT_TILES.DRY, offsetY: 0, isGround: true },
                     { id: TILE_BASE.HARVEST_TOP + offset, offsetY: -1 },
                     { id: TILE_BASE.HARVEST_BOTTOM + offset, offsetY: 0 }
                 ];

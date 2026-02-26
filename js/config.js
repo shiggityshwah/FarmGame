@@ -159,6 +159,30 @@ export const CONFIG = {
         maxEnemiesPerPocket: 3
     },
 
+    // === ROADSIDE STAND ===
+    stand: {
+        waitDuration: 2000,          // ms worker stays at stand after transaction
+        traveler: {
+            likedItemCount: 3,           // number of liked item types per traveler
+            hatedItemCount: 3,           // number of hated item types per traveler
+            goldMin: 100,
+            goldMax: 1000,
+            neutralVisitChance: 0.5,     // chance to visit stand with only neutral items
+            neutralBaseProbability: 0.70,// first neutral-item buy probability
+            neutralDecayRate: 0.15       // probability reduction per additional purchase
+        }
+    },
+
+    // === NPC TRAVELERS ===
+    traveler: {
+        spawnIntervalMin: 20000,    // ms — minimum time between spawns
+        spawnIntervalMax: 45000,    // ms — maximum time between spawns
+        speed: 40,                  // pixels/second (~2.5 tiles/sec)
+        pathCenterY: 992,           // world pixel Y — midpoint of great path tiles 61–62
+        despawnMargin: 64,          // pixels past map edge before removing traveler
+        hairStyles: ['curly', 'bowl', 'long', 'mop', 'short', 'spikey']
+    },
+
     // === CHUNK SYSTEM ===
     chunks: {
         size: 30,               // Tiles per chunk side

@@ -122,28 +122,37 @@ export class TileSelector {
                 const ore = this.oreManager.getOreAt(tileX, tileY);
                 if (ore && ore.canBeMined()) {
                     // Ore base tiles are the bottom row (tileY + 1)
-                    return {
-                        object: ore,
-                        type: 'ore',
-                        baseTiles: [
-                            { x: ore.tileX, y: ore.tileY + 1 },     // bottom-left
-                            { x: ore.tileX + 1, y: ore.tileY + 1 }  // bottom-right
-                        ]
-                    };
+                    const baseTiles = [
+                        { x: ore.tileX, y: ore.tileY + 1 },     // bottom-left
+                        { x: ore.tileX + 1, y: ore.tileY + 1 }  // bottom-right
+                    ];
+                    // All 4 tiles must be in owned chunks (vein can span chunk boundary)
+                    const allOreTiles = [
+                        { x: ore.tileX,     y: ore.tileY     },
+                        { x: ore.tileX + 1, y: ore.tileY     },
+                        { x: ore.tileX,     y: ore.tileY + 1 },
+                        { x: ore.tileX + 1, y: ore.tileY + 1 }
+                    ];
+                    if (!this._allTilesOwned(allOreTiles)) return null;
+                    return { object: ore, type: 'ore', baseTiles };
                 }
             }
             // Check forest pocket ore
             if (this.forestGenerator) {
                 const forestOre = this.forestGenerator.getPocketOreAt(tileX, tileY);
                 if (forestOre && forestOre.canBeMined()) {
-                    return {
-                        object: forestOre,
-                        type: 'forestOre',
-                        baseTiles: [
-                            { x: forestOre.tileX, y: forestOre.tileY + 1 },
-                            { x: forestOre.tileX + 1, y: forestOre.tileY + 1 }
-                        ]
-                    };
+                    const baseTiles = [
+                        { x: forestOre.tileX, y: forestOre.tileY + 1 },
+                        { x: forestOre.tileX + 1, y: forestOre.tileY + 1 }
+                    ];
+                    const allOreTiles = [
+                        { x: forestOre.tileX,     y: forestOre.tileY     },
+                        { x: forestOre.tileX + 1, y: forestOre.tileY     },
+                        { x: forestOre.tileX,     y: forestOre.tileY + 1 },
+                        { x: forestOre.tileX + 1, y: forestOre.tileY + 1 }
+                    ];
+                    if (!this._allTilesOwned(allOreTiles)) return null;
+                    return { object: forestOre, type: 'forestOre', baseTiles };
                 }
             }
         }
@@ -157,11 +166,9 @@ export class TileSelector {
                 for (let x = 0; x < tree.treeType.width; x++) {
                     baseTiles.push({ x: tree.tileX + x, y: tree.tileY });
                 }
-                return {
-                    object: tree,
-                    type: 'tree',
-                    baseTiles: baseTiles
-                };
+                // All base tiles must be in owned chunks (wide tree can span chunk boundary)
+                if (!this._allTilesOwned(baseTiles)) return null;
+                return { object: tree, type: 'tree', baseTiles };
             }
         }
 
@@ -170,11 +177,10 @@ export class TileSelector {
             const forestTree = this.forestGenerator.getTreeAt(tileX, tileY);
             if (forestTree && forestTree.canBeChopped()) {
                 // Forest tree trunk tiles (both tiles in the trunk row)
-                return {
-                    object: forestTree,
-                    type: 'forestTree',
-                    baseTiles: forestTree.getTrunkTilePositions()
-                };
+                const baseTiles = forestTree.getTrunkTilePositions();
+                // All trunk tiles must be in owned chunks (2-wide tree can span chunk boundary)
+                if (!this._allTilesOwned(baseTiles)) return null;
+                return { object: forestTree, type: 'forestTree', baseTiles };
             }
         }
 
@@ -185,6 +191,12 @@ export class TileSelector {
     isBaseTileOf(tileX, tileY, multiTileInfo) {
         if (!multiTileInfo) return false;
         return multiTileInfo.baseTiles.some(bt => bt.x === tileX && bt.y === tileY);
+    }
+
+    /** Returns true if every tile in the array is in a player-owned chunk. */
+    _allTilesOwned(tiles) {
+        if (!this.chunkManager) return true;
+        return tiles.every(t => this.chunkManager.isPlayerOwned(t.x, t.y));
     }
 
     setOverlayManager(overlayManager) {
@@ -342,14 +354,14 @@ export class TileSelector {
             const owned = this.chunkManager.isPlayerOwned(tileX, tileY);
 
             if (!owned) {
-                // Non-owned chunk (forest or town): sword always OK; shovel only to clear weeds
-                if (this.currentTool.id !== 'sword') {
-                    if (this.currentTool.id === 'shovel') {
-                        const isWeed = this.flowerManager && this.flowerManager.getWeedAt(tileX, tileY) != null;
-                        if (!isWeed) return false;
-                    } else {
-                        return false;
-                    }
+                if (this.currentTool.id === 'sword') {
+                    // Sword always allowed everywhere
+                } else if (this.currentTool.id === 'shovel' && this.chunkManager.isTownChunk(tileX, tileY)) {
+                    // Town chunk: shovel only allowed on weeds
+                    const isWeed = this.flowerManager && this.flowerManager.getWeedAt(tileX, tileY) != null;
+                    if (!isWeed) return false;
+                } else {
+                    return false;
                 }
             }
         }
@@ -441,10 +453,13 @@ export class TileSelector {
 
         // Additional checks to prevent redoing the same action
         if (this.currentTool.id === 'hoe') {
-            // Can only hoe in farmable areas (procedural maps, grass area below buildings, or forest grass)
+            // Can only hoe in farmable areas: the main farm area, outside-tilemap forest grass,
+            // or any player-owned chunk (e.g. purchased forest chunks).
+            // The ownership gate above already ensures non-owned chunks are blocked.
             const inMainFarmableArea = this.tilemap.isInFarmableArea(tileX, tileY);
             const inForestGrass = this.forestGenerator && this.forestGenerator.isWalkable(tileX, tileY);
-            if (!inMainFarmableArea && !inForestGrass) {
+            const inOwnedChunk = this.chunkManager && this.chunkManager.isPlayerOwned(tileX, tileY);
+            if (!inMainFarmableArea && !inForestGrass && !inOwnedChunk) {
                 return false;
             }
             // Can't hoe where there's a weed

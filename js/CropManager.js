@@ -194,13 +194,48 @@ export class CropManager {
         return this.crops;
     }
 
-    // Render a single crop (for depth-sorted rendering)
+    // Render ground-level dirt tiles for all crops (pre-pass, before depth-sorted entities)
+    renderAllCropGroundTiles(ctx) {
+        const tileSize = this.tilemap.tileSize;
+        for (const crop of this.crops) {
+            if (crop.isGone) continue;
+            const tiles = crop.getTileIds();
+            if (tiles.length === 0) continue;
+
+            if (crop.alpha < 1) {
+                ctx.save();
+                ctx.globalAlpha = crop.alpha;
+            }
+
+            for (const tile of tiles) {
+                if (!tile.isGround) continue;
+                const sourceRect = this.tilemap.getTilesetSourceRect(tile.id);
+                const worldX = crop.tileX * tileSize;
+                const worldY = (crop.tileY + tile.offsetY) * tileSize;
+                ctx.drawImage(
+                    this.tilemap.tilesetImage,
+                    sourceRect.x, sourceRect.y, sourceRect.width, sourceRect.height,
+                    worldX, worldY, tileSize, tileSize
+                );
+            }
+
+            if (crop.alpha < 1) {
+                ctx.restore();
+            }
+        }
+    }
+
+    // Render a single crop sprite (for depth-sorted rendering) — skips ground tiles
     renderCrop(ctx, crop) {
         if (crop.isGone) return;
 
         const tileSize = this.tilemap.tileSize;
         const tiles = crop.getTileIds();
         if (tiles.length === 0) return;
+
+        // Check if there are any non-ground tiles to draw
+        const hasNonGround = tiles.some(t => !t.isGround);
+        if (!hasNonGround) return;
 
         // Apply alpha for fading crops
         if (crop.alpha < 1) {
@@ -209,6 +244,7 @@ export class CropManager {
         }
 
         for (const tile of tiles) {
+            if (tile.isGround) continue;
             const sourceRect = this.tilemap.getTilesetSourceRect(tile.id);
             const worldX = crop.tileX * tileSize;
             const worldY = (crop.tileY + tile.offsetY) * tileSize;

@@ -23,6 +23,8 @@ import { ChunkGeneratorRegistry } from './ChunkGeneratorRegistry.js';
 import { ForestChunkGenerator } from './ForestChunkGenerator.js';
 import { JobQueueUI } from './JobQueueUI.js';
 import { IdleManager } from './IdleManager.js';
+import { TravelerManager } from './TravelerManager.js';
+import { RoadsideStand } from './RoadsideStand.js';
 import { Logger } from './Logger.js';
 
 const log = Logger.create('Game');
@@ -138,6 +140,10 @@ export class Game {
         this.jobQueueUI = null;
         this.idleManager = null;
 
+        // Roadside stand and traveler service
+        this.roadsideStand = null;
+        this.standService = { state: 'idle', workerId: null, slotIndex: -1, traveler: null, waitTimer: 0 };
+
         // Chimney smoke animation (rendered above roof when player is outside new house)
         this.chimneySmoke = null;
         this.chimneySmokePauseTimer = 0; // seconds remaining in gap between smoke cycles
@@ -224,6 +230,11 @@ export class Game {
 
             // Place path tiles in the new chunk layout
             this.placePathTilesInMap();
+
+            // Initialize roadside stand (placed at north edge of farm, x=39-42, y=64)
+            this.roadsideStand = new RoadsideStand(this.tilemap);
+            this.roadsideStand.registerInteractable();
+            this.roadsideStand._onTravelerArrived = (t) => this._onTravelerAtStand(t);
 
             // Center camera on the new house (farm chunk)
             const houseCenter = this.tilemap.getHouseCenter();
@@ -372,6 +383,7 @@ export class Game {
             this.pathfinder.setForestGenerator(this.forestGenerator);
             this.pathfinder.setTreeManager(this.treeManager);
             this.pathfinder.setOreManager(this.oreManager);
+            if (this.roadsideStand) this.pathfinder.setRoadsideStand(this.roadsideStand);
             this.overlayManager = new TileOverlayManager(this.tilemap);
             this.overlayManager.setForestGenerator(this.forestGenerator);
             this.initPathEdgeOverlays();
@@ -405,6 +417,11 @@ export class Game {
             if (this.chunkManager) {
                 this.flowerManager.setChunkManager(this.chunkManager);
             }
+
+            // Initialize traveler manager (spawns NPC travelers on the great path)
+            this.travelerManager = new TravelerManager(this.tilemap);
+            if (this.roadsideStand) this.travelerManager.setStand(this.roadsideStand);
+            this.travelerManager.setCamera(this.camera);
 
             // Connect flower manager to tile selector (for weed checking)
             this.tileSelector.setFlowerManager(this.flowerManager);
@@ -907,6 +924,12 @@ export class Game {
                 }
                 break;
 
+            case 'openStand':
+                if (this.uiManager && this.roadsideStand) {
+                    this.uiManager.openStand(this.roadsideStand);
+                }
+                break;
+
             default:
                 log.warn('Unknown interactable action:', action);
         }
@@ -1403,6 +1426,59 @@ export class Game {
         }
     }
 
+    // Walk directly to the exact tile (skips findAdjacentStandingTile).
+    // Used for stand service jobs where the destination IS the working position.
+    moveCharacterToTile(tileX, tileY) {
+        const tileSize = this.tilemap.tileSize;
+        const startTileX = Math.floor(this.humanPosition.x / tileSize);
+        const startTileY = Math.floor(this.humanPosition.y / tileSize);
+
+        this.currentWorkTile = { x: tileX, y: tileY };
+
+        if (startTileX === tileX && startTileY === tileY) {
+            this.jobManager.onTileReached();
+            return;
+        }
+
+        this.currentPath = this.pathfinder.findPath(startTileX, startTileY, tileX, tileY);
+        if (this.currentPath && this.currentPath.length > 0) {
+            if (this.currentPath.length > 1) {
+                const first = this.currentPath[0];
+                if (first.x === startTileX && first.y === startTileY) this.currentPath.shift();
+            }
+            this.setAnimation('WALKING', true, null);
+        } else {
+            this.currentWorkTile = null;
+            this.jobManager.skipCurrentTile();
+        }
+    }
+
+    // Goblin variant of moveCharacterToTile
+    moveGoblinToTile(tileX, tileY) {
+        const tileSize = this.tilemap.tileSize;
+        const startTileX = Math.floor(this.goblinPosition.x / tileSize);
+        const startTileY = Math.floor(this.goblinPosition.y / tileSize);
+
+        this.goblinCurrentWorkTile = { x: tileX, y: tileY };
+
+        if (startTileX === tileX && startTileY === tileY) {
+            this.jobManager.onTileReachedForWorker('goblin');
+            return;
+        }
+
+        this.goblinCurrentPath = this.pathfinder.findPath(startTileX, startTileY, tileX, tileY);
+        if (this.goblinCurrentPath && this.goblinCurrentPath.length > 0) {
+            if (this.goblinCurrentPath.length > 1) {
+                const first = this.goblinCurrentPath[0];
+                if (first.x === startTileX && first.y === startTileY) this.goblinCurrentPath.shift();
+            }
+            this.setGoblinAnimation('WALKING', true, null);
+        } else {
+            this.goblinCurrentWorkTile = null;
+            this.jobManager.skipCurrentTileForWorker('goblin');
+        }
+    }
+
     // Find best adjacent tile to stand on while working on workTile
     // Allows standing to the LEFT, RIGHT, ABOVE, or BELOW the work tile
     findAdjacentStandingTile(startX, startY, workTileX, workTileY) {
@@ -1714,16 +1790,35 @@ export class Game {
 
         const tileSize = this.tilemap.tileSize;
 
-        // Hoist canvas state out of the loop — set once for all tiles
-        this.ctx.fillStyle = 'rgba(100, 150, 255, 0.4)';
-        this.ctx.strokeStyle = 'rgba(100, 150, 255, 0.8)';
+        // Color scheme: red = human claimed, green = goblin claimed, blue = unassigned/queued
+        const COLORS = {
+            human:  { fill: 'rgba(220, 80,  80,  0.4)', stroke: 'rgba(220, 80,  80,  0.8)' },
+            goblin: { fill: 'rgba(80,  200, 80,  0.4)', stroke: 'rgba(10, 150, 10, 0.8)' },
+            none:   { fill: 'rgba(100, 150, 255, 0.4)', stroke: 'rgba(100, 150, 255, 0.8)' }
+        };
+
         this.ctx.lineWidth = 1;
 
+        // Group tiles by color bucket to minimise style-state changes
+        const buckets = { human: [], goblin: [], none: [] };
         for (const tile of queuedTiles) {
-            const worldX = tile.x * tileSize;
-            const worldY = tile.y * tileSize;
-            this.ctx.fillRect(worldX, worldY, tileSize, tileSize);
-            this.ctx.strokeRect(worldX + 0.5, worldY + 0.5, tileSize - 1, tileSize - 1);
+            const key = tile.assignedTo === 'human' ? 'human'
+                      : tile.assignedTo === 'goblin' ? 'goblin'
+                      : 'none';
+            buckets[key].push(tile);
+        }
+
+        for (const [key, group] of Object.entries(buckets)) {
+            if (group.length === 0) continue;
+            const { fill, stroke } = COLORS[key];
+            this.ctx.fillStyle = fill;
+            this.ctx.strokeStyle = stroke;
+            for (const tile of group) {
+                const worldX = tile.x * tileSize;
+                const worldY = tile.y * tileSize;
+                this.ctx.fillRect(worldX, worldY, tileSize, tileSize);
+                this.ctx.strokeRect(worldX + 0.5, worldY + 0.5, tileSize - 1, tileSize - 1);
+            }
         }
     }
 
@@ -1782,6 +1877,14 @@ export class Game {
         if (this.goblinSprite) {
             this.goblinSprite.update(deltaTime);
         }
+
+        // Update NPC travelers
+        if (this.travelerManager) {
+            this.travelerManager.update(deltaTime);
+        }
+
+        // Update stand service state machine
+        this._updateStandService(deltaTime);
 
         // Update player damage flash
         if (this.playerDamageFlashing) {
@@ -1887,6 +1990,11 @@ export class Game {
 
         // Render work queue overlay (tiles waiting to be worked on)
         this.renderWorkQueueOverlay();
+
+        // Render crop dirt/ground tiles before all entities so characters always appear on top
+        if (this.cropManager) {
+            this.cropManager.renderAllCropGroundTiles(this.ctx);
+        }
 
         // === DEPTH-SORTED RENDERING ===
         // Collect all entities that need depth sorting
@@ -2022,6 +2130,26 @@ export class Game {
             });
         }
 
+        // Add NPC travelers
+        if (this.travelerManager) {
+            for (const traveler of this.travelerManager.getTravelers()) {
+                depthEntities.push({
+                    type: 'traveler',
+                    entity: traveler,
+                    sortY: traveler.getSortY()
+                });
+            }
+        }
+
+        // Add roadside stand items (rendered at table surface level)
+        if (this.roadsideStand) {
+            depthEntities.push({
+                type: 'stand',
+                entity: this.roadsideStand,
+                sortY: this.roadsideStand.getSortY()
+            });
+        }
+
         // Sort by Y position (entities with lower Y render first, so higher Y appears in front)
         depthEntities.sort((a, b) => a.sortY - b.sortY);
 
@@ -2061,6 +2189,13 @@ export class Game {
                 case 'character':
                     item.entity.render(this.ctx, this.camera);
                     break;
+                case 'traveler':
+                    item.entity.render(this.ctx, this.camera);
+                    break;
+                case 'stand':
+                    item.entity.renderBase(this.ctx);
+                    item.entity.renderTableItems(this.ctx);
+                    break;
             }
         }
 
@@ -2076,6 +2211,11 @@ export class Game {
 
         // Render upper layers (Buildings Upper) - above characters
         this.tilemap.renderUpperLayers(this.ctx, this.camera);
+
+        // Render roadside stand banner (y=63, above all characters)
+        if (this.roadsideStand) {
+            this.roadsideStand.renderBanner(this.ctx, this.camera);
+        }
 
         // Render new house roof layers and chimney smoke - hidden when player is inside
         const playerOutsideNewHouse = !this.humanPosition ||
@@ -2218,6 +2358,121 @@ export class Game {
         this.running = true;
         this.lastTime = 0;
         requestAnimationFrame((time) => this.loop(time));
+    }
+
+    // === Roadside Stand Service State Machine ===
+
+    // Called by Traveler when it stops at the stand
+    _onTravelerAtStand(traveler) {
+        if (this.standService.state !== 'idle' || !traveler.wantedPurchases?.length) {
+            traveler.resumeWalking();
+            return;
+        }
+        this.standService = {
+            state: 'dispatching',
+            workerId: null,
+            slotIndex: traveler.wantedPurchases[0],
+            traveler,
+            waitTimer: 0
+        };
+        this._dispatchStandServiceWorker();
+    }
+
+    // Find the closest idle-eligible worker to the given stand slot
+    _findClosestWorkerToStand(slotIndex) {
+        const tx = this.roadsideStand.getSlotTileX(slotIndex);
+        const ty = this.roadsideStand.getServiceTileY();
+        const ts = this.tilemap.tileSize;
+        const dist = (pos) => Math.abs(Math.floor(pos.x / ts) - tx) + Math.abs(Math.floor(pos.y / ts) - ty);
+
+        const humanOk  = this.humanPosition  && !this.jobManager.workers.get('human')?.isPausedForCombat;
+        const goblinOk = this.goblinPosition && !this.jobManager.workers.get('goblin')?.isPausedForCombat;
+
+        if (humanOk && goblinOk) {
+            return dist(this.humanPosition) <= dist(this.goblinPosition) ? 'human' : 'goblin';
+        }
+        if (humanOk) return 'human';
+        if (goblinOk) return 'goblin';
+        return null;
+    }
+
+    // Dispatch the right worker to serve the current traveler's next item
+    _dispatchStandServiceWorker() {
+        const { slotIndex, traveler } = this.standService;
+        const slot = this.roadsideStand.slots[slotIndex];
+
+        if (!slot?.resource) {
+            this._advanceTravelerPurchase();
+            return;
+        }
+
+        const workerId = this._findClosestWorkerToStand(slotIndex);
+        if (!workerId) {
+            traveler.resumeWalking();
+            this.standService = { state: 'idle', workerId: null, slotIndex: -1, traveler: null, waitTimer: 0 };
+            return;
+        }
+
+        this.standService.workerId = workerId;
+        const standTileX = this.roadsideStand.getSlotTileX(slotIndex);
+        // Workers stand at the service tile (one south of stand base, y=65)
+        const standTileY = this.roadsideStand.getServiceTileY();
+
+        this.jobManager.dispatchStandService(workerId, standTileX, standTileY, {
+            slotIndex,
+            resource: slot.resource,
+            price: slot.resource.sell_price
+        });
+    }
+
+    // Move to the traveler's next wanted purchase, or release them if done
+    _advanceTravelerPurchase() {
+        const { traveler } = this.standService;
+        if (!traveler) {
+            this.standService = { state: 'idle', workerId: null, slotIndex: -1, traveler: null, waitTimer: 0 };
+            return;
+        }
+
+        traveler.currentPurchaseIndex++;
+        if (traveler.currentPurchaseIndex >= traveler.wantedPurchases.length) {
+            traveler.resumeWalking();
+            this.standService = { state: 'idle', workerId: null, slotIndex: -1, traveler: null, waitTimer: 0 };
+            return;
+        }
+
+        const nextSlotIndex = traveler.wantedPurchases[traveler.currentPurchaseIndex];
+        this.standService.slotIndex = nextSlotIndex;
+        this.standService.state = 'dispatching';
+        // Move traveler horizontally to the new slot (traveler stays at standStopWorldY)
+        traveler.moveToNextSlot(this.roadsideStand.getSlotWorldX(nextSlotIndex));
+        this._dispatchStandServiceWorker();
+    }
+
+    // Called by JobManager after the stand_service transaction completes
+    onStandServiceComplete(workerId, slotIndex) {
+        this.standService.state = 'waiting';
+        this.standService.waitTimer = 0;
+        log.debug(`Stand service complete slot=${slotIndex}, worker=${workerId} waiting ${CONFIG.stand.waitDuration}ms`);
+    }
+
+    // Update the stand service state machine each frame
+    _updateStandService(deltaTime) {
+        if (this.standService.state !== 'waiting') return;
+
+        this.standService.waitTimer += deltaTime;
+        const { traveler, workerId } = this.standService;
+
+        // If traveler despawned mid-service, clean up immediately
+        if (!traveler || traveler.isDespawned) {
+            if (workerId) this.jobManager.resumeWorkerFromStand(workerId);
+            this.standService = { state: 'idle', workerId: null, slotIndex: -1, traveler: null, waitTimer: 0 };
+            return;
+        }
+
+        if (this.standService.waitTimer >= CONFIG.stand.waitDuration) {
+            if (workerId) this.jobManager.resumeWorkerFromStand(workerId);
+            this._advanceTravelerPurchase();
+        }
     }
 
     stop() {
