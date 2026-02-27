@@ -858,39 +858,50 @@ export class Game {
         const tileX = Math.floor(worldX / this.tilemap.tileSize);
         const tileY = Math.floor(worldY / this.tilemap.tileSize);
 
-        // Try to harvest a crop first
-        const harvested = this.cropManager.tryHarvest(tileX, tileY);
-        if (harvested) {
-            // Add to inventory
-            if (this.inventory) {
-                this.inventory.addCropByIndex(harvested.index);
-            }
-            log.debug(`Collected: ${harvested.name}`);
-            return;
-        }
+        const tileOwned = this.chunkManager && this.chunkManager.isPlayerOwned(tileX, tileY);
 
-        // Try to harvest a flower
-        if (this.flowerManager) {
-            const flowerHarvest = this.flowerManager.tryHarvest(tileX, tileY);
-            if (flowerHarvest) {
+        // Try to harvest a crop first (owned chunks only)
+        if (tileOwned) {
+            const harvested = this.cropManager.tryHarvest(tileX, tileY);
+            if (harvested) {
                 // Add to inventory
                 if (this.inventory) {
-                    this.inventory.add(RESOURCE_TYPES.FLOWER, flowerHarvest.yield);
+                    this.inventory.addCropByIndex(harvested.index);
                 }
-                log.debug(`Collected: ${flowerHarvest.flowerType.name} x${flowerHarvest.yield}`);
-                return;
-            }
-
-            // Try to remove a weed
-            const weedResult = this.flowerManager.tryRemoveWeed(tileX, tileY);
-            if (weedResult !== null) {
-                // Weed was clicked (may or may not be removed yet)
+                log.debug(`Collected: ${harvested.name}`);
                 return;
             }
         }
 
-        // Try to harvest forest pocket crops
-        if (this.forestGenerator) {
+        // Try to harvest a flower or remove a weed
+        if (this.flowerManager) {
+            // Flowers only on owned chunks
+            if (tileOwned) {
+                const flowerHarvest = this.flowerManager.tryHarvest(tileX, tileY);
+                if (flowerHarvest) {
+                    // Add to inventory
+                    if (this.inventory) {
+                        this.inventory.add(RESOURCE_TYPES.FLOWER, flowerHarvest.yield);
+                    }
+                    log.debug(`Collected: ${flowerHarvest.flowerType.name} x${flowerHarvest.yield}`);
+                    return;
+                }
+            }
+
+            // Weeds can be removed on owned chunks and the town chunk
+            const canRemoveWeed = tileOwned ||
+                (this.chunkManager && this.chunkManager.isTownChunk(tileX, tileY));
+            if (canRemoveWeed) {
+                const weedResult = this.flowerManager.tryRemoveWeed(tileX, tileY);
+                if (weedResult !== null) {
+                    // Weed was clicked (may or may not be removed yet)
+                    return;
+                }
+            }
+        }
+
+        // Try to harvest forest pocket crops (owned chunks only)
+        if (tileOwned && this.forestGenerator) {
             const forestCropHarvest = this.forestGenerator.harvestPocketCrop(tileX, tileY);
             if (forestCropHarvest) {
                 if (this.inventory) {
@@ -2453,6 +2464,25 @@ export class Game {
         this.standService.state = 'waiting';
         this.standService.waitTimer = 0;
         log.debug(`Stand service complete slot=${slotIndex}, worker=${workerId} waiting ${CONFIG.stand.waitDuration}ms`);
+    }
+
+    // After a sale, check if a spare item exists to refill an auto-replenish slot.
+    // "Spare" = owned count minus items already claimed by other slots.
+    // If a spare exists, restore the resource and keep autoReplenish on.
+    // Otherwise the slot stays cleared (autoReplenish was already reset by clearSlot).
+    tryReplenishStandSlot(slotIndex, resource) {
+        const stand = this.roadsideStand;
+        const claimedByOthers = stand.slots.filter((s, i) =>
+            i !== slotIndex && s.resource?.id === resource.id
+        ).length;
+        const available = this.inventory.getCount(resource) - claimedByOthers;
+        if (available > 0) {
+            stand.slots[slotIndex].resource = resource;
+            stand.slots[slotIndex].autoReplenish = true;
+            log.info(`Auto-replenished slot ${slotIndex} with ${resource.name}`);
+        } else {
+            log.info(`Auto-replenish slot ${slotIndex}: no spare ${resource.name}, slot cleared`);
+        }
     }
 
     // Update the stand service state machine each frame

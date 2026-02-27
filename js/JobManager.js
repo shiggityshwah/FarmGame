@@ -165,9 +165,21 @@ export class JobManager {
     // Try to assign jobs to any idle workers
     tryAssignJobs() {
         for (const [workerId, workerState] of this.workers) {
-            if (!workerState.isProcessing && !workerState.isPausedForCombat && !workerState.isPausedForStand) {
-                this.assignJobToWorker(workerId);
+            if (workerState.isProcessing || workerState.isPausedForCombat) continue;
+
+            // If paused for stand but a player-submitted job is now waiting, clear the
+            // pause immediately — the player's explicit action takes priority over the
+            // post-transaction delay.
+            if (workerState.isPausedForStand) {
+                const privateQueue = this.queues[workerId] ?? [];
+                const hasPlayerJob = privateQueue.some(j => !j.isIdleJob) ||
+                                     this.queues.all.some(j => !j.isIdleJob);
+                if (!hasPlayerJob) continue;
+                workerState.isPausedForStand = false;
+                log.debug(`[${workerId}] Stand pause cleared by incoming player job`);
             }
+
+            this.assignJobToWorker(workerId);
         }
     }
 
@@ -347,6 +359,13 @@ export class JobManager {
             return;
         }
 
+        // Pre-walk check: skip tile if another worker already completed the job there
+        if (this.isTileJobAlreadyDone(job.tool, targetTileX, targetTileY)) {
+            log.debug(`[${workerId}] Skipping ${job.tool.id} at (${targetTileX},${targetTileY}) — already done`);
+            this.moveToNextTileForWorker(workerId);
+            return;
+        }
+
         const targetX = targetTileX * tileSize + tileSize / 2;
         const targetY = targetTileY * tileSize + tileSize / 2;
 
@@ -399,9 +418,17 @@ export class JobManager {
         const totalTargets = (job.tool.id === 'sword' && job.targetEnemies)
             ? job.targetEnemies.length : job.tiles.length;
 
-        // Put the current job back at the front so it resumes after service
+        // Put the current job back at the front so it resumes after service,
+        // trimmed to only the remaining tiles so the queue shows the correct count.
         if (!tileCompleted || job.currentTileIndex < totalTargets) {
             job.status = JOB_STATUS.PENDING;
+            if (job.tool.id === 'sword' && job.targetEnemies) {
+                job.targetEnemies = job.targetEnemies.slice(job.currentTileIndex);
+                job.tiles = job.tiles.slice(job.currentTileIndex);
+            } else {
+                job.tiles = job.tiles.slice(job.currentTileIndex);
+            }
+            job.currentTileIndex = 0;
             this.queues[workerId].unshift(job);
         }
 
@@ -449,6 +476,14 @@ export class JobManager {
         }
 
         job.status = JOB_STATUS.WORKING;
+
+        // Pre-animation check: another worker may have completed this tile while we were walking
+        if (this.isTileJobAlreadyDone(job.tool, job.workTileX, job.workTileY)) {
+            log.debug(`[${workerId}] ${job.tool.id} at (${job.workTileX},${job.workTileY}) already done on arrival, skipping`);
+            this.skipCurrentTileForWorker(workerId);
+            return;
+        }
+
         const animation = job.tool.animation;
         const toolId = job.tool.id;
 
@@ -710,6 +745,67 @@ export class JobManager {
         this.moveToNextTileForWorker('human');
     }
 
+    // Check if the job effect on a tile is already complete (e.g. hole already dug, tree gone).
+    // Returns true if the tile should be skipped.
+    isTileJobAlreadyDone(tool, tileX, tileY) {
+        switch (tool.id) {
+            case 'hoe': {
+                // Use hoedTiles Set directly — isHoedTile() reads tilemap which misses forest tiles
+                const key = `${tileX},${tileY}`;
+                return !!(this.game.overlayManager && this.game.overlayManager.hoedTiles.has(key));
+            }
+            case 'shovel':
+                return !!(this.game.overlayManager &&
+                    this.game.overlayManager.hasOverlay(tileX, tileY, CONFIG.tiles.holeOverlay));
+            case 'axe': {
+                const tree = this.game.treeManager?.getTreeAt(tileX, tileY);
+                if (tree && tree.canBeChopped()) return false;
+                const forestTree = this.game.forestGenerator?.getTreeAt(tileX, tileY);
+                if (forestTree && forestTree.canBeChopped()) return false;
+                return true;
+            }
+            case 'pickaxe': {
+                const ore = this.game.oreManager?.getOreAt(tileX, tileY);
+                if (ore && ore.canBeMined()) return false;
+                const forestOre = this.game.forestGenerator?.getPocketOreAt(tileX, tileY);
+                if (forestOre && forestOre.canBeMined()) return false;
+                return true;
+            }
+            case 'plant': {
+                // Already planted by another worker
+                if (this.game.cropManager && this.game.cropManager.getCropAt(tileX, tileY)) return true;
+                // No hole to plant into
+                if (this.game.overlayManager &&
+                    !this.game.overlayManager.hasOverlay(tileX, tileY, CONFIG.tiles.holeOverlay)) return true;
+                return false;
+            }
+            case 'watering_can': {
+                const crop = this.game.cropManager?.getCropAt(tileX, tileY);
+                return !crop || crop.isWatered;
+            }
+            case 'idle_harvest': {
+                if (!this.game.cropManager) return true;
+                for (const crop of this.game.cropManager.crops) {
+                    if (!crop.isHarvested && !crop.isGone &&
+                        crop.containsTile(tileX, tileY) && crop.isReadyToHarvest()) {
+                        return false;
+                    }
+                }
+                return true;
+            }
+            case 'idle_flower': {
+                const flower = this.game.flowerManager?.getFlowerAt(tileX, tileY);
+                return !flower || flower.isHarvested || flower.isGone;
+            }
+            case 'idle_weed': {
+                const weed = this.game.flowerManager?.getWeedAt(tileX, tileY);
+                return !weed;
+            }
+            default:
+                return false;
+        }
+    }
+
     applyToolEffect(tool, tileX, tileY, workerId = 'human') {
         log.debug(`Applying ${tool.name} effect at (${tileX}, ${tileY})`);
 
@@ -813,10 +909,14 @@ export class JobManager {
                 const { slotIndex, resource, price } = job.transactionData;
                 const stand = this.game.roadsideStand;
                 if (stand?.slots[slotIndex]?.resource?.id === resource.id) {
+                    const shouldReplenish = stand.slots[slotIndex].autoReplenish;
                     this.game.inventory.remove(resource, 1);
                     this.game.inventory.addGold(price);
                     stand.clearSlot(slotIndex);
                     log.info(`Stand sale: ${resource.name} for ${price}g at slot ${slotIndex}`);
+                    if (shouldReplenish) {
+                        this.game.tryReplenishStandSlot(slotIndex, resource);
+                    }
                 }
                 break;
             }
@@ -1331,9 +1431,17 @@ export class JobManager {
                 this.game.goblinCurrentPath = null;
                 this.game.goblinCurrentWorkTile = null;
             }
-            // Retry the interrupted tile
+            // Retry the interrupted tile, trimmed to only the remaining tiles
+            // so the re-queued job shows the correct count in the queue UI.
+            const retryIndex = Math.max(0, currentJob.currentTileIndex - 1);
             currentJob.status = JOB_STATUS.PENDING;
-            currentJob.currentTileIndex = Math.max(0, currentJob.currentTileIndex - 1);
+            if (currentJob.tool.id === 'sword' && currentJob.targetEnemies) {
+                currentJob.targetEnemies = currentJob.targetEnemies.slice(retryIndex);
+                currentJob.tiles = currentJob.tiles.slice(retryIndex);
+            } else {
+                currentJob.tiles = currentJob.tiles.slice(retryIndex);
+            }
+            currentJob.currentTileIndex = 0;
             this.queues[workerId].unshift(currentJob);
             this.queues[workerId].unshift(serviceJob);
             workerState.currentJob = null;
@@ -1361,10 +1469,10 @@ export class JobManager {
         const ws = this.workers.get(workerId);
         if (!ws || !ws.isPausedForStand) return;
         ws.isPausedForStand = false;
-        if (!this.assignJobToWorker(workerId)) {
-            this.setWorkerAnimation(workerId, 'IDLE', true);
-        }
         log.debug(`[${workerId}] Resumed from stand`);
+        // Use tryAssignJobs so all idle workers (not just the resuming one) pick up
+        // any pending jobs that were queued during the stand pause.
+        this.tryAssignJobs();
     }
 
     // Check if a specific worker is working

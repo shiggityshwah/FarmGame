@@ -15,7 +15,8 @@ export class RoadsideStand {
         this.bannerTiles = [2405, 2406, 2406, 2407];
 
         // 6 item slots: indices 0–2 over tile x=40, indices 3–5 over tile x=41
-        this.slots = Array.from({ length: 6 }, () => ({ resource: null }));
+        // autoReplenish: when true, automatically refill the slot after a sale if a spare item exists
+        this.slots = Array.from({ length: 6 }, () => ({ resource: null, autoReplenish: false }));
 
         // Pre-computed world-pixel X centers for each slot
         // 3 slots per 16px tile → each slot is tileSize/3 ≈ 5.33px wide
@@ -76,7 +77,7 @@ export class RoadsideStand {
     }
 
     clearSlot(i) {
-        this.slots[i] = { resource: null };
+        this.slots[i] = { resource: null, autoReplenish: false };
     }
 
     // --- Geometry helpers ---

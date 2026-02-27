@@ -697,8 +697,13 @@ export class UIManager {
         `;
 
         for (let i = 0; i < 6; i++) {
-            const r = stand.slots[i].resource;
+            const slot = stand.slots[i];
+            const r = slot.resource;
             if (r) {
+                const replenishActive = slot.autoReplenish;
+                const replenishBg    = replenishActive ? '#4a7c59' : '#888';
+                const replenishBdr   = replenishActive ? '#2d5a3a' : '#666';
+                const replenishTitle = replenishActive ? 'Auto-replenish ON' : 'Auto-replenish OFF';
                 html += `
                     <div style="position: relative; background: linear-gradient(180deg, #fff 0%, #e8e0d0 100%); border: 2px solid #4a7c59; border-radius: 8px; padding: 8px; text-align: center; cursor: pointer;" class="stand-slot-btn" data-slot="${i}">
                         <div style="width: 32px; height: 32px; margin: 0 auto 4px auto; display: flex; align-items: center; justify-content: center;">
@@ -709,6 +714,7 @@ export class UIManager {
                             <div style="width: 10px; height: 10px; image-rendering: pixelated; background-image: url('Tileset/spr_tileset_sunnysideworld_16px.png'); background-position: ${this.getTilePosition(RESOURCE_TYPES.GOLD.tileId)}; background-size: 1024px 1024px;"></div>
                             <span style="font-size: 11px; color: #2d4d1f; font-weight: bold;">${r.sell_price}</span>
                         </div>
+                        <button class="stand-slot-replenish" data-slot="${i}" title="${replenishTitle}" style="position: absolute; top: 2px; left: 2px; background: ${replenishBg}; border: 1px solid ${replenishBdr}; border-radius: 3px; color: white; font-size: 10px; font-weight: bold; cursor: pointer; padding: 1px 3px; line-height: 1;">⟳</button>
                         <button class="stand-slot-clear" data-slot="${i}" style="position: absolute; top: 2px; right: 2px; background: #c9403a; border: 1px solid #8b2a25; border-radius: 3px; color: white; font-size: 9px; font-weight: bold; cursor: pointer; padding: 1px 4px; line-height: 1;">×</button>
                     </div>
                 `;
@@ -730,6 +736,7 @@ export class UIManager {
         for (const btn of this.menuPanel.querySelectorAll('.stand-slot-btn')) {
             btn.addEventListener('click', (e) => {
                 if (e.target.classList.contains('stand-slot-clear')) return;
+                if (e.target.classList.contains('stand-slot-replenish')) return;
                 const slotIndex = parseInt(btn.dataset.slot);
                 this._openStandSlotSubmenu(slotIndex, stand);
             });
@@ -741,6 +748,16 @@ export class UIManager {
                 e.stopPropagation();
                 const slotIndex = parseInt(btn.dataset.slot);
                 stand.clearSlot(slotIndex);
+                this.renderStandMenu(stand);
+            });
+        }
+
+        // Replenish toggle button — top-left of filled slots
+        for (const btn of this.menuPanel.querySelectorAll('.stand-slot-replenish')) {
+            btn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                const slotIndex = parseInt(btn.dataset.slot);
+                stand.slots[slotIndex].autoReplenish = !stand.slots[slotIndex].autoReplenish;
                 this.renderStandMenu(stand);
             });
         }
@@ -828,6 +845,7 @@ export class UIManager {
                 const resource = Object.values(RESOURCE_TYPES).find(r => r.id === resourceId);
                 if (resource) {
                     stand.slots[slotIndex].resource = resource;
+                    stand.slots[slotIndex].autoReplenish = false;
                     this._closeStandSlotSubmenu();
                     this.renderStandMenu(stand);
                 }
