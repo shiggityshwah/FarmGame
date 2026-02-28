@@ -1,5 +1,6 @@
 import { OreVein, ORE_TYPES, MINING_STAGE, getRandomOreType } from './OreVein.js';
 import { Logger } from './Logger.js';
+import { createHarvestEffect, updateEffects, renderEffects as renderFloatingEffects } from './EffectUtils.js';
 
 const log = Logger.create('OreManager');
 
@@ -98,15 +99,7 @@ export class OreManager {
         const centerX = (ore.tileX + 1) * tileSize;
         const centerY = (ore.tileY + 1) * tileSize;
 
-        this.miningEffects.push({
-            x: centerX,
-            y: centerY,
-            tileId: oreTileId,
-            timer: 0,
-            duration: 1000, // 1 second effect
-            alpha: 1,
-            oreName: ore.oreType.name
-        });
+        this.miningEffects.push(createHarvestEffect(centerX, centerY, oreTileId));
 
         log.debug(`+1 ${ore.oreType.name} ore!`);
     }
@@ -121,16 +114,7 @@ export class OreManager {
         this.oreVeins = this.oreVeins.filter(ore => !ore.isGone);
 
         // Update mining effects
-        for (let i = this.miningEffects.length - 1; i >= 0; i--) {
-            const effect = this.miningEffects[i];
-            effect.timer += deltaTime;
-            effect.y -= deltaTime * 0.05; // Float upward
-            effect.alpha = 1 - (effect.timer / effect.duration);
-
-            if (effect.timer >= effect.duration) {
-                this.miningEffects.splice(i, 1);
-            }
-        }
+        updateEffects(this.miningEffects, deltaTime);
     }
 
     render(ctx, camera) {
@@ -175,30 +159,8 @@ export class OreManager {
         }
 
         // Render mining effects
-        for (const effect of this.miningEffects) {
-            ctx.save();
-            ctx.globalAlpha = effect.alpha;
-
-            // Draw the ore icon floating up
-            const sourceRect = this.tilemap.getTilesetSourceRect(effect.tileId);
-            ctx.drawImage(
-                this.tilemap.tilesetImage,
-                sourceRect.x, sourceRect.y, sourceRect.width, sourceRect.height,
-                effect.x - tileSize / 2, effect.y - tileSize / 2,
-                tileSize, tileSize
-            );
-
-            // Draw "+1" text
-            ctx.fillStyle = '#ffffff';
-            ctx.strokeStyle = '#000000';
-            ctx.lineWidth = 2;
-            ctx.font = 'bold 8px Arial';
-            ctx.textAlign = 'center';
-            ctx.strokeText('+1', effect.x, effect.y - tileSize / 2 - 2);
-            ctx.fillText('+1', effect.x, effect.y - tileSize / 2 - 2);
-
-            ctx.restore();
-        }
+        renderFloatingEffects(ctx, this.miningEffects, this.tilemap.tilesetImage,
+            id => this.tilemap.getTilesetSourceRect(id), tileSize);
     }
 
     // Check if a tile is blocked by the bottom row of an ore vein (for pathfinding)
@@ -264,30 +226,7 @@ export class OreManager {
     // Render only the mining effects (rendered after all entities)
     renderEffects(ctx, camera) {
         const tileSize = this.tilemap.tileSize;
-
-        for (const effect of this.miningEffects) {
-            ctx.save();
-            ctx.globalAlpha = effect.alpha;
-
-            // Draw the ore icon floating up
-            const sourceRect = this.tilemap.getTilesetSourceRect(effect.tileId);
-            ctx.drawImage(
-                this.tilemap.tilesetImage,
-                sourceRect.x, sourceRect.y, sourceRect.width, sourceRect.height,
-                effect.x - tileSize / 2, effect.y - tileSize / 2,
-                tileSize, tileSize
-            );
-
-            // Draw "+1" text
-            ctx.fillStyle = '#ffffff';
-            ctx.strokeStyle = '#000000';
-            ctx.lineWidth = 2;
-            ctx.font = 'bold 8px Arial';
-            ctx.textAlign = 'center';
-            ctx.strokeText('+1', effect.x, effect.y - tileSize / 2 - 2);
-            ctx.fillText('+1', effect.x, effect.y - tileSize / 2 - 2);
-
-            ctx.restore();
-        }
+        renderFloatingEffects(ctx, this.miningEffects, this.tilemap.tilesetImage,
+            id => this.tilemap.getTilesetSourceRect(id), tileSize);
     }
 }

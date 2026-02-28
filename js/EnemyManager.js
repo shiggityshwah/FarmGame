@@ -138,12 +138,7 @@ export class EnemyManager {
                 if (enemy.isInAttackRange(target.x, target.y, tileSize)) {
                     // Attack the target
                     enemy.performAttack({ x: target.x, y: target.y }, currentTime, (damage) => {
-                        // Damage callback - hurt the target
-                        if (type === 'human' && this.game.takeDamage) {
-                            this.game.takeDamage(damage, enemy);
-                        } else if (type === 'goblin' && this.game.takeGoblinDamage) {
-                            this.game.takeGoblinDamage(damage, enemy);
-                        }
+                        closestTarget.onHit(damage, enemy);
                     });
                 } else if (!enemy.isAttacking) {
                     // Move towards target
@@ -171,42 +166,24 @@ export class EnemyManager {
 
     // Find the closest valid target (human or goblin) in vision range
     findClosestTarget(enemy, tileSize) {
-        let bestTarget = null;
-        let bestType = null;
+        if (!this.game) return null;
+
+        let bestResult = null;
         let bestDistSq = Infinity;
 
-        // Check human
-        if (this.game && this.game.humanPosition && this.game.playerHealth > 0) {
-            const humanPos = this.game.humanPosition;
-            if (enemy.isInVisionRange(humanPos.x, humanPos.y, tileSize)) {
-                const dx = humanPos.x - enemy.x;
-                const dy = humanPos.y - enemy.y;
-                const distSq = dx * dx + dy * dy;
-                if (distSq < bestDistSq) {
-                    bestDistSq = distSq;
-                    bestTarget = humanPos;
-                    bestType = 'human';
-                }
+        for (const ct of this.game.getCombatTargets()) {
+            const pos = ct.position;
+            if (!pos || !enemy.isInVisionRange(pos.x, pos.y, tileSize)) continue;
+            const dx = pos.x - enemy.x;
+            const dy = pos.y - enemy.y;
+            const distSq = dx * dx + dy * dy;
+            if (distSq < bestDistSq) {
+                bestDistSq = distSq;
+                bestResult = { target: pos, type: ct.type, onHit: ct.onHit };
             }
         }
 
-        // Check goblin
-        if (this.game && this.game.goblinPosition && this.game.goblinHealth > 0) {
-            const goblinPos = this.game.goblinPosition;
-            if (enemy.isInVisionRange(goblinPos.x, goblinPos.y, tileSize)) {
-                const dx = goblinPos.x - enemy.x;
-                const dy = goblinPos.y - enemy.y;
-                const distSq = dx * dx + dy * dy;
-                if (distSq < bestDistSq) {
-                    bestDistSq = distSq;
-                    bestTarget = goblinPos;
-                    bestType = 'goblin';
-                }
-            }
-        }
-
-        if (!bestTarget) return null;
-        return { target: bestTarget, type: bestType };
+        return bestResult;
     }
 
     render(ctx, camera) {

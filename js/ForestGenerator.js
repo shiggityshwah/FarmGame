@@ -24,6 +24,7 @@ import { OreVein, ORE_TYPES } from './OreVein.js';
 import { Crop, CROP_TYPES } from './Crop.js';
 import { CONFIG } from './config.js';
 import { Logger } from './Logger.js';
+import { createHarvestEffect, updateEffects, renderEffects as renderFloatingEffects } from './EffectUtils.js';
 
 const log = Logger.create('ForestGenerator');
 
@@ -1156,14 +1157,7 @@ export class ForestGenerator {
         const centerX = (tree.baseX + 1) * tileSize;
         const centerY = tree.baseY * tileSize;
 
-        this.choppingEffects.push({
-            x: centerX,
-            y: centerY,
-            tileId: woodTileId,
-            timer: 0,
-            duration: 1000,
-            alpha: 1
-        });
+        this.choppingEffects.push(createHarvestEffect(centerX, centerY, woodTileId));
     }
 
     /**
@@ -1198,16 +1192,7 @@ export class ForestGenerator {
         this.pocketCrops = this.pocketCrops.filter(crop => !crop.isGone);
 
         // Update chopping effects
-        for (let i = this.choppingEffects.length - 1; i >= 0; i--) {
-            const effect = this.choppingEffects[i];
-            effect.timer += deltaTime;
-            effect.y -= deltaTime * 0.05;
-            effect.alpha = 1 - (effect.timer / effect.duration);
-
-            if (effect.timer >= effect.duration) {
-                this.choppingEffects.splice(i, 1);
-            }
-        }
+        updateEffects(this.choppingEffects, deltaTime);
     }
 
     /**
@@ -1240,14 +1225,7 @@ export class ForestGenerator {
             const centerX = (ore.tileX + 1) * tileSize;
             const centerY = (ore.tileY + 1) * tileSize;
 
-            this.choppingEffects.push({
-                x: centerX,
-                y: centerY,
-                tileId: result.oreYielded,
-                timer: 0,
-                duration: 1000,
-                alpha: 1
-            });
+            this.choppingEffects.push(createHarvestEffect(centerX, centerY, result.oreYielded));
         }
 
         return result;
@@ -1280,14 +1258,11 @@ export class ForestGenerator {
 
         // Create harvest effect
         const tileSize = this.tilemap.tileSize;
-        this.choppingEffects.push({
-            x: crop.tileX * tileSize + tileSize / 2,
-            y: crop.tileY * tileSize,
-            tileId: harvestedTileId,
-            timer: 0,
-            duration: 1000,
-            alpha: 1
-        });
+        this.choppingEffects.push(createHarvestEffect(
+            crop.tileX * tileSize + tileSize / 2,
+            crop.tileY * tileSize,
+            harvestedTileId
+        ));
 
         return crop.cropType;
     }
@@ -1519,29 +1494,8 @@ export class ForestGenerator {
      */
     renderEffects(ctx, camera) {
         const tileSize = this.tilemap.tileSize;
-
-        for (const effect of this.choppingEffects) {
-            ctx.save();
-            ctx.globalAlpha = effect.alpha;
-
-            const sourceRect = this.tilemap.getTilesetSourceRect(effect.tileId);
-            ctx.drawImage(
-                this.tilemap.tilesetImage,
-                sourceRect.x, sourceRect.y, sourceRect.width, sourceRect.height,
-                effect.x - tileSize / 2, effect.y - tileSize / 2,
-                tileSize, tileSize
-            );
-
-            ctx.fillStyle = '#ffffff';
-            ctx.strokeStyle = '#000000';
-            ctx.lineWidth = 2;
-            ctx.font = 'bold 8px Arial';
-            ctx.textAlign = 'center';
-            ctx.strokeText('+1', effect.x, effect.y - tileSize / 2 - 2);
-            ctx.fillText('+1', effect.x, effect.y - tileSize / 2 - 2);
-
-            ctx.restore();
-        }
+        renderFloatingEffects(ctx, this.choppingEffects, this.tilemap.tilesetImage,
+            id => this.tilemap.getTilesetSourceRect(id), tileSize);
     }
 
     /**

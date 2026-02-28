@@ -16,7 +16,7 @@ Open `index.html` directly in a web browser. No build step required. Refresh bro
 
 - **config.js** - Centralized game configuration constants (player stats, enemy stats, camera, tiles, path system, goblin stats, chunk system). Import CONFIG object to access values
 - **main.js** - Entry point. DOMContentLoaded initialization of Game and CharacterCustomizer with error handling
-- **Game.js** - Main engine class. Manages game loop (update/render via requestAnimationFrame), initializes all subsystems, handles character loading, movement, and combat
+- **Game.js** - Main engine class. Manages game loop (update/render via requestAnimationFrame), initializes all subsystems, handles character loading, movement, and combat. Exposes facade methods so subsystems don't reach 2+ levels deep: `findPath()`, `isTileWalkable()`, `isTileOwned()`, `getCombatTargets()` (returns `[{position, type, onHit}]` for each living combatant)
 - **Camera.js** - Pan/zoom camera with world-to-screen coordinate conversion. Zoom range: 0.5x-4x
 - **InputManager.js** - Unified input handling for keyboard (WASD/arrows), mouse (drag/wheel/click), and touch (drag/pinch/tap). Supports drag callbacks and panning toggle
 - **TilemapRenderer.js** - Sparse chunk-based world renderer. `generateChunkMap()` creates the initial 3×4 grid using `chunkTiles` Map (sparse storage). Supports `setTileAt()`/`getTileAt()` for runtime tile modification. Renders multi-layer TMX maps (home, store, new house ground/roof layers). `renderGreatPath()` draws the y=60–63 path strip separately.
@@ -24,6 +24,7 @@ Open `index.html` directly in a web browser. No build step required. Refresh bro
 - **SpriteAnimator.js** - Horizontal strip sprite animation with configurable FPS (default 8 FPS). Supports non-looping animations with completion callbacks
 - **CharacterCustomizer.js** - UI panel for hair style and animation selection
 - **Logger.js** - Structured logging with configurable log level (`CONFIG.debug.logLevel`). Use `Logger.create('ModuleName')` per module
+- **EffectUtils.js** - Shared floating harvest/resource effect utilities. Functions: `createHarvestEffect(x, y, tileId)` → effect object, `updateEffects(effects, deltaTime)` → mutates array in-place (float up, fade, remove expired), `renderEffects(ctx, effects, tilesetImage, getTilesetSourceRect, tileSize)` → draws tile icon + "+1" text. Imported by CropManager, TreeManager, OreManager, ForestGenerator.
 
 ### Chunk World System (js/)
 
@@ -58,16 +59,16 @@ Open `index.html` directly in a web browser. No build step required. Refresh bro
 ### Combat System (js/)
 
 - **Enemy.js** - Enemy AI (Skeleton). Stats: 30 HP, 5 damage, vision range 5 tiles, attack range 1 tile. Animations: IDLE, WALK, ATTACK, HURT, DEATH. A* pathfinding toward player, damage flash effect, health bar rendering
-- **EnemyManager.js** - Enemy spawning and coordination. Vision detection, combat engagement tracking, 1-second attack cooldown, dead enemy cleanup after fade-out
+- **EnemyManager.js** - Enemy spawning and coordination. Vision detection, combat engagement tracking, 1-second attack cooldown, dead enemy cleanup after fade-out. Uses `game.getCombatTargets()` to find human/goblin targets — does not access `game.humanPosition`/`goblinPosition` directly.
 
 ### Tool & Job Systems (js/)
 
 - **Toolbar.js** - Bottom toolbar with tool icons extracted from tileset at 400% scale. Handles tool selection and cursor changes
-- **TileSelector.js** - Click/drag tile selection with rectangle highlight. Validates tiles against tool acceptability rules and resource occupancy. Chunk ownership gate: non-owned forest chunks → sword + shovel-on-weed only; owned → all tools.
+- **TileSelector.js** - Click/drag tile selection with rectangle highlight. Validates tiles against tool acceptability rules and resource occupancy. Chunk ownership gate: non-owned forest chunks → sword + shovel-on-weed only; owned → all tools. Per-drag `_acceptabilityCache` Map (key `"x,y"`) avoids redundant checks; cleared on drag start and tool change. `_getChoppableTreeAt()` checks both treeManager and forestGenerator.
 - **JobManager.js** - Multi-queue job system. Queues: `all` (shared), `human`, `goblin`. Each worker tracks current job independently. Supports `isIdleJob` flag for idle-sourced jobs. Methods: `addJob()`, `addIdleJob()`, `cancelJob()`, `getAllJobsByQueue()`
 - **Pathfinder.js** - A* pathfinding with MinHeap for O(n log n) performance. Path tiles have 1.5x speed boost (lower cost). Finds paths avoiding obstacles. Returns null if no path found
 - **TileOverlayManager.js** - Manages sprite overlays on tiles (holes from digging, path edge sprites)
-- **IdleManager.js** - Autonomous idle activity system for the human character. State machine: `inactive → waiting (3-5s) → active`. Evaluates harvest, water, flower-pick, and weed-clear tasks using actual A* path lengths (not just Euclidean distance). Prefers tasks with path length ≤ 35 tiles. Backs off exponentially on failure. Returns home when nothing to do. All activities filter to owned chunks; weed-clearing also allows town chunk.
+- **IdleManager.js** - Autonomous idle activity system for the human character. State machine: `inactive → waiting (3-5s) → active`. Evaluates harvest, water, flower-pick, and weed-clear tasks using actual A* path lengths (not just Euclidean distance). Prefers tasks with path length ≤ 35 tiles. Backs off exponentially on failure. Returns home when nothing to do. All activities filter to owned chunks; weed-clearing also allows town chunk. Uses game facade methods (`game.findPath()`, `game.isTileWalkable()`, `game.isTileOwned()`) instead of accessing subsystems directly.
 
 ### Chunk World Layout (initial 3×4 grid = 90 wide × 124 tall)
 
@@ -308,3 +309,4 @@ The `IdleManager` gives the human character autonomous behavior when no player j
 Tests live in `tests/`. Run by opening `tests/index.html` in a browser (uses a lightweight `TestRunner.js`).
 
 - **tests/ChunkSystem.test.js** - Unit tests for `ChunkContentGenerator`, `ChunkGeneratorRegistry`, and `ForestChunkGenerator`. All tests use plain mock objects — no canvas, tilemap, or DOM required.
+- **tests/EffectUtils.test.js** - Unit tests for `createHarvestEffect`, `updateEffects`, and `renderEffects`. Uses a mock canvas context — no DOM or tilemap required.

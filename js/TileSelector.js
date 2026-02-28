@@ -73,6 +73,10 @@ export class TileSelector {
         // Visual settings
         this.highlightColor = 'rgba(255, 255, 0, 0.4)';
         this.invalidColor = 'rgba(255, 0, 0, 0.3)';
+
+        // Per-drag acceptability cache: key "x,y" → { valid, enemy }
+        // Cleared at the start of each drag and on tool change.
+        this._acceptabilityCache = new Map();
     }
 
     setCropManager(cropManager) {
@@ -105,6 +109,7 @@ export class TileSelector {
 
     setTool(tool) {
         this.currentTool = tool;
+        this._acceptabilityCache.clear();
     }
 
     // Get the multi-tile object at a tile position and its base tile positions
@@ -199,12 +204,27 @@ export class TileSelector {
         return tiles.every(t => this.chunkManager.isPlayerOwned(t.x, t.y));
     }
 
+    /** Returns a choppable tree from either treeManager or forestGenerator, or null. */
+    _getChoppableTreeAt(tileX, tileY) {
+        if (this.treeManager) {
+            const t = this.treeManager.getTreeAt(tileX, tileY);
+            if (t && t.canBeChopped()) return t;
+        }
+        if (this.forestGenerator) {
+            const t = this.forestGenerator.getTreeAt(tileX, tileY);
+            if (t && t.canBeChopped()) return t;
+        }
+        return null;
+    }
+
     setOverlayManager(overlayManager) {
         this.overlayManager = overlayManager;
     }
 
     startSelection(worldX, worldY) {
         if (!this.currentTool) return;
+
+        this._acceptabilityCache.clear();
 
         const tileX = worldToTile(worldX, this.tilemap.tileSize);
         const tileY = worldToTile(worldY, this.tilemap.tileSize);
@@ -340,6 +360,19 @@ export class TileSelector {
     }
 
     isAcceptableTile(tileX, tileY, tileId) {
+        const key = `${tileX},${tileY}`;
+        if (this._acceptabilityCache.has(key)) {
+            const cached = this._acceptabilityCache.get(key);
+            if (cached.enemy) this._lastFoundEnemy = cached.enemy;
+            return cached.valid;
+        }
+        this._lastFoundEnemy = null;
+        const valid = this._computeAcceptableTile(tileX, tileY, tileId);
+        this._acceptabilityCache.set(key, { valid, enemy: this._lastFoundEnemy });
+        return valid;
+    }
+
+    _computeAcceptableTile(tileX, tileY, tileId) {
         // For tiles outside main tilemap, check if forest has grass there
         if (tileId === null) {
             if (!this.forestGenerator || !this.forestGenerator.getGrassTileAt(tileX, tileY)) {
@@ -422,17 +455,7 @@ export class TileSelector {
 
         // Special handling for axe - requires choppable tree at tile (regular or forest)
         if (toolRules.requiresTree) {
-            // Check regular trees
-            if (this.treeManager) {
-                const tree = this.treeManager.getTreeAt(tileX, tileY);
-                if (tree && tree.canBeChopped()) return true;
-            }
-            // Check forest trees
-            if (this.forestGenerator) {
-                const forestTree = this.forestGenerator.getTreeAt(tileX, tileY);
-                if (forestTree && forestTree.canBeChopped()) return true;
-            }
-            return false;
+            return this._getChoppableTreeAt(tileX, tileY) !== null;
         }
 
         // Check if tile ID is valid for this tool

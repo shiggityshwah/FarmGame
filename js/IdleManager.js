@@ -223,10 +223,9 @@ export class IdleManager {
 
     /** Returns true if the character is allowed to idle-work at this tile. */
     _isOwnedForIdle(tileX, tileY, allowTown = false) {
-        const cm = this.game.chunkManager;
-        if (!cm) return true; // no chunk system — allow everything
-        if (cm.isPlayerOwned(tileX, tileY)) return true;
-        if (allowTown && cm.isTownChunk(tileX, tileY)) return true;
+        if (!this.game.chunkManager) return true; // no chunk system — allow everything
+        if (this.game.isTileOwned(tileX, tileY)) return true;
+        if (allowTown && this.game.chunkManager.isTownChunk(tileX, tileY)) return true;
         return false;
     }
 
@@ -310,7 +309,7 @@ export class IdleManager {
      * Returns { item, pathLength } or null.
      */
     _getClosestReachable(items, tileXFn, tileYFn) {
-        if (!this.game.pathfinder || !this.game.humanPosition) return null;
+        if (!this.game.humanPosition) return null;
 
         const tileSize = this.game.tilemap.tileSize;
         const hx = worldToTile(this.game.humanPosition.x, tileSize);
@@ -334,7 +333,7 @@ export class IdleManager {
             const adj = this.game.findAdjacentStandingTile(hx, hy, ix, iy);
             if (!adj) continue;
 
-            const path = this.game.pathfinder.findPath(hx, hy, adj.x, adj.y);
+            const path = this.game.findPath(hx, hy, adj.x, adj.y);
             if (!path || path.length === 0) continue;
 
             if (path.length < bestLen) {
@@ -384,7 +383,7 @@ export class IdleManager {
      * Expands outward in square rings (radius 0–6) until a walkable tile is found.
      */
     _resolveHomeTarget() {
-        if (!this._cachedSpawnPos || !this.game.pathfinder) return null;
+        if (!this._cachedSpawnPos) return null;
         const sp = this._cachedSpawnPos;
 
         for (let r = 0; r <= 6; r++) {
@@ -392,7 +391,7 @@ export class IdleManager {
                 for (let dx = -r; dx <= r; dx++) {
                     if (Math.abs(dx) !== r && Math.abs(dy) !== r) continue; // ring only
                     const tx = sp.tileX + dx, ty = sp.tileY + dy;
-                    if (this.game.pathfinder.isWalkable(tx, ty)) {
+                    if (this.game.isTileWalkable(tx, ty)) {
                         log.debug(`Idle: home target = (${tx}, ${ty}) from spawn (${sp.tileX}, ${sp.tileY})`);
                         return { x: tx, y: ty };
                     }

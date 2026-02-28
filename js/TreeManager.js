@@ -1,5 +1,6 @@
 import { Tree, TREE_TYPES, CHOP_STAGE, getRandomTreeType } from './Tree.js';
 import { Logger } from './Logger.js';
+import { createHarvestEffect, updateEffects, renderEffects as renderFloatingEffects } from './EffectUtils.js';
 
 const log = Logger.create('TreeManager');
 
@@ -149,15 +150,7 @@ export class TreeManager {
         const centerX = (tree.tileX + tree.treeType.width / 2) * tileSize;
         const centerY = tree.tileY * tileSize;
 
-        this.choppingEffects.push({
-            x: centerX,
-            y: centerY,
-            tileId: woodTileId,
-            timer: 0,
-            duration: 1000, // 1 second effect
-            alpha: 1,
-            treeName: tree.treeType.name
-        });
+        this.choppingEffects.push(createHarvestEffect(centerX, centerY, woodTileId));
 
         log.debug(`+1 wood from ${tree.treeType.name}!`);
     }
@@ -172,16 +165,7 @@ export class TreeManager {
         this.trees = this.trees.filter(tree => !tree.isGone);
 
         // Update chopping effects
-        for (let i = this.choppingEffects.length - 1; i >= 0; i--) {
-            const effect = this.choppingEffects[i];
-            effect.timer += deltaTime;
-            effect.y -= deltaTime * 0.05; // Float upward
-            effect.alpha = 1 - (effect.timer / effect.duration);
-
-            if (effect.timer >= effect.duration) {
-                this.choppingEffects.splice(i, 1);
-            }
-        }
+        updateEffects(this.choppingEffects, deltaTime);
     }
 
     // Get all trees for depth-sorted rendering
@@ -224,31 +208,8 @@ export class TreeManager {
     // Render only the chopping effects (rendered after all entities)
     renderEffects(ctx, camera) {
         const tileSize = this.tilemap.tileSize;
-
-        for (const effect of this.choppingEffects) {
-            ctx.save();
-            ctx.globalAlpha = effect.alpha;
-
-            // Draw the wood icon floating up
-            const sourceRect = this.tilemap.getTilesetSourceRect(effect.tileId);
-            ctx.drawImage(
-                this.tilemap.tilesetImage,
-                sourceRect.x, sourceRect.y, sourceRect.width, sourceRect.height,
-                effect.x - tileSize / 2, effect.y - tileSize / 2,
-                tileSize, tileSize
-            );
-
-            // Draw "+1" text
-            ctx.fillStyle = '#ffffff';
-            ctx.strokeStyle = '#000000';
-            ctx.lineWidth = 2;
-            ctx.font = 'bold 8px Arial';
-            ctx.textAlign = 'center';
-            ctx.strokeText('+1', effect.x, effect.y - tileSize / 2 - 2);
-            ctx.fillText('+1', effect.x, effect.y - tileSize / 2 - 2);
-
-            ctx.restore();
-        }
+        renderFloatingEffects(ctx, this.choppingEffects, this.tilemap.tilesetImage,
+            id => this.tilemap.getTilesetSourceRect(id), tileSize);
     }
 
     getTreeCount() {

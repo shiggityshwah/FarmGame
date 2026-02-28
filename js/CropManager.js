@@ -1,5 +1,6 @@
 import { Crop, CROP_TYPES, GROWTH_STAGE, getCropTypeByIndex } from './Crop.js';
 import { Logger } from './Logger.js';
+import { createHarvestEffect, updateEffects, renderEffects as renderFloatingEffects } from './EffectUtils.js';
 
 const log = Logger.create('CropManager');
 
@@ -75,16 +76,7 @@ export class CropManager {
         this.cleanupGoneCrops();
 
         // Update harvest effects
-        for (let i = this.harvestEffects.length - 1; i >= 0; i--) {
-            const effect = this.harvestEffects[i];
-            effect.timer += deltaTime;
-            effect.y -= deltaTime * 0.05; // Float upward
-            effect.alpha = 1 - (effect.timer / effect.duration);
-
-            if (effect.timer >= effect.duration) {
-                this.harvestEffects.splice(i, 1);
-            }
-        }
+        updateEffects(this.harvestEffects, deltaTime);
     }
 
     render(ctx, camera) {
@@ -121,30 +113,8 @@ export class CropManager {
         }
 
         // Render harvest effects
-        for (const effect of this.harvestEffects) {
-            ctx.save();
-            ctx.globalAlpha = effect.alpha;
-
-            // Draw the harvested crop icon floating up
-            const sourceRect = this.tilemap.getTilesetSourceRect(effect.tileId);
-            ctx.drawImage(
-                this.tilemap.tilesetImage,
-                sourceRect.x, sourceRect.y, sourceRect.width, sourceRect.height,
-                effect.x - tileSize / 2, effect.y - tileSize / 2,
-                tileSize, tileSize
-            );
-
-            // Draw "+1" text
-            ctx.fillStyle = '#ffffff';
-            ctx.strokeStyle = '#000000';
-            ctx.lineWidth = 2;
-            ctx.font = 'bold 8px Arial';
-            ctx.textAlign = 'center';
-            ctx.strokeText('+1', effect.x, effect.y - tileSize / 2 - 2);
-            ctx.fillText('+1', effect.x, effect.y - tileSize / 2 - 2);
-
-            ctx.restore();
-        }
+        renderFloatingEffects(ctx, this.harvestEffects, this.tilemap.tilesetImage,
+            id => this.tilemap.getTilesetSourceRect(id), tileSize);
     }
 
     // Try to harvest a crop at the given tile position
@@ -156,14 +126,11 @@ export class CropManager {
 
                 // Create harvest effect
                 const tileSize = this.tilemap.tileSize;
-                this.harvestEffects.push({
-                    x: crop.tileX * tileSize + tileSize / 2,
-                    y: crop.tileY * tileSize,
-                    tileId: harvestedTileId,
-                    timer: 0,
-                    duration: 1000, // 1 second effect
-                    alpha: 1
-                });
+                this.harvestEffects.push(createHarvestEffect(
+                    crop.tileX * tileSize + tileSize / 2,
+                    crop.tileY * tileSize,
+                    harvestedTileId
+                ));
 
                 log.debug(`Harvested ${crop.cropType.name}!`);
                 return crop.cropType;
@@ -264,30 +231,7 @@ export class CropManager {
     // Render only the harvest effects (rendered after all entities)
     renderEffects(ctx, camera) {
         const tileSize = this.tilemap.tileSize;
-
-        for (const effect of this.harvestEffects) {
-            ctx.save();
-            ctx.globalAlpha = effect.alpha;
-
-            // Draw the harvested crop icon floating up
-            const sourceRect = this.tilemap.getTilesetSourceRect(effect.tileId);
-            ctx.drawImage(
-                this.tilemap.tilesetImage,
-                sourceRect.x, sourceRect.y, sourceRect.width, sourceRect.height,
-                effect.x - tileSize / 2, effect.y - tileSize / 2,
-                tileSize, tileSize
-            );
-
-            // Draw "+1" text
-            ctx.fillStyle = '#ffffff';
-            ctx.strokeStyle = '#000000';
-            ctx.lineWidth = 2;
-            ctx.font = 'bold 8px Arial';
-            ctx.textAlign = 'center';
-            ctx.strokeText('+1', effect.x, effect.y - tileSize / 2 - 2);
-            ctx.fillText('+1', effect.x, effect.y - tileSize / 2 - 2);
-
-            ctx.restore();
-        }
+        renderFloatingEffects(ctx, this.harvestEffects, this.tilemap.tilesetImage,
+            id => this.tilemap.getTilesetSourceRect(id), tileSize);
     }
 }

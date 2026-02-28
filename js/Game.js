@@ -1165,6 +1165,41 @@ export class Game {
         }
     }
 
+    // --- Facade methods for subsystem access ---
+    // These prevent callers (IdleManager, EnemyManager, etc.) from reaching 2+ levels deep.
+
+    findPath(fromX, fromY, toX, toY) {
+        return this.pathfinder.findPath(fromX, fromY, toX, toY);
+    }
+
+    isTileWalkable(x, y) {
+        return this.pathfinder.isWalkable(x, y);
+    }
+
+    isTileOwned(x, y) {
+        return this.chunkManager.isPlayerOwned(x, y);
+    }
+
+    /** Returns live combat targets for EnemyManager to choose from. */
+    getCombatTargets() {
+        const targets = [];
+        if (this.playerHealth > 0 && this.humanPosition) {
+            targets.push({
+                position: this.humanPosition,
+                type: 'human',
+                onHit: (dmg, enemy) => this.takeDamage(dmg, enemy)
+            });
+        }
+        if (this.goblinHealth > 0 && this.goblinPosition) {
+            targets.push({
+                position: this.goblinPosition,
+                type: 'goblin',
+                onHit: (dmg, enemy) => this.takeGoblinDamage(dmg, enemy)
+            });
+        }
+        return targets;
+    }
+
     // Player takes damage from an enemy
     takeDamage(amount, source) {
         this.playerHealth -= amount;

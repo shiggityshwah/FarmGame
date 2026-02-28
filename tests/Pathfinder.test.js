@@ -269,13 +269,18 @@ describe('Pathfinder with Forest Generator', () => {
 
         // Mock forest generator
         mockForest = {
+            // Used for out-of-tilemap (forest chunk) tiles
             isWalkable: (x, y) => {
                 // Forest is walkable for x >= 10 (extends tilemap)
                 // except for tree at (12, 5)
                 if (x < 10) return true; // In tilemap, defer to tilemap
                 if (x === 12 && y === 5) return false; // Tree
                 return x < 20 && y >= 0 && y < 10;
-            }
+            },
+            // Used for in-tilemap tiles to detect forest tree trunks on grass
+            isForestTreeTrunk: (_x, _y) => false,
+            // Used for in-tilemap tiles to detect pocket ore obstacles
+            isPocketOreObstacle: (_x, _y) => false
         };
 
         pathfinder = new Pathfinder(tilemap);
