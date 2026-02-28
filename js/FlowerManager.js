@@ -204,40 +204,41 @@ export class FlowerManager {
     _getFarmBounds() {
         const grassStartY = this.tilemap.houseOffsetY + this.tilemap.houseHeight;
         if (this.tilemap.mapType === 'chunk') {
-            const { farmCol, farmRow, mainPathGap, size: chunkSize } = CONFIG.chunks;
-            const farmLeft   = farmCol * chunkSize;                              // 30
-            const farmRight  = farmLeft + chunkSize;                             // 60
-            const farmBottom = farmRow * chunkSize + mainPathGap + chunkSize;    // 2*30+4+30=94
+            const { farmCol, farmRow, mainPathGap, pathBoundaryRow, size: chunkSize } = CONFIG.chunks;
+            const farmLeft   = farmCol * chunkSize;                                               // 15
+            const farmRight  = farmLeft + chunkSize;                                              // 30
+            const farmBottom = farmRow * chunkSize + (farmRow > pathBoundaryRow ? mainPathGap : 0) + chunkSize; // 49+15=64
             return { farmLeft, farmRight, grassStartY, farmBottom };
         }
         return { farmLeft: 0, farmRight: this.tilemap.mapWidth, grassStartY, farmBottom: this.tilemap.mapHeight };
     }
 
-    // Returns spawn area rects for all valid spawn zones (farm chunk grass + town chunk + forest chunks)
+    // Returns spawn area rects for all valid spawn zones (farm chunk grass + town chunks + forest chunks)
     _getSpawnAreas() {
         const areas = [];
         const { farmLeft, farmRight, grassStartY, farmBottom } = this._getFarmBounds();
         areas.push({ left: farmLeft, right: farmRight, top: grassStartY, bottom: farmBottom });
 
         if (this.tilemap.mapType === 'chunk') {
-            // Town chunk: derive bounds from the store's chunk-aligned position
-            // The store sits in the town chunk; snap to the nearest 30-tile boundary
-            const cs = this.tilemap.CHUNK_SIZE; // 30
-            const townLeft   = Math.floor(this.tilemap.storeOffsetX / cs) * cs;
-            const townTop    = Math.floor(this.tilemap.storeOffsetY / cs) * cs;
-            const townRight  = townLeft + cs;
-            const townBottom = townTop  + cs;
-            areas.push({ left: townLeft, right: townRight, top: townTop, bottom: townBottom });
+            // Town store chunk bounds (derived from store offset snapped to chunk boundary)
+            const cs = this.tilemap.CHUNK_SIZE; // 15
+            const storeBoundsLeft   = Math.floor(this.tilemap.storeOffsetX / cs) * cs;
+            const storeBoundsTop    = Math.floor(this.tilemap.storeOffsetY / cs) * cs;
+            areas.push({ left: storeBoundsLeft, right: storeBoundsLeft + cs, top: storeBoundsTop, bottom: storeBoundsTop + cs });
 
-            // Forest chunks: include all allocated chunks that aren't the town or farm chunk
+            // Town home chunk bounds (derived from home offset snapped to chunk boundary)
+            const homeBoundsLeft = Math.floor(this.tilemap.townHomeOffsetX / cs) * cs;
+            const homeBoundsTop  = Math.floor(this.tilemap.townHomeOffsetY / cs) * cs;
+            areas.push({ left: homeBoundsLeft, right: homeBoundsLeft + cs, top: homeBoundsTop, bottom: homeBoundsTop + cs });
+
+            // Forest chunks: include all allocated chunks that aren't the store, home, or farm chunk
             if (this.chunkManager) {
-                const { townCol, townRow, farmCol, farmRow } = CONFIG.chunks;
+                const { storeCol, storeRow, homeCol, homeRow, farmCol, farmRow } = CONFIG.chunks;
                 for (const [, chunk] of this.chunkManager.chunks) {
-                    // Skip town and farm chunks (already handled above)
-                    if (chunk.col === townCol && chunk.row === townRow) continue;
-                    if (chunk.col === farmCol && chunk.row === farmRow) continue;
+                    if (chunk.col === storeCol && chunk.row === storeRow) continue;
+                    if (chunk.col === homeCol  && chunk.row === homeRow)  continue;
+                    if (chunk.col === farmCol  && chunk.row === farmRow)  continue;
                     const bounds = this.chunkManager.getChunkBounds(chunk.col, chunk.row);
-                    // getChunkBounds already accounts for the great path gap — no y=60-63 in any chunk
                     areas.push({ left: bounds.x, right: bounds.x + bounds.width, top: bounds.y, bottom: bounds.y + bounds.height });
                 }
             }

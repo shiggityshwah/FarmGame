@@ -178,22 +178,25 @@ export const CONFIG = {
         spawnIntervalMin: 20000,    // ms — minimum time between spawns
         spawnIntervalMax: 45000,    // ms — maximum time between spawns
         speed: 40,                  // pixels/second (~2.5 tiles/sec)
-        pathCenterY: 992,           // world pixel Y — midpoint of great path tiles 61–62
+        pathCenterY: 752,           // world pixel Y — midpoint of great path tiles 46–47
         despawnMargin: 64,          // pixels past map edge before removing traveler
         hairStyles: ['curly', 'bowl', 'long', 'mop', 'short', 'spikey']
     },
 
     // === CHUNK SYSTEM ===
     chunks: {
-        size: 30,               // Tiles per chunk side
-        initialGridCols: 3,     // Initial grid width in chunks (3 × 30 = 90 tiles)
-        initialGridRows: 4,     // Initial grid height in chunks (4 × 30 = 120 tiles + 4 path gap = 124 total)
-        townCol: 1,             // Town chunk column index (within 0-2 range)
-        townRow: 1,             // Town chunk row index (within 0-3 range) → x=30-59, y=30-59
-        farmCol: 1,             // Farm chunk column index (within 0-2 range)
-        farmRow: 2,             // Farm chunk row index → x=30-59, world y=64-93 (after 4-tile great path gap)
-        mainPathY: 60,          // World Y of the great path strip top row (y=60 N-grass, y=61-62 path, y=63 S-grass)
-        mainPathGap: 4          // Number of world tile rows reserved for the great path (between townRow and farmRow)
+        size: 15,               // Tiles per chunk side
+        initialGridCols: 3,     // Initial grid width in chunks (3 × 15 = 45 tiles)
+        initialGridRows: 5,     // Initial grid height in chunks (5 × 15 + 4 path gap = 79 tiles total)
+        storeCol: 1,            // Town store chunk column
+        storeRow: 1,            // Town store chunk row → x=15-29, y=15-29
+        homeCol: 1,             // Town home chunk column
+        homeRow: 2,             // Town home chunk row → x=15-29, y=30-44
+        farmCol: 1,             // Farm chunk column
+        farmRow: 3,             // Farm chunk row → x=15-29, world y=49-63 (after 4-tile great path gap)
+        pathBoundaryRow: 2,     // Last chunk row north of the great path (= homeRow); used in worldY formula
+        mainPathY: 45,          // World Y of the great path strip top row (y=45 N-grass, y=46-47 path, y=48 S-grass)
+        mainPathGap: 4          // Number of world tile rows reserved for the great path
     }
 };
 

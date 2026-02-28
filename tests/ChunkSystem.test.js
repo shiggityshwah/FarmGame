@@ -181,7 +181,8 @@ describe('ForestChunkGenerator', () => {
     });
 
     it('generateGround fills array with known grass tile IDs', () => {
-        const valid = new Set([66, 129, 130, 131, 192, 193, 194, 195, 197, 199, 257, 258]);
+        // Must match CONFIG.tiles.grass in config.js
+        const valid = new Set([65, 66, 129, 130, 131, 132, 133, 134, 192, 193, 194, 195, 197, 199, 257, 258]);
         const fg = new ForestChunkGenerator(new MockForestGenerator());
         const data = new Uint16Array(4);
         fg.generateGround(0, 0, data, 2);

@@ -6,7 +6,7 @@ const log = Logger.create('TilemapRenderer');
 export class TilemapRenderer {
     constructor() {
         this.tileData = null;        // Base layer (grass) — used by CSV/procedural maps
-        this.CHUNK_SIZE = 30;        // Tile width/height of one chunk (matches CONFIG.chunks.size)
+        this.CHUNK_SIZE = CONFIG.chunks.size; // Tile width/height of one chunk
         this.chunkTiles = new Map(); // Sparse storage for 'chunk' maps: "col,row" → Uint16Array(900)
         this.layers = [];            // Additional layers rendered on top
         this.upperLayers = [];       // Layers rendered above character (Buildings Upper)
@@ -497,10 +497,10 @@ export class TilemapRenderer {
             const { mainPathY, mainPathGap } = CONFIG.chunks;
             const gapEnd = mainPathY + mainPathGap; // 64
 
-            // Great path zone (y=60-63): return virtual tile IDs for pathfinder/walkability.
+            // Great path zone (y=45-48): return virtual tile IDs for pathfinder/walkability.
             // Actual visual is rendered by renderGreatPath() — not stored in chunkTiles.
             if (y >= mainPathY && y < gapEnd) {
-                // y=60: N-grass, y=61-62: path tiles (speed boost), y=63: S-grass
+                // y=45: N-grass, y=46-47: path tiles (speed boost), y=48: S-grass
                 return (y === mainPathY + 1 || y === mainPathY + 2) ? 482 : 65;
             }
 
@@ -529,8 +529,8 @@ export class TilemapRenderer {
 
     setTileAt(x, y, tileId) {
         if (this.mapType === 'chunk') {
-            const { mainPathY, mainPathGap, townRow } = CONFIG.chunks;
-            const gapEnd = mainPathY + mainPathGap; // 64
+            const { mainPathY, mainPathGap, pathBoundaryRow } = CONFIG.chunks;
+            const gapEnd = mainPathY + mainPathGap; // 49
 
             // Great path zone: these are virtual tiles — no chunk storage, ignore writes
             if (y >= mainPathY && y < gapEnd) return;
@@ -559,9 +559,9 @@ export class TilemapRenderer {
             // Convert to 1D index: row * width + col
             const index = localY * cs + localX;
             chunk[index] = tileId;
-            // Expand logical map bounds — add mainPathGap for chunk rows below townRow
+            // Expand logical map bounds — add mainPathGap for chunk rows below pathBoundaryRow
             const newMaxX = (col + 1) * cs;
-            const newMaxY = (row + 1) * cs + (row > townRow ? mainPathGap : 0);
+            const newMaxY = (row + 1) * cs + (row > pathBoundaryRow ? mainPathGap : 0);
             if (newMaxX > this.mapWidth)  this.mapWidth  = newMaxX;
             if (newMaxY > this.mapHeight) this.mapHeight = newMaxY;
             return;
@@ -776,7 +776,7 @@ export class TilemapRenderer {
         const bounds = camera.getVisibleBounds();
         const overlap = 0.5;
 
-        const pathStartRow = mainPathY;               // 60
+        const pathStartRow = mainPathY;               // 45
         const pathEndRow   = mainPathY + mainPathGap - 1; // 63
 
         if (bounds.bottom < pathStartRow * tileSize || bounds.top > (pathEndRow + 1) * tileSize) return;
@@ -807,10 +807,11 @@ export class TilemapRenderer {
             );
         };
 
-        // Crossing columns: town N-S connector enters at y=60 (N-grass), farm approach at y=63 (S-grass)
-        const townCrossX = Math.floor(this.storeOffsetX / this.CHUNK_SIZE) * this.CHUNK_SIZE
-                         + Math.floor(this.CHUNK_SIZE / 2); // 45
-        const farmCrossX = this.newHouseOffsetX + this.newHouseWidth; // 38
+        // Bridge columns where paths enter/exit the great path strip:
+        //   northBridgeX (y=45 N-grass): home chunk east-edge path enters from north at x=29
+        //   farmCrossX   (y=48 S-grass): farm house east-side path enters from south at x=22
+        const northBridgeX = (CONFIG.chunks.homeCol + 1) * this.CHUNK_SIZE - 1; // (1+1)*15-1 = 29
+        const farmCrossX = this.newHouseOffsetX + this.newHouseWidth; // 16+6 = 22
 
         for (let row = startRow; row <= endRow; row++) {
             const rowOffset = row - mainPathY; // 0=N-grass, 1-2=path, 3=S-grass
@@ -818,9 +819,9 @@ export class TilemapRenderer {
                 const worldX = col * tileSize;
                 const worldY = row * tileSize;
                 // Center rows are always path; outer grass rows become path only at their entry column:
-                //   rowOffset=0 (y=60): town connector (x=45) enters from north
-                //   rowOffset=3 (y=63): farm approach  (x=38) enters from south
-                const isBridge = (rowOffset === 0 && col === townCrossX)
+                //   rowOffset=0 (y=45): home east-edge path (x=29) enters from north
+                //   rowOffset=3 (y=48): farm house path    (x=22) enters from south
+                const isBridge = (rowOffset === 0 && col === northBridgeX)
                                || (rowOffset === 3 && col === farmCrossX);
                 if (rowOffset === 1 || rowOffset === 2 || isBridge) {
                     drawTile(getPathTile(col), worldX, worldY);
@@ -949,12 +950,12 @@ export class TilemapRenderer {
 
     getRandomTilePosition() {
         if (this.mapType === 'chunk') {
-            // Farm chunk: col=1, row=2 → x=30-59, world y=64-93; grass below house starts at y=73
+            // Farm chunk: col=1, row=3 → x=15-29, world y=49-63; grass below house starts at y=58
             const { farmCol, farmRow, mainPathGap } = CONFIG.chunks;
-            const farmLeft = farmCol * this.CHUNK_SIZE;  // 30 (farm chunk start)
-            const farmWidth = this.CHUNK_SIZE; // 30
-            const grassStartY = this.newHouseOffsetY + this.newHouseHeight; // 67 + 6 = 73
-            const farmChunkBottom = (farmRow + 1) * this.CHUNK_SIZE + mainPathGap; // 3*30+4 = 94
+            const farmLeft = farmCol * this.CHUNK_SIZE;  // 15 (farm chunk start)
+            const farmWidth = this.CHUNK_SIZE; // 15
+            const grassStartY = this.newHouseOffsetY + this.newHouseHeight; // 52 + 6 = 58
+            const farmChunkBottom = (farmRow + 1) * this.CHUNK_SIZE + mainPathGap; // 4*15+4 = 64
             const x = farmLeft + Math.floor(Math.random() * farmWidth);
             const y = grassStartY + Math.floor(Math.random() * (farmChunkBottom - grassStartY));
             return {
@@ -993,11 +994,11 @@ export class TilemapRenderer {
         }
 
         if (this.mapType === 'chunk') {
-            // Farm chunk bounds: col=1, row=2 → x=30-59, world y=64-93. Farmable area is below the house.
+            // Farm chunk bounds: col=1, row=3 → x=15-29, world y=49-63. Farmable area is below the house.
             const { farmCol } = CONFIG.chunks;
-            const grassStartY = this.newHouseOffsetY + this.newHouseHeight; // 67 + 6 = 73
-            const farmLeft = farmCol * this.CHUNK_SIZE;   // 30
-            const farmRight = farmLeft + this.CHUNK_SIZE;  // 60
+            const grassStartY = this.newHouseOffsetY + this.newHouseHeight; // 52 + 6 = 58
+            const farmLeft = farmCol * this.CHUNK_SIZE;   // 15
+            const farmRight = farmLeft + this.CHUNK_SIZE;  // 30
             return tileX >= farmLeft && tileX < farmRight && tileY >= grassStartY;
         }
 
@@ -1010,20 +1011,22 @@ export class TilemapRenderer {
      *
      * ARCHITECTURAL OVERVIEW:
      * =======================
-     * This system uses SPARSE chunk storage - only 3×4 chunks are allocated initially.
-     * Chunks are stored in a Map: "col,row" → Uint16Array(900).
+     * This system uses SPARSE chunk storage - only 3×5 chunks are allocated initially.
+     * Chunks are stored in a Map: "col,row" → Uint16Array(225).
      * Unallocated chunks return default grass tile (65) when read.
      *
-     * World layout (3 cols × 4 rows + 4-tile great path gap → 90×124 total):
-     *   Town chunk: col=1, row=1 → x=30-59, world y=30-59
-     *   Great path strip: world y=60-63 (separate renderer, not chunk tiles)
-     *   Farm chunk: col=1, row=2 → x=30-59, world y=64-93
+     * World layout (3 cols × 5 rows + 4-tile great path gap → 45×79 total):
+     *   Store chunk: col=1, row=1 → x=15-29, world y=15-29
+     *   Home chunk:  col=1, row=2 → x=15-29, world y=30-44
+     *   Great path strip: world y=45-48 (separate renderer, not chunk tiles)
+     *   Farm chunk:  col=1, row=3 → x=15-29, world y=49-63
      *
      * Key positions (tile coordinates):
-     *   Store (10×10):   x=34-43, y=35-44  (town chunk, centered)
-     *   House (6×6):     x=32-37, world y=67-72 (farm chunk, 3-tile gap from corner)
-     *   Player spawn:    (33, 70)            house.tmx local (1,3)
-     *   Great path:      world y=60-63 (y=60 N-grass, y=61-62 path tiles, y=63 S-grass)
+     *   Store (10×10):   x=18-27, y=19-28  (store chunk, offset +3,+4)
+     *   Home (10×10):    x=17-26, y=30-39  (home chunk, top-left with 2-tile left margin)
+     *   House (6×6):     x=16-21, world y=52-57 (farm chunk, 1-tile left margin)
+     *   Player spawn:    (17, 55)            house.tmx local (1,3)
+     *   Great path:      world y=45-48 (y=45 N-grass, y=46-47 path tiles, y=48 S-grass)
      */
     async generateChunkMap(tilesetPath) {
         try {
@@ -1044,31 +1047,34 @@ export class TilemapRenderer {
             const houseData = this.parseTmx(await houseTmxResponse.text());
             const homeData  = this.parseTmx(await homeTmxResponse.text());
 
-            // --- Map dimensions: 3×4 chunks + 4-tile great path gap = 90×124 tiles ---
-            const { initialGridCols, initialGridRows, townCol, townRow, farmCol, farmRow, mainPathGap } = CONFIG.chunks;
+            // --- Map dimensions: 3×5 chunks + 4-tile great path gap = 45×79 tiles ---
+            const { initialGridCols, initialGridRows, storeCol, storeRow, homeCol, homeRow, farmCol, farmRow, mainPathGap } = CONFIG.chunks;
             this.mapStartX = 0;                                               // left edge (tile units); may go negative on left-expansion
             this.mapStartY = 0;                                               // top edge (tile units); may go negative on north-expansion
-            this.mapWidth  = initialGridCols * this.CHUNK_SIZE;               // 3 × 30 = 90
-            this.mapHeight = initialGridRows * this.CHUNK_SIZE + mainPathGap;  // 4 × 30 + 4 = 124
+            this.mapWidth  = initialGridCols * this.CHUNK_SIZE;               // 3 × 15 = 45
+            this.mapHeight = initialGridRows * this.CHUNK_SIZE + mainPathGap;  // 5 × 15 + 4 = 79
 
-            // --- Store placement in town chunk (col=1, row=1, x=30-59, y=30-59) ---
+            // --- Store placement in store chunk (col=1, row=1, x=15-29, y=15-29) ---
+            // Store is 10×10, placed slightly right of center with path along bottom of chunk.
+            // Left margin = 3, right margin = 2; store bottom at y=28, path row at y=29.
             this.storeWidth  = storeData.width;   // 10
             this.storeHeight = storeData.height;  // 10
-            this.storeOffsetX = townCol * this.CHUNK_SIZE + 4;  // 30 + 4 = 34 (centered in chunk)
-            this.storeOffsetY = townRow * this.CHUNK_SIZE + 5;  // 30 + 5 = 35
+            this.storeOffsetX = storeCol * this.CHUNK_SIZE + 3;  // 15 + 3 = 18
+            this.storeOffsetY = storeRow * this.CHUNK_SIZE + 4;  // 15 + 4 = 19
 
-            // --- New house (house.tmx) in farm chunk (col=1, row=2, world x=30-59, world y=64-93) ---
+            // --- New house (house.tmx) in farm chunk (col=1, row=3, world x=15-29, world y=49-63) ---
             this.newHouseWidth  = houseData.width;  // 6
             this.newHouseHeight = houseData.height; // 6
-            this.newHouseOffsetX = farmCol * this.CHUNK_SIZE + 2;              // 30 + 2 = 32
-            this.newHouseOffsetY = farmRow * this.CHUNK_SIZE + mainPathGap + 3; // 60 + 4 + 3 = 67
+            this.newHouseOffsetX = farmCol * this.CHUNK_SIZE + 1;              // 15 + 1 = 16
+            this.newHouseOffsetY = farmRow * this.CHUNK_SIZE + mainPathGap + 3; // 45 + 4 + 3 = 52
 
-            // --- Town home (home.tmx) in bottom-right of town chunk (col=1, row=1, x=30-59, y=30-59) ---
-            // Place 10×10 building at x=48-57, y=47-56 (bottom-right quadrant, 2-tile margins)
+            // --- Town home (home.tmx) in home chunk (col=1, row=2, x=15-29, y=30-44) ---
+            // Home is 10×10, centered in the 15-wide chunk, placed at top of chunk.
+            // Home center = 17+5=22, chunk center = 15+7.5≈22. Path runs along east edge x=29.
             this.townHomeWidth  = homeData.width;   // 10
             this.townHomeHeight = homeData.height;  // 10
-            this.townHomeOffsetX = townCol * this.CHUNK_SIZE + 18; // 30 + 18 = 48
-            this.townHomeOffsetY = townRow * this.CHUNK_SIZE + 17; // 30 + 17 = 47
+            this.townHomeOffsetX = homeCol * this.CHUNK_SIZE + 2; // 15 + 2 = 17
+            this.townHomeOffsetY = homeRow * this.CHUNK_SIZE;     // 30
 
             // Alias so legacy code using houseOffsetY + houseHeight still works
             this.houseOffsetX = this.newHouseOffsetX;
@@ -1076,16 +1082,16 @@ export class TilemapRenderer {
             this.houseWidth   = this.newHouseWidth;
             this.houseHeight  = this.newHouseHeight;
 
-            // --- Sparse tile storage: allocate ALL 3×4 chunks initially ---
-            // This replaces the old 50,400-tile pre-allocation with 3,600 tiles (12 chunks).
+            // --- Sparse tile storage: allocate ALL 3×5 chunks initially ---
+            // This replaces the old 50,400-tile pre-allocation with 3,375 tiles (15 chunks).
             const commonGrassTiles = [66, 129, 130, 131, 192, 193, 194, 195, 197, 199, 257, 258];
             const storeGroundLayer = storeData.tileLayers.find(l => l.name === 'Ground');
-            const cs = this.CHUNK_SIZE; // 30
+            const cs = this.CHUNK_SIZE; // 15
 
             this.chunkTiles = new Map();
             this.tileData   = null; // unused in chunk mode
 
-            // Allocate all 3×4 chunks with random grass
+            // Allocate all 3×5 chunks with random grass
             const fillChunkGrass = (col, row) => {
                 const key = `${col},${row}`;
                 const chunk = new Uint16Array(cs * cs);

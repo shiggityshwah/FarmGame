@@ -86,3 +86,24 @@ export class ForestChunkGenerator extends ChunkContentGenerator {
         this.forestGenerator.generateNorthEdgeTrees(bounds.x, bounds.y, bounds.width);
     }
 }
+
+/**
+ * DenseForestChunkGenerator — forest biome for north-of-great-path chunks.
+ *
+ * These chunks are permanently locked (town expansion uses a different mechanic).
+ * They generate very dense tree coverage with no resource pockets or clearings.
+ */
+export class DenseForestChunkGenerator extends ForestChunkGenerator {
+    get type() { return 'dense_forest'; }
+
+    /**
+     * Generate dense forest content: no pocket, very high density (0.9).
+     */
+    generateContent(col, row, bounds, options = {}) {
+        this.forestGenerator.generateForChunk(
+            bounds.x, bounds.y, bounds.width, bounds.height,
+            { ...options, noPocket: true, density: 0.9 }
+        );
+        log.debug(`Generated dense forest content for chunk (${col},${row})`);
+    }
+}

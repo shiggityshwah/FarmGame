@@ -11,13 +11,13 @@
  * at startup, causing:
  *   - Severe lag during initialization
  *   - Forest generation across massive unused area
- *   - Unnecessary memory usage (50,400 tiles vs 3,600 tiles)
+ *   - Unnecessary memory usage (50,400 tiles vs 3,375 tiles)
  *   - Poor scalability
  *
  * SOLUTION:
  * ---------
  * This system uses SPARSE chunk storage - chunks are only allocated when:
- *   1. They are part of the initial 3×4 grid (12 chunks = 3,600 tiles)
+ *   1. They are part of the initial 3×5 grid (15 chunks = 3,375 tiles)
  *   2. They are purchased by the player
  *   3. They are generated as neighbors of purchased chunks (for visibility)
  *   4. They are written to via setTileAt() (lazy allocation)
@@ -27,15 +27,16 @@
  * 1. World coordinates remain STABLE - no shifting of tile arrays when expanding
  * 2. Unallocated chunks return default grass tile (65) when read via getTileAt()
  * 3. Map grows outward naturally as purchases occur
- * 4. Each chunk is self-contained (30×30 tiles)
+ * 4. Each chunk is self-contained (15×15 tiles)
  * 5. Chunks visually blend at edges (see TilemapRenderer._blendChunkEdges)
  *
  * INITIAL STATE:
  * --------------
- * Start with ONLY 3×4 chunks allocated (90×120 tiles = 3,600 tiles):
- *   Town:  col=1, row=1  (x=30-59, y=30-59)
- *   Farm:  col=1, row=2  (x=30-59, world y=64-93)  ← player's initial owned chunk
- *   All others: forest chunks (locked or purchasable)
+ * Start with ONLY 3×5 chunks allocated (45×79 tiles = 3,375 tiles):
+ *   Store: col=1, row=1  (x=15-29, y=15-29)
+ *   Home:  col=1, row=2  (x=15-29, y=30-44)
+ *   Farm:  col=1, row=3  (x=15-29, world y=49-63)  ← player's initial owned chunk
+ *   All others: forest chunks (locked; north rows permanently locked)
  *
  * DYNAMIC GROWTH:
  * ---------------
@@ -53,7 +54,7 @@
  *
  * PERFORMANCE BENEFITS:
  * ---------------------
- *   - Initial allocation: 3,600 tiles vs 50,400 tiles (93% reduction)
+ *   - Initial allocation: 3,375 tiles vs 50,400 tiles (93% reduction)
  *   - No lag spike on startup
  *   - Memory usage scales with actual world usage
  *   - Renderer uses viewport-based culling (only queries visible tiles)
@@ -98,18 +99,18 @@ export class ChunkManager {
     // ─── Initialization ─────────────────────────────────────────────────────────
 
     /**
-     * Initialize the chunk system with only 3×4 chunks allocated.
-     * This replaces the old 7×8 pre-allocation (50,400 tiles → 3,600 tiles).
+     * Initialize the chunk system with only 3×5 chunks allocated.
+     * This replaces the old 7×8 pre-allocation (50,400 tiles → 3,375 tiles).
      */
     initialize() {
-        const { townCol, townRow, farmCol, farmRow, initialGridCols, initialGridRows } = CONFIG.chunks;
+        const { storeCol, storeRow, homeCol, homeRow, farmCol, farmRow, initialGridCols, initialGridRows } = CONFIG.chunks;
 
-        // Create ONLY the initial 3×4 chunk grid
+        // Create ONLY the initial 3×5 chunk grid
         for (let row = 0; row < initialGridRows; row++) {
             for (let col = 0; col < initialGridCols; col++) {
                 let type, state;
 
-                if (col === townCol && row === townRow) {
+                if ((col === storeCol && row === storeRow) || (col === homeCol && row === homeRow)) {
                     type = CHUNK_TYPES.TOWN;
                     state = CHUNK_STATES.TOWN;
                 } else if (col === farmCol && row === farmRow) {
@@ -146,7 +147,7 @@ export class ChunkManager {
         const { mainPathY, mainPathGap } = CONFIG.chunks;
         // Great path zone: no chunk owns these tiles
         if (tileY >= mainPathY && tileY < mainPathY + mainPathGap) return null;
-        // Adjust world y to chunk-space y for rows below the gap
+        // Adjust world y to chunk-space y for rows below the great path gap
         const adjY = tileY >= mainPathY + mainPathGap ? tileY - mainPathGap : tileY;
         const col = Math.floor(tileX / this.chunkSize);
         const row = Math.floor(adjY / this.chunkSize);
@@ -194,13 +195,18 @@ export class ChunkManager {
     }
 
     _updatePurchasableChunks() {
+        const { farmRow } = CONFIG.chunks;
         const dirs = [{ dc: 0, dr: -1 }, { dc: 0, dr: 1 }, { dc: -1, dr: 0 }, { dc: 1, dr: 0 }];
         for (const chunk of this.chunks.values()) {
             if (chunk.state !== CHUNK_STATES.OWNED) continue;
             for (const { dc, dr } of dirs) {
                 const neighbor = this.getChunkAt(chunk.col + dc, chunk.row + dr);
                 if (neighbor && neighbor.state === CHUNK_STATES.LOCKED) {
-                    neighbor.state = CHUNK_STATES.PURCHASABLE;
+                    // Only allow purchasing chunks at or below the farm row.
+                    // North-of-great-path forest chunks are for town expansion (different mechanic).
+                    if (neighbor.row >= farmRow) {
+                        neighbor.state = CHUNK_STATES.PURCHASABLE;
+                    }
                 }
             }
         }
@@ -267,10 +273,10 @@ export class ChunkManager {
      */
     _updateMapBounds() {
         if (!this.tilemap || this.tilemap.mapType !== 'chunk') return;
-        
+
         let minCol = Infinity, maxCol = -Infinity;
         let minRow = Infinity, maxRow = -Infinity;
-        
+
         // Find bounds of all allocated chunks (both in ChunkManager and TilemapRenderer)
         for (const chunk of this.chunks.values()) {
             minCol = Math.min(minCol, chunk.col);
@@ -278,7 +284,7 @@ export class ChunkManager {
             minRow = Math.min(minRow, chunk.row);
             maxRow = Math.max(maxRow, chunk.row);
         }
-        
+
         // Also check TilemapRenderer's allocated chunks (in case setTileAt allocated some)
         if (this.tilemap.chunkTiles) {
             for (const key of this.tilemap.chunkTiles.keys()) {
@@ -289,15 +295,15 @@ export class ChunkManager {
                 maxRow = Math.max(maxRow, row);
             }
         }
-        
+
         if (minCol === Infinity) return; // No chunks allocated
 
         // Set map bounds to EXACTLY match allocated chunks (no extra tiles).
         // mapStartX / mapStartY are in tile units and may be negative for worlds that
         // have expanded left/north of the initial grid.
-        // Add mainPathGap to Y coords when any row is below townRow (the great path gap).
-        const { townRow, mainPathGap } = CONFIG.chunks;
-        const chunkRowToWorldY = (r) => r * this.chunkSize + (r > townRow ? mainPathGap : 0);
+        // Add mainPathGap to Y coords for rows below pathBoundaryRow (the great path gap).
+        const { pathBoundaryRow, mainPathGap } = CONFIG.chunks;
+        const chunkRowToWorldY = (r) => r * this.chunkSize + (r > pathBoundaryRow ? mainPathGap : 0);
         this.tilemap.mapStartX = minCol * this.chunkSize;                          // left edge (tile units)
         this.tilemap.mapStartY = chunkRowToWorldY(minRow);                         // top edge (tile units, may be negative)
         this.tilemap.mapWidth  = (maxCol + 1) * this.chunkSize;                    // right edge exclusive
@@ -310,10 +316,10 @@ export class ChunkManager {
 
     /** Returns tile-coordinate bounding box for the chunk in WORLD coordinates. */
     getChunkBounds(col, row) {
-        const { townRow, mainPathGap } = CONFIG.chunks;
-        // Rows above/at townRow: world y = row * chunkSize (no gap)
-        // Rows below townRow: world y = row * chunkSize + mainPathGap (great path gap inserted)
-        const worldY = row * this.chunkSize + (row > townRow ? mainPathGap : 0);
+        const { pathBoundaryRow, mainPathGap } = CONFIG.chunks;
+        // Rows at or above pathBoundaryRow: world y = row * chunkSize (no gap)
+        // Rows below pathBoundaryRow: world y = row * chunkSize + mainPathGap (great path gap inserted)
+        const worldY = row * this.chunkSize + (row > pathBoundaryRow ? mainPathGap : 0);
         return {
             x: col * this.chunkSize,
             y: worldY,

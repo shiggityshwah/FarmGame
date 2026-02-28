@@ -1616,14 +1616,14 @@ export class ForestGenerator {
         density = 0.5 + Math.random() * 0.3,  // 0.5–0.8 random per chunk
         pathExcludeYMin = null,
         pathExcludeYMax = null,
-        noPocket = false   // set true to skip pocket clearing (e.g. owned farm areas)
+        noPocket = false,   // set true to skip pocket clearing (e.g. dense forest, owned farm)
+        pocketRadius = 3    // clearing radius in tiles (default 3 for 15×15 chunks; was 6 for 30×30)
     } = {}) {
         const litChance = 0.2;
 
         // Single clearing at chunk center, matching chunk-test (1 pocket per chunk, centered)
         const newPockets = [];
         if (!noPocket) {
-            const pocketRadius = 6;
             const pocketCx = chunkX + Math.floor(chunkWidth / 2);
             const pocketCy = chunkY + Math.floor(chunkHeight / 2);
             const pocketTypes = [POCKET_TYPES.ORE, POCKET_TYPES.STONE, POCKET_TYPES.CROP];
@@ -1659,8 +1659,8 @@ export class ForestGenerator {
                 if (y - 1 < chunkY || y + 1 >= chunkY + chunkHeight) continue;
                 if (x + 1 >= chunkX + chunkWidth) continue;
 
-                // Skip trees with trunks landing ON the great path zone (y=60-63).
-                // Trunks at y=59 (shadow at y=60) and y=64 (crown at y=63) are ALLOWED —
+                // Skip trees with trunks landing ON the great path zone (y=45-48).
+                // Trunks at y=44 (shadow at y=45) and y=49 (crown at y=48) are ALLOWED —
                 // they render over/under the great path, which is the desired appearance.
                 if (pathExcludeYMin !== null && pathExcludeYMax !== null) {
                     if (y >= pathExcludeYMin && y < pathExcludeYMax) continue;

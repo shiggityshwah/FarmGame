@@ -19,7 +19,7 @@ Open `index.html` directly in a web browser. No build step required. Refresh bro
 - **Game.js** - Main engine class. Manages game loop (update/render via requestAnimationFrame), initializes all subsystems, handles character loading, movement, and combat. Exposes facade methods so subsystems don't reach 2+ levels deep: `findPath()`, `isTileWalkable()`, `isTileOwned()`, `getCombatTargets()` (returns `[{position, type, onHit}]` for each living combatant)
 - **Camera.js** - Pan/zoom camera with world-to-screen coordinate conversion. Zoom range: 0.5x-4x
 - **InputManager.js** - Unified input handling for keyboard (WASD/arrows), mouse (drag/wheel/click), and touch (drag/pinch/tap). Supports drag callbacks and panning toggle
-- **TilemapRenderer.js** - Sparse chunk-based world renderer. `generateChunkMap()` creates the initial 3×4 grid using `chunkTiles` Map (sparse storage). Supports `setTileAt()`/`getTileAt()` for runtime tile modification. Renders multi-layer TMX maps (home, store, new house ground/roof layers). `renderGreatPath()` draws the y=60–63 path strip separately.
+- **TilemapRenderer.js** - Sparse chunk-based world renderer. `generateChunkMap()` creates the initial 3×5 grid using `chunkTiles` Map (sparse storage). Supports `setTileAt()`/`getTileAt()` for runtime tile modification. Renders multi-layer TMX maps (home, store, new house ground/roof layers). `renderGreatPath()` draws the y=45–48 path strip separately.
 - **TileUtils.js** - Pure stateless coordinate helpers: `worldToTile`, `tileToWorld`, `tileCenterWorld`, `manhattanDist`. Import instead of inlining `Math.floor(x/tileSize)`.
 - **SpriteAnimator.js** - Horizontal strip sprite animation with configurable FPS (default 8 FPS). Supports non-looping animations with completion callbacks
 - **CharacterCustomizer.js** - UI panel for hair style and animation selection
@@ -28,10 +28,10 @@ Open `index.html` directly in a web browser. No build step required. Refresh bro
 
 ### Chunk World System (js/)
 
-- **ChunkManager.js** - Sparse dynamic chunk grid. Stores chunks in a `Map("col,row" → chunk)`. Initial 3×4 grid = 3,600 tiles (vs old 50,400). Chunk states: `OWNED`, `TOWN`, `PURCHASABLE`, `LOCKED`. Chunk types: `FARM`, `TOWN`, `FOREST`. Key methods: `initialize()`, `purchaseChunk()`, `getChunkForTile()`, `isPlayerOwned()`, `isTownChunk()`, `isAccessible()`, `getChunkBounds()`, `render()` (borders), `renderPurchaseSigns()`. Fires `onChunkPurchased` callback. Holds pluggable `generatorRegistry`.
+- **ChunkManager.js** - Sparse dynamic chunk grid. Stores chunks in a `Map("col,row" → chunk)`. Initial 3×5 grid = 3,375 tiles (vs old 50,400). Chunk states: `OWNED`, `TOWN`, `PURCHASABLE`, `LOCKED`. Chunk types: `FARM`, `TOWN`, `FOREST`. Key methods: `initialize()`, `purchaseChunk()`, `getChunkForTile()`, `isPlayerOwned()`, `isTownChunk()`, `isAccessible()`, `getChunkBounds()`, `render()` (borders), `renderPurchaseSigns()`. Fires `onChunkPurchased` callback. Holds pluggable `generatorRegistry`. North forest chunks (rows 0–2) are permanently LOCKED and never become purchasable.
 - **ChunkContentGenerator.js** - Base class/interface for per-biome chunk generators. Override `type`, `generateGround()`, `generateContent()`, `generateSeam()`, `generateNorthEdge()`. All methods are safe no-ops in the base class.
 - **ChunkGeneratorRegistry.js** - Maps biome type strings to `ChunkContentGenerator` instances. Resolves biome type via: (1) designer map override (`setDesignerMap()`), (2) deterministic weighted random hash of (col,row) (`setBiomeWeights()`). Methods: `register()`, `getGenerator()`, `resolveType()`.
-- **ForestChunkGenerator.js** - `ChunkContentGenerator` implementation for forest biome. Wraps `ForestGenerator` and delegates all tree/pocket/seam logic to it. Registered during `Game.init()` as `registry.register(new ForestChunkGenerator(this.forestGenerator))`.
+- **ForestChunkGenerator.js** - `ChunkContentGenerator` implementation for forest biome. Wraps `ForestGenerator` and delegates all tree/pocket/seam logic to it. Registered during `Game.init()`. Also exports `DenseForestChunkGenerator` (type `'dense_forest'`) — overrides `generateContent()` with `noPocket:true, density:0.9` for permanently locked north-of-path forest chunks.
 
 ### Inventory & UI Systems (js/)
 
@@ -46,7 +46,7 @@ Open `index.html` directly in a web browser. No build step required. Refresh bro
 
 - **CropManager.js** / **Crop.js** - Crop lifecycle: 5 growth stages (3 seconds each), harvest with floating "+1" feedback, post-harvest decay effects
 - **Flower.js** - Wild flower system with 3 rarity types: Blue (10%), Red (30%), White (60%). Each has 4 tile variations. Harvest yields 1-2 with fade-out animation
-- **FlowerManager.js** - Spawning and management of flowers and weeds. Dynamic spawn rate based on grass coverage. 75% weeds vs 25% flowers. `_getSpawnAreas()` returns farm grass, town chunk, and all allocated forest chunk areas.
+- **FlowerManager.js** - Spawning and management of flowers and weeds. Dynamic spawn rate based on grass coverage. 75% weeds vs 25% flowers. `_getSpawnAreas()` returns farm grass, both town chunks (store + home), and all allocated forest chunk areas.
 - **Weed.js** - Invasive plants with 4 growth stages over 2 minutes. Each click regresses one stage. Multi-tile at stages 3-4 (2 tiles tall)
 
 ### Resource Gathering Systems (js/)
@@ -70,44 +70,58 @@ Open `index.html` directly in a web browser. No build step required. Refresh bro
 - **TileOverlayManager.js** - Manages sprite overlays on tiles (holes from digging, path edge sprites)
 - **IdleManager.js** - Autonomous idle activity system for the human character. State machine: `inactive → waiting (3-5s) → active`. Evaluates harvest, water, flower-pick, and weed-clear tasks using actual A* path lengths (not just Euclidean distance). Prefers tasks with path length ≤ 35 tiles. Backs off exponentially on failure. Returns home when nothing to do. All activities filter to owned chunks; weed-clearing also allows town chunk. Uses game facade methods (`game.findPath()`, `game.isTileWalkable()`, `game.isTileOwned()`) instead of accessing subsystems directly.
 
-### Chunk World Layout (initial 3×4 grid = 90 wide × 124 tall)
+### Chunk World Layout (initial 3×5 grid = 45 wide × 79 tall)
 
-- **Town chunk**: col=1, row=1 → world x=30–59, y=30–59
-- **Farm chunk**: col=1, row=2 → world x=30–59, world y=64–93 (shifted 4 tiles by `mainPathGap`)
-- **All other chunks**: forest type (LOCKED or PURCHASABLE)
-- **Great path strip**: world y=60–63 — SEPARATE tilemap, NOT chunk tiles (virtual in `getTileAt`)
-  - y=60: N-grass + `'S'` edge overlay; y=61–62: path tiles (speed boost); y=63: S-grass + `'N'` edge overlay
+```
+Row 0:  [dense forest] [dense forest] [dense forest]  worldY = 0–14
+Row 1:  [dense forest] [town-store]   [dense forest]  worldY = 15–29
+Row 2:  [dense forest] [town-home]    [dense forest]  worldY = 30–44
+         ---- great path y=45–48 (4 tiles, full map width) ----
+Row 3:  [forest+res]   [farm+stand]   [forest+res]    worldY = 49–63
+Row 4:  [forest+res]   [forest+res]   [forest+res]    worldY = 64–78
+```
+
+- **Chunk size**: 15×15 tiles (`CONFIG.chunks.size = 15`)
+- **Store chunk**: col=1, row=1 → world x=15–29, y=15–29 (TOWN state)
+- **Home chunk**: col=1, row=2 → world x=15–29, y=30–44 (TOWN state)
+- **Farm chunk**: col=1, row=3 → world x=15–29, y=49–63 (OWNED; shifted 4 tiles by `mainPathGap`)
+- **North forest chunks** (rows 0–2): permanently LOCKED, dense forest (no clearings, density 0.9), no purchase signs ever shown
+- **South forest chunks** (rows 3+): LOCKED until adjacent to OWNED, then PURCHASABLE; forest with resource clearings (pocket radius 3)
+- **Great path strip**: world y=45–48 — SEPARATE tilemap, NOT chunk tiles (virtual in `getTileAt`)
+  - y=45: N-grass + `'S'` edge overlay; y=46–47: path tiles (speed boost); y=48: S-grass + `'N'` edge overlay
   - Rendered by `tilemap.renderGreatPath()` after `tilemap.render()`
-- **Store** (10×10): world (34, 35) — in town chunk
-- **Town home** (home.tmx, 10×10): world (48, 47) — bottom-right of town chunk (`townHomeOffsetX=48, townHomeOffsetY=47`)
-- **New house** (house.tmx, 6×6): world (32, 67) — in farm chunk (`newHouseOffsetX=32, newHouseOffsetY=67`)
-- **Player spawn**: approx world tile (33, 70) in farm chunk
-- **Goblin NPC**: world (46, 55) near town home entrance
-- **Chimney smoke**: world tile (34, 68)
+  - North bridge at x=29 (home east-edge path); south bridge at x=22 (farm house path)
+- **Store** (10×10): world (18, 19) — in store chunk (`storeOffsetX=18, storeOffsetY=19`)
+- **Town home** (home.tmx, 10×10): world (17, 30) — in home chunk (`townHomeOffsetX=17, townHomeOffsetY=30`)
+- **New house** (house.tmx, 6×6): world (16, 52) — in farm chunk (`newHouseOffsetX=16, newHouseOffsetY=52`)
+- **Player spawn**: world tile (17, 55) in farm chunk
+- **Goblin NPC**: world (22, 39) — in front of home entrance
+- **Chimney smoke**: world tile (18, 53)
 
-### Farm Chunk Zones (within col=1 row=2)
+### Farm Chunk Zones (within col=1 row=3)
 
-- **House footprint**: x=32–37, y=67–72
-- **Farm grass** (flowers/crops): y=73–79, x=30–59 (`grassStartY = newHouseOffsetY + newHouseHeight = 73`)
-- **South forest** (trees): y=80–93, x=30–59 — generated via `forestGenerator.generateForChunk(density=0.7, noPocket:true)`. Same tile art as forest chunks; choppable via axe.
+- **House footprint**: x=16–21, y=52–57
+- **Farm grass** (flowers/crops): y=58–63, x=15–29 (`grassStartY = newHouseOffsetY + newHouseHeight = 58`)
+- **No south forest** — the new farm chunk has no trees (removed in 15×15 redesign)
+- **Roadside stand**: tileX=23, tileY=49 (north edge of farm; banner at y=48 overlaps great path S-grass)
 
 ### New House (house.tmx)
 
-- 6×6 tile footprint placed at world tile (32, 67)
+- 6×6 tile footprint placed at world tile (16, 52)
 - Layers: `Ground`, `Ground Detail`, `Wall`, `Wall Detail` (rendered above path overlays via `renderGroundLayers()`), `Roof`, `Roof Detail` (rendered above character, hidden when player inside)
-- Roof hidden when player tile is within x:32–37, y:67–72 (`isPlayerInsideNewHouse`)
-- Door at local tile (1,4) → world (33, 71); path endpoint = y=72 (under house tilemap bottom row)
-- Chimney smoke SpriteAnimator at world tile (34, 68): `chimneysmoke_02_strip30.png`, 30 frames @ 12fps. Only shown when player is outside
+- Roof hidden when player tile is within x:16–21, y:52–57 (`isPlayerInsideNewHouse`)
+- Door at local tile (1,4) → world (17, 56); path endpoint = y=57 (under house tilemap bottom row)
+- Chimney smoke SpriteAnimator at world tile (18, 53): `chimneysmoke_02_strip30.png`, 30 frames @ 12fps. Only shown when player is outside
 
 ### Path Routing (chunk world)
 
 - Path tile IDs: `[482, 490, 491, 554, 555]`. Speed multiplier: 1.5x
-- **Great path** (y=60–63): SEPARATE tilemap via `renderGreatPath()` — no `setTileAt` calls
-- **Town E-W path**: y=45, x=30–59
-- **Town N-S connector**: x=45, y=46–59 (terminates just above great path at y=60)
-- **Town home approach**: y=57 (branch east from connector at x=45), x=46–53
-- **House approach N-S**: x=38 (east of house), y=64–72
-- **House front E-W**: y=72, x=32–38
+- **Great path** (y=45–48): SEPARATE tilemap via `renderGreatPath()` — no `setTileAt` calls
+- **Home east-edge path**: x=29, y=30–44 (full east column of home chunk)
+- **Store bottom path**: y=29, x=15–29 (bottom row of store chunk)
+- **Home approach fork**: y=40, x=22–29 (branches left to home entrance at x=22)
+- **House east-side path**: x=22, y=49–57 (east of house, farm top to house front)
+- **House front E-W**: y=57, x=16–22
 
 ### Game.js Combat Properties
 
@@ -122,8 +136,8 @@ animationSession          // For stale callback invalidation
 
 ### Rendering Order
 1. Canvas clear
-2. `tilemap.render()` — base chunk tiles + store/home layers (Ground, Decor, Buildings Base/Detail); SKIPS y=60–63
-3. `tilemap.renderGreatPath()` — great path strip at y=60–63 (OVER chunk tiles)
+2. `tilemap.render()` — base chunk tiles + store/home layers (Ground, Decor, Buildings Base/Detail); SKIPS y=45–48
+3. `tilemap.renderGreatPath()` — great path strip at y=45–48 (OVER chunk tiles)
 4. `chunkManager.render()` — ownership borders (OWNED chunks against non-OWNED neighbors)
 5. `overlayManager.renderEdgeOverlays()` — path edge sprites
 6. Forest tree backgrounds (shadows/trunks; render OVER great path)
@@ -131,7 +145,7 @@ animationSession          // For stale callback invalidation
 8. `tilemap.renderGroundLayers()` — new house floor/walls (ABOVE overlays)
 9. Depth-sorted entities (crops, flowers/weeds, trees, ore veins, tile highlight, characters, enemies, effects)
 10. Forest foregrounds (tree crowns; render OVER great path)
-11. `chunkManager.renderPurchaseSigns()` — purchase "?" signs ABOVE trees
+11. `chunkManager.renderPurchaseSigns()` — purchase "?" signs ABOVE trees (north chunks show NO signs)
 12. `tilemap.renderUpperLayers()` — store/home upper building layers
 13. `tilemap.renderRoofLayers()` — new house roof (hidden when player inside)
 14. Chimney smoke (when player outside)
@@ -182,13 +196,15 @@ import { CONFIG, getRandomDirtTile, getRandomPathTile } from './config.js';
 **CONFIG.forestPockets** - enemySpawnChance (0.4), minEnemiesPerPocket (1), maxEnemiesPerPocket (3)
 
 **CONFIG.chunks** - Chunk world constants:
-- `size: 30` — tiles per chunk side
-- `initialGridCols: 3`, `initialGridRows: 4` — initial sparse grid (3×4 = 12 chunks, 3,600 tiles)
-- `townCol: 1`, `townRow: 1` — town chunk position (world x=30–59, y=30–59)
-- `farmCol: 1`, `farmRow: 2` — farm chunk position (world x=30–59, y=64–93)
-- `mainPathY: 60` — world Y of great path top row
-- `mainPathGap: 4` — world tile rows reserved for great path between townRow and farmRow
-- Gap formula: `worldY(row) = row * 30 + (row > townRow ? mainPathGap : 0)`
+- `size: 15` — tiles per chunk side
+- `initialGridCols: 3`, `initialGridRows: 5` — initial sparse grid (3×5 = 15 chunks, 3,375 tiles)
+- `storeCol: 1`, `storeRow: 1` — store chunk position (world x=15–29, y=15–29)
+- `homeCol: 1`, `homeRow: 2` — home chunk position (world x=15–29, y=30–44)
+- `farmCol: 1`, `farmRow: 3` — farm chunk position (world x=15–29, y=49–63)
+- `pathBoundaryRow: 2` — last chunk row north of great path (= homeRow); used in worldY gap formula
+- `mainPathY: 45` — world Y of great path top row
+- `mainPathGap: 4` — world tile rows reserved for great path between home and farm chunks
+- Gap formula: `worldY(row) = row * 15 + (row > pathBoundaryRow ? mainPathGap : 0)`
 
 **CONFIG.debug** - logLevel, showFps, showPathfinding
 
@@ -289,14 +305,15 @@ The `IdleManager` gives the human character autonomous behavior when no player j
 - Pathfinder uses MinHeap for O(log n) node extraction instead of array sort
 - JobManager uses `workers` Map (workerId → state) and `queues` object (all/human/goblin)
 - ChunkManager uses sparse `Map("col,row" → chunk)` — unallocated chunks return default grass (tile 65) when read
-- TilemapRenderer uses `chunkTiles` Map (`"col,row"` → Uint16Array(900)) for sparse tile storage
+- TilemapRenderer uses `chunkTiles` Map (`"col,row"` → Uint16Array(225)) for sparse tile storage
 - `getTileAt`/`setTileAt` support negative tile coords (chunk mode) — no `x<0||y<0` guard
 
 ### Chunk Ownership Rules
 - **OWNED** chunks: full farming/gathering access for all tools
-- **TOWN** chunk: walk-through + weed-clearing only (no farming or resource gathering)
+- **TOWN** chunks (store + home): walk-through + weed-clearing only (no farming or resource gathering)
 - **PURCHASABLE** chunks: displayed with "?" sign; click to purchase
 - **LOCKED** chunks: walk-through only, shown as forest; must be adjacent to OWNED to become PURCHASABLE
+- **North forest chunks** (rows 0–2): permanently LOCKED regardless of adjacency — `_updatePurchasableChunks()` only promotes chunks where `row >= farmRow` (3). No purchase signs ever rendered for these.
 - Purchasing a chunk allocates all 8 neighbor chunks (if they don't exist) and fires `onChunkPurchased`
 
 ### Logging

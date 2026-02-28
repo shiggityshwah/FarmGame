@@ -6,15 +6,15 @@ export class RoadsideStand {
     constructor(tilemap) {
         this.tilemap = tilemap;
         this.tileSize = tilemap.tileSize;   // 16
-        this.tileX = 39;                    // world tile X of left edge
-        this.tileY = 64;                    // world tile Y of base row (farm chunk north edge)
+        this.tileX = 23;                    // world tile X of left edge (east of house path at x=22)
+        this.tileY = 49;                    // world tile Y of base row (farm chunk north edge = mainPathY+mainPathGap)
         this.width = 4;                     // tiles wide
 
         // Tile IDs for base row (ground level) and banner row (above characters)
         this.baseTiles   = [2469, 2470, 2470, 2471];
         this.bannerTiles = [2405, 2406, 2406, 2407];
 
-        // 6 item slots: indices 0–2 over tile x=40, indices 3–5 over tile x=41
+        // 6 item slots: indices 0–2 over tile x=24, indices 3–5 over tile x=25
         // autoReplenish: when true, automatically refill the slot after a sale if a spare item exists
         this.slots = Array.from({ length: 6 }, () => ({ resource: null, autoReplenish: false }));
 
@@ -24,8 +24,8 @@ export class RoadsideStand {
 
         // Pre-computed obstacle key set for O(1) pathfinder lookups
         this._obstacleSet = new Set([
-            `${this.tileX + 1},${this.tileY}`,  // x=40, y=64
-            `${this.tileX + 2},${this.tileY}`   // x=41, y=64
+            `${this.tileX + 1},${this.tileY}`,  // x=24, y=49
+            `${this.tileX + 2},${this.tileY}`   // x=25, y=49
         ]);
 
         // Set by Game.js — called when a traveler arrives and stops at the stand
@@ -35,7 +35,7 @@ export class RoadsideStand {
     _computeSlotCenters() {
         const centers = [];
         const segW = this.tileSize / 3;
-        for (const tileX of [40, 41]) {
+        for (const tileX of [this.tileX + 1, this.tileX + 2]) {
             for (let i = 0; i < 3; i++) {
                 centers.push(tileX * this.tileSize + (i + 0.5) * segW);
             }
@@ -95,12 +95,12 @@ export class RoadsideStand {
 
     // --- Rendering ---
 
-    // Base row (y=64): rendered in the depth-sorted pass, OVER the grass tile layer.
+    // Base row (y=49): rendered in the depth-sorted pass, OVER the grass tile layer.
     // Drawing here (rather than via setTileAt) preserves the grass beneath transparent pixels.
     renderBase(ctx) {
         if (!this.tilemap.tilesetImage) return;
         const ts = this.tileSize;
-        const wy = this.tileY * ts;  // y=64 → pixel 1024
+        const wy = this.tileY * ts;  // y=49 → pixel 784
         ctx.imageSmoothingEnabled = false;
         for (let i = 0; i < 4; i++) {
             const src = this.tilemap.getTilesetSourceRect(this.baseTiles[i]);
@@ -112,12 +112,12 @@ export class RoadsideStand {
         }
     }
 
-    // Banner row (y=63): rendered in the upper-layers pass, ABOVE all characters.
-    // The great path's S-grass at y=63 is drawn first; the banner overwrites it.
+    // Banner row (y=48): rendered in the upper-layers pass, ABOVE all characters.
+    // The great path's S-grass at y=48 is drawn first; the banner overwrites it.
     renderBanner(ctx) {
         if (!this.tilemap.tilesetImage) return;
         const ts = this.tileSize;
-        const wy = (this.tileY - 1) * ts;  // y=63 → pixel 1008
+        const wy = (this.tileY - 1) * ts;  // y=48 → pixel 768
         ctx.imageSmoothingEnabled = false;
         for (let i = 0; i < 4; i++) {
             const src = this.tilemap.getTilesetSourceRect(this.bannerTiles[i]);
