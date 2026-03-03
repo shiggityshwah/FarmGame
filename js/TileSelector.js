@@ -15,10 +15,9 @@ const ACCEPTABLE_TILES = {
         // Also need to check overlay for holes - handled in isAcceptableTile
         checkOverlay: true
     },
-    // Plant tool works on open holes (overlay tile 1138)
+    // Plant tool works on hoed ground (auto-digs the hole) or an existing open hole
     plant: {
-        // Requires hole overlay check, not base tile check
-        requiresHoleOverlay: true
+        requiresPlantableTile: true
     },
     // Watering can works on closed dry holes (tile ID 818) that have an unwatered planted crop
     watering_can: {
@@ -77,6 +76,11 @@ export class TileSelector {
         // Per-drag acceptability cache: key "x,y" → { valid, enemy }
         // Cleared at the start of each drag and on tool change.
         this._acceptabilityCache = new Map();
+
+        // Zone expansion mode: when true, drag end adds tiles to an existing zone
+        // instead of creating a job. Set by Game._initZonePanel() expand button.
+        this.zoneExpansionMode = false;
+        this.zoneExpansionTargetId = null;
     }
 
     setCropManager(cropManager) {
@@ -222,7 +226,7 @@ export class TileSelector {
     }
 
     startSelection(worldX, worldY) {
-        if (!this.currentTool) return;
+        if (!this.currentTool && !this.zoneExpansionMode) return;
 
         this._acceptabilityCache.clear();
 
@@ -257,6 +261,16 @@ export class TileSelector {
         const maxX = Math.max(this.startTileX, this.endTileX);
         const minY = Math.min(this.startTileY, this.endTileY);
         const maxY = Math.max(this.startTileY, this.endTileY);
+
+        // Zone expansion mode: accept all tiles without tool-based validation
+        if (this.zoneExpansionMode) {
+            for (let y = minY; y <= maxY; y++) {
+                for (let x = minX; x <= maxX; x++) {
+                    this.selectedTiles.push({ x, y, tileId: this.tilemap.getTileAt(x, y), valid: true });
+                }
+            }
+            return;
+        }
 
         // Check if current tool targets multi-tile objects
         const toolRules = this.currentTool ? ACCEPTABLE_TILES[this.currentTool.id] : null;
@@ -405,26 +419,32 @@ export class TileSelector {
             return true;
         }
 
-        // Special handling for plant tool - requires open hole overlay (tile ID 1138)
-        if (toolRules.requiresHoleOverlay) {
-            if (!this.overlayManager) return false;
-            const overlay = this.overlayManager.getOverlay(tileX, tileY);
-            // Open hole is tile ID 1138
-            if (!overlay || overlay.tileId !== 1138) return false;
-            // Also check there's no crop already planted here
-            if (this.cropManager && this.cropManager.getCropAt(tileX, tileY)) return false;
-            return true;
+        // Special handling for plant tool - requires hoed ground (auto-digs) or an existing open hole
+        if (toolRules.requiresPlantableTile) {
+            // Can't plant where there's already a crop (base tile only — top sprite tiles are visual only)
+            if (this.cropManager && this.cropManager.getCropBaseAt(tileX, tileY)) return false;
+            // Allow tiles that already have a hole overlay (manually dug with shovel)
+            if (this.overlayManager && this.overlayManager.hasOverlay(tileX, tileY, CONFIG.tiles.holeOverlay)) return true;
+            // Allow hoed ground tiles (the dig will happen automatically during planting)
+            const actualTileId = tileId !== null ? tileId : (this.forestGenerator?.getGrassTileAt(tileX, tileY) ?? null);
+            if (actualTileId !== null && CONFIG.tiles.hoedGround.includes(actualTileId)) {
+                // Verify the tile is tracked as hoed (not just a coincidentally matching tile ID)
+                if (this.overlayManager?.hoedTiles) {
+                    return this.overlayManager.hoedTiles.has(`${tileX},${tileY}`);
+                }
+                return true;
+            }
+            return false;
         }
 
-        // Special handling for watering can - requires planted crop that needs water
+        // Special handling for watering can - requires planted crop that needs water now
         if (toolRules.requiresPlantedCrop) {
             if (!this.cropManager) return false;
             const crop = this.cropManager.getCropAt(tileX, tileY);
-            // Check if there's a planted crop that needs watering
-            if (!crop || crop.isHarvested) return false;
-            // Check if crop needs watering (not already watered)
-            if (crop.isWatered) return false;
-            return true;
+            if (!crop || crop.isHarvested || crop.isGone) return false;
+            // Only highlight tiles where the crop is in 'needs_water' state
+            // (not in cooldown and not already growing)
+            return crop.wateringState === 'needs_water';
         }
 
         // Special handling for sword - requires alive enemy at tile
@@ -489,8 +509,8 @@ export class TileSelector {
             if (this.flowerManager && this.flowerManager.getWeedAt(tileX, tileY)) {
                 return false;
             }
-            // Can't hoe where there's a growing crop
-            if (this.cropManager && this.cropManager.getCropAt(tileX, tileY)) return false;
+            // Can't hoe where there's a growing crop (base tile only — top sprite tiles are visual only)
+            if (this.cropManager && this.cropManager.getCropBaseAt(tileX, tileY)) return false;
             if (this.forestGenerator && this.forestGenerator.getPocketCropAt(tileX, tileY)) return false;
             // Can't hoe on a tree trunk tile (crown and shadow rows are fine; only the trunk row blocks)
             if (this.forestGenerator && this.forestGenerator.isForestTreeTrunk(tileX, tileY)) return false;
@@ -506,8 +526,8 @@ export class TileSelector {
             if (this.overlayManager && this.overlayManager.hasOverlay(tileX, tileY)) {
                 return false;
             }
-            // Can't dig where there's a crop
-            if (this.cropManager && this.cropManager.getCropAt(tileX, tileY)) {
+            // Can't dig where there's a crop (base tile only — top sprite tiles are visual only)
+            if (this.cropManager && this.cropManager.getCropBaseAt(tileX, tileY)) {
                 return false;
             }
         }

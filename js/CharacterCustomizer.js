@@ -3,7 +3,7 @@ export class CharacterCustomizer {
         this.game = game;
         this.menuOpen = false;
 
-        this.customizeBtn = document.getElementById('customize-btn');
+        this.customizeBtn = document.getElementById('debug-btn');
         this.customizeMenu = document.getElementById('customize-menu');
         this.hairOptions = document.getElementById('hair-options');
         this.animOptions = document.getElementById('anim-options');
@@ -13,6 +13,8 @@ export class CharacterCustomizer {
     }
 
     init() {
+        if (!this.customizeBtn) return; // Debug button not present (developmentMode off)
+
         // Toggle menu on button click
         this.customizeBtn.addEventListener('click', (e) => {
             e.stopPropagation();

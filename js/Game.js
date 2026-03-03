@@ -1,4 +1,5 @@
 import { Camera } from './Camera.js';
+import { Well } from './Well.js';
 import { TilemapRenderer } from './TilemapRenderer.js';
 import { SpriteAnimator } from './SpriteAnimator.js';
 import { InputManager } from './InputManager.js';
@@ -25,6 +26,8 @@ import { JobQueueUI } from './JobQueueUI.js';
 import { IdleManager } from './IdleManager.js';
 import { TravelerManager } from './TravelerManager.js';
 import { RoadsideStand } from './RoadsideStand.js';
+import { createHarvestEffect, updateEffects, renderEffects as renderFloatingEffects } from './EffectUtils.js';
+import { ReplenishZoneManager } from './ReplenishZoneManager.js';
 import { Logger } from './Logger.js';
 
 const log = Logger.create('Game');
@@ -140,9 +143,43 @@ export class Game {
         this.jobQueueUI = null;
         this.idleManager = null;
 
+        // Gold display (count-up animation)
+        this.displayedGold = 0;    // Currently shown value (animates toward targetGold)
+        this.targetGold = 0;       // Actual gold in inventory
+        this._goldAmountEl = null; // DOM span element
+
+        // Floating effects for seed drops (wild crop harvests)
+        this._seedEffects = [];
+
+        // Goblin hire state (UI shows goblin controls only after hiring)
+        this.goblinHired = false;
+
+        // Home upgrade state (Phase 3)
+        this.homeUpgrades = {
+            slots: [null],  // Level 1 = 1 slot; value: null | 'cauldron' | 'anvil' | 'shrine'
+            shrineUpgrades: {
+                fertileSoilLevel: 0,        // 0=none, 1=−15%, 2=−30%
+                bountifulHarvest: false,
+                roadsideReplenishment: false
+            },
+            purchasedToolUpgrades: new Set()
+        };
+
+        // Replenishable zone manager (auto-replanting system)
+        this.replenishZoneManager = null;
+
         // Roadside stand and traveler service
         this.roadsideStand = null;
         this.standService = { state: 'idle', workerId: null, slotIndex: -1, traveler: null, waitTimer: 0 };
+
+        // Well (placed on farm chunk, east of house)
+        this.well = null;
+
+        // Watering can water levels (human + goblin)
+        this.wateringCanWater = 20;
+        this.wateringCanMaxWater = 20;
+        this.goblinWaterCanWater = 20;
+        this.goblinWaterCanMaxWater = 20;
 
         // Chimney smoke animation (rendered above roof when player is outside new house)
         this.chimneySmoke = null;
@@ -190,6 +227,18 @@ export class Game {
         // Current work tile (the tile being worked on, character stands adjacent)
         this.currentWorkTile = null;
 
+        // Pixel-precise slide state — sub-tile glide after pathfinding completes
+        this.humanPixelTarget = null;    // {px, py} pending slide destination, or null
+        this.humanIsSliding = false;
+        this.humanSlideStart = null;
+        this.humanSlideTarget = null;
+        this.humanSlideElapsed = 0;
+        this.goblinPixelTarget = null;
+        this.goblinIsSliding = false;
+        this.goblinSlideStart = null;
+        this.goblinSlideTarget = null;
+        this.goblinSlideElapsed = 0;
+
         this.lastTime = 0;
         this.running = false;
     }
@@ -235,6 +284,11 @@ export class Game {
             this.roadsideStand = new RoadsideStand(this.tilemap);
             this.roadsideStand.registerInteractable();
             this.roadsideStand._onTravelerArrived = (t) => this._onTravelerAtStand(t);
+            this.roadsideStand._onPurchaseReady   = (t) => this._onPurchaseReady(t);
+
+            // Initialize well (placed on farm chunk, x=24-25, y=53-55 east of house)
+            this.well = new Well(this.tilemap);
+            this.well.registerInteractable();
 
             // Center camera on the new house (farm chunk)
             const houseCenter = this.tilemap.getHouseCenter();
@@ -247,6 +301,7 @@ export class Game {
             // of generate() avoids the "outside tilemap" restriction in the pocket placement
             // logic, meaning resources actually spawn in the initial forest chunks.
             this.forestGenerator = new ForestGenerator(this.tilemap, this.chunkManager);
+            this._generatedSeams = new Set(); // tracks "col,row,S/E/NE" keys so seams are only placed once
 
             // Wire the extensible chunk generator registry so ChunkManager can resolve
             // biome types and generate correct ground tiles for future chunk types.
@@ -294,8 +349,7 @@ export class Game {
             }
 
             // Generate seam trees between every adjacent pair of initial forest chunks.
-            // Each seam function is keyed by the TOP/LEFT chunk and is idempotent
-            // (skips positions already in treeMap), so duplicate calls are harmless.
+            // Mark each generated seam in _generatedSeams so _onChunkPurchased never re-runs them.
             for (const chunk of this.chunkManager.chunks.values()) {
                 if (chunk.type !== 'forest') continue;
                 const bounds = this.chunkManager.getChunkBounds(chunk.col, chunk.row);
@@ -305,6 +359,7 @@ export class Game {
                     this.forestGenerator.generateNSSeamTrees(
                         bounds.x, bounds.y, bounds.width, bounds.height
                     );
+                    this._generatedSeams.add(`${chunk.col},${chunk.row},S`);
                 }
 
                 const eastChunk = this.chunkManager.getChunkAt(chunk.col + 1, chunk.row);
@@ -312,11 +367,12 @@ export class Game {
                     this.forestGenerator.generateEWSeamTrees(
                         bounds.x, bounds.y, bounds.width, bounds.height
                     );
+                    this._generatedSeams.add(`${chunk.col},${chunk.row},E`);
                 }
             }
 
             // Generate north edge trees (trunks at first row, crowns spill above chunk).
-            // Called for every forest chunk unconditionally:
+            // Mark each in _generatedSeams so they are never re-generated on chunk purchase.
             //   - NS seam trees (trunks at chunkY-1) and north edge trees (trunks at chunkY)
             //     occupy complementary diamond-grid positions ((x+y)%2 alternates), so they
             //     coexist in treeMap without conflicts and fill all positions at the seam.
@@ -326,6 +382,7 @@ export class Game {
                 if (chunk.type !== 'forest') continue;
                 const bounds = this.chunkManager.getChunkBounds(chunk.col, chunk.row);
                 this.forestGenerator.generateNorthEdgeTrees(bounds.x, bounds.y, bounds.width);
+                this._generatedSeams.add(`${chunk.col},${chunk.row},NE`);
             }
 
             // Initialize enemy manager before creating characters
@@ -351,9 +408,10 @@ export class Game {
                 occupiedBaseTiles.add(key);
             }
 
-            // Initialize crop manager and spawn crops (avoiding occupied tiles)
+            // Initialize crop manager and spawn a few wild tier-1 crops on the farm
             this.cropManager = new CropManager(this.tilemap);
-            this.spawnCropsAvoidingOccupied(15, occupiedBaseTiles);
+            this.cropManager.setGame(this);
+            this.spawnCropsAvoidingOccupied(['CARROT', 'RADISH', 'PARSNIP'], occupiedBaseTiles);
 
             // Initialize ore manager and spawn ores (avoiding occupied tiles)
             // Always spawn one stone ore for testing crafting, plus one random ore
@@ -363,11 +421,30 @@ export class Game {
 
             // Initialize inventory system
             this.inventory = new Inventory();
-            // Give player starting gold
-            this.inventory.addGold(100);
+            // Give player starting gold (enough to buy a few cheap seeds to start)
+            this.inventory.addGold(50);
+
+            // Wire inventory into chunk manager (needed for gold-gated purchases)
+            if (this.chunkManager) {
+                this.chunkManager.inventory = this.inventory;
+            }
 
             // Initialize UI manager
             this.uiManager = new UIManager(this);
+
+            // Initialize gold display and subscribe to inventory changes.
+            // Must be called AFTER UIManager so that chaining onto onChange() captures
+            // UIManager's callback as the "existing" subscriber.
+            this._initGoldDisplay();
+
+            // Initialize debug menu
+            this._initDebugMenu();
+
+            // Initialize well menu event listeners
+            this._initWellMenu();
+
+            // Initialize zone management panel event listeners
+            this._initZonePanel();
 
             // Initialize input manager
             this.inputManager = new InputManager(this.canvas, this.camera);
@@ -388,6 +465,7 @@ export class Game {
             this.pathfinder.setTreeManager(this.treeManager);
             this.pathfinder.setOreManager(this.oreManager);
             if (this.roadsideStand) this.pathfinder.setRoadsideStand(this.roadsideStand);
+            if (this.well) this.pathfinder.setWell(this.well);
             this.overlayManager = new TileOverlayManager(this.tilemap);
             this.overlayManager.setForestGenerator(this.forestGenerator);
             this.initPathEdgeOverlays();
@@ -407,6 +485,15 @@ export class Game {
             // Initialize idle manager (character auto-tasks when queue is empty)
             this.idleManager = new IdleManager(this);
             this.idleManager.init();
+
+            // Initialize replenishable zone manager (auto-replanting system)
+            this.replenishZoneManager = new ReplenishZoneManager(this, this.jobManager, this.inventory);
+            // Chain inventory onChange so zone manager reactivates paused zones when seeds are acquired
+            const existingOnChange = this.inventory.onChangeCallback;
+            this.inventory.onChange(() => {
+                if (existingOnChange) existingOnChange();
+                this.replenishZoneManager.checkPausedZones();
+            });
 
             // Spawn enemies from forest pockets
             await this.spawnForestPocketEnemies();
@@ -445,7 +532,9 @@ export class Game {
             // Set up drag callbacks for tile selection
             this.inputManager.setDragStartCallback((worldX, worldY) => {
                 try {
-                    if (this.inputMode === 'tool' && this.currentTool) {
+                    const canDrag = this.inputMode === 'tool' &&
+                        (this.currentTool || this.tileSelector.zoneExpansionMode);
+                    if (canDrag) {
                         this.tileSelector.startSelection(worldX, worldY);
                     }
                 } catch (error) {
@@ -455,7 +544,9 @@ export class Game {
 
             this.inputManager.setDragMoveCallback((worldX, worldY) => {
                 try {
-                    if (this.inputMode === 'tool' && this.currentTool) {
+                    const canDrag = this.inputMode === 'tool' &&
+                        (this.currentTool || this.tileSelector.zoneExpansionMode);
+                    if (canDrag) {
                         this.tileSelector.updateSelection(worldX, worldY);
                     }
                 } catch (error) {
@@ -465,7 +556,9 @@ export class Game {
 
             this.inputManager.setDragEndCallback((worldX, worldY, hasMoved) => {
                 try {
-                    if (this.inputMode === 'tool' && this.currentTool) {
+                    const canDrag = this.inputMode === 'tool' &&
+                        (this.currentTool || this.tileSelector.zoneExpansionMode);
+                    if (canDrag) {
                         this.onTileSelectionComplete();
                     }
                 } catch (error) {
@@ -520,32 +613,35 @@ export class Game {
     }
 
     // Spawn crops avoiding occupied base tiles
-    spawnCropsAvoidingOccupied(count, occupiedBaseTiles) {
-        const cropTypeKeys = Object.keys(CROP_TYPES);
+    // Spawn 1-2 wild crops of each given type key (e.g. ['CARROT','RADISH','PARSNIP']).
+    // Crops spawned here are wild: startAsPlanted=false → wateringState='growing', no watering needed.
+    spawnCropsAvoidingOccupied(cropTypeKeys, occupiedBaseTiles) {
+        for (const key of cropTypeKeys) {
+            const cropType = CROP_TYPES[key];
+            if (!cropType) continue;
 
-        for (let i = 0; i < count; i++) {
-            let position, posKey;
-            let attempts = 0;
+            const count = 1 + Math.floor(Math.random() * 2); // 1 or 2
+            for (let i = 0; i < count; i++) {
+                let position, posKey;
+                let attempts = 0;
 
-            do {
-                position = this.tilemap.getRandomTilePosition();
-                posKey = `${position.tileX},${position.tileY}`;
-                attempts++;
-            } while (occupiedBaseTiles.has(posKey) && attempts < 100);
+                do {
+                    position = this.tilemap.getRandomTilePosition();
+                    posKey = `${position.tileX},${position.tileY}`;
+                    attempts++;
+                } while (occupiedBaseTiles.has(posKey) && attempts < 100);
 
-            if (attempts >= 100) continue;
+                if (attempts >= 100) continue;
 
-            occupiedBaseTiles.add(posKey);
+                occupiedBaseTiles.add(posKey);
 
-            // Random crop type
-            const randomType = cropTypeKeys[Math.floor(Math.random() * cropTypeKeys.length)];
-            const cropType = CROP_TYPES[randomType];
-
-            const crop = new Crop(position.tileX, position.tileY, cropType);
-            this.cropManager.crops.push(crop);
+                // startAsPlanted=false → wild crop, auto-grows without watering
+                const crop = new Crop(position.tileX, position.tileY, cropType);
+                this.cropManager.crops.push(crop);
+            }
         }
 
-        log.debug(`Spawned ${this.cropManager.crops.length} crops`);
+        log.debug(`Spawned ${this.cropManager.crops.length} wild crops`);
     }
 
     // Spawn ore veins avoiding occupied base tiles
@@ -855,12 +951,23 @@ export class Game {
             return;
         }
 
-        // Only handle harvest clicks in pan mode
-        if (this.inputMode !== 'pan') return;
-
         // Convert world coordinates to tile coordinates
         const tileX = Math.floor(worldX / this.tilemap.tileSize);
         const tileY = Math.floor(worldY / this.tilemap.tileSize);
+
+        // Zone manage mode: clicking a tile opens the zone panel for that tile's zone
+        if (this.toolbar?.zoneManageMode) {
+            const zone = this.replenishZoneManager?.getZoneForTile(tileX, tileY);
+            if (zone) {
+                this._openZonePanel(zone);
+            } else {
+                this.toolbar.exitZoneManageMode();
+            }
+            return;
+        }
+
+        // Only handle harvest clicks in pan mode
+        if (this.inputMode !== 'pan') return;
 
         const tileOwned = this.chunkManager && this.chunkManager.isPlayerOwned(tileX, tileY);
 
@@ -868,9 +975,26 @@ export class Game {
         if (tileOwned) {
             const harvested = this.cropManager.tryHarvest(tileX, tileY);
             if (harvested) {
-                // Add to inventory
                 if (this.inventory) {
-                    this.inventory.addCropByIndex(harvested.index);
+                    const bountyBonus = this.homeUpgrades?.shrineUpgrades?.bountifulHarvest ? 1 : 0;
+                    this.inventory.addCropByIndex(harvested.index, 1 + bountyBonus);
+                    // Notify replenish zone manager so it can queue auto-replant
+                    if (this.replenishZoneManager) {
+                        this.replenishZoneManager.onHarvest(tileX, tileY);
+                    }
+
+                    // Wild crop seed drop: 50% chance when harvesting from non-hoed ground
+                    const underTileId = this.tilemap.getTileAt(tileX, tileY);
+                    const isHoed = underTileId !== null && CONFIG.tiles.hoedGround.includes(underTileId);
+                    if (!isHoed && Math.random() < 0.5) {
+                        const seedRes = this.inventory.getSeedByCropIndex(harvested.index);
+                        if (seedRes) {
+                            this.inventory.add(seedRes, 1);
+                            const wx = tileX * this.tilemap.tileSize + this.tilemap.tileSize / 2;
+                            const wy = tileY * this.tilemap.tileSize;
+                            this._seedEffects.push(createHarvestEffect(wx, wy, seedRes.tileId));
+                        }
+                    }
                 }
                 log.debug(`Collected: ${harvested.name}`);
                 return;
@@ -883,9 +1007,14 @@ export class Game {
             if (tileOwned) {
                 const flowerHarvest = this.flowerManager.tryHarvest(tileX, tileY);
                 if (flowerHarvest) {
-                    // Add to inventory
+                    // Add to inventory using color-specific resource type
                     if (this.inventory) {
-                        this.inventory.add(RESOURCE_TYPES.FLOWER, flowerHarvest.yield);
+                        const flowerName = flowerHarvest.flowerType.name; // 'Blue Flower' / 'Red Flower' / 'White Flower'
+                        const flowerResource = flowerName === 'Blue Flower'  ? RESOURCE_TYPES.FLOWER_BLUE
+                                             : flowerName === 'Red Flower'   ? RESOURCE_TYPES.FLOWER_RED
+                                             : flowerName === 'White Flower' ? RESOURCE_TYPES.FLOWER_WHITE
+                                             : RESOURCE_TYPES.FLOWER;
+                        this.inventory.add(flowerResource, flowerHarvest.yield);
                     }
                     log.debug(`Collected: ${flowerHarvest.flowerType.name} x${flowerHarvest.yield}`);
                     return;
@@ -945,9 +1074,46 @@ export class Game {
                 }
                 break;
 
+            case 'openWell':
+                this._openWellMenu();
+                break;
+
             default:
                 log.warn('Unknown interactable action:', action);
         }
+    }
+
+    // Open the well popup menu and refresh its displayed water level
+    _openWellMenu() {
+        const menu = document.getElementById('well-menu');
+        if (!menu) return;
+        this._refreshWellMenuStatus();
+        menu.style.display = 'block';
+    }
+
+    _refreshWellMenuStatus() {
+        const statusEl = document.getElementById('well-water-status');
+        const fillBtn  = document.getElementById('well-fill-btn');
+        const fillGoblinBtn = document.getElementById('well-fill-goblin-btn');
+        if (statusEl) {
+            statusEl.textContent =
+                `Human: ${this.wateringCanWater}/${this.wateringCanMaxWater}` +
+                (this.goblinHired ? `  |  Goblin: ${this.goblinWaterCanWater}/${this.goblinWaterCanMaxWater}` : '');
+        }
+        if (fillBtn) fillBtn.disabled = this.wateringCanWater >= this.wateringCanMaxWater;
+        if (fillGoblinBtn) {
+            fillGoblinBtn.style.display = this.goblinHired ? 'block' : 'none';
+            fillGoblinBtn.disabled = this.goblinWaterCanWater >= this.goblinWaterCanMaxWater;
+        }
+    }
+
+    // Queue a fill-well job for the specified worker
+    _queueFillWellJob(workerId) {
+        if (!this.well || !this.jobManager) return;
+        const fillTool = { id: 'fill_well', name: 'Fill Well', animation: 'DOING' };
+        const tile = this.well.getAdjacentServiceTile();
+        this.jobManager.addJob(fillTool, [tile], workerId, workerId);
+        document.getElementById('well-menu').style.display = 'none';
     }
 
     // Called when the player purchases a new chunk
@@ -1000,10 +1166,11 @@ export class Game {
             }
         }
 
-        // ── Generate seam trees for the purchased chunk and all affected neighbors ─
-        // Iterate the purchased chunk + 8 neighbors; for each chunk with a registered
-        // generator, generate its S and E seams if the adjacent chunk also has one.
-        // The seam functions are idempotent so double-calling is safe.
+        // ── Generate seam trees for each boundary that hasn't been placed yet ─────
+        // _generatedSeams tracks every seam that has been placed (keyed "col,row,S/E/NE").
+        // A seam is only generated here if it wasn't already placed during init or a prior
+        // purchase. We only mark it done when the neighbor chunk actually exists (so a seam
+        // toward a not-yet-created chunk stays eligible until that chunk appears).
         const affectedCells = [
             { col: chunk.col, row: chunk.row },
             ...dirs8.map(({ dc, dr }) => ({ col: chunk.col + dc, row: chunk.row + dr }))
@@ -1017,22 +1184,34 @@ export class Game {
 
             const cb = this.chunkManager.getChunkBounds(col, row);
 
-            const south = this.chunkManager.getChunkAt(col, row + 1);
-            const southGen = south
-                ? (this.chunkGeneratorRegistry?.generators.get(south.type) ?? null)
-                : null;
-            cGen.generateSeam('S', cb, southGen);
+            // South seam
+            const seamKeyS = `${col},${row},S`;
+            if (!this._generatedSeams.has(seamKeyS)) {
+                const south = this.chunkManager.getChunkAt(col, row + 1);
+                if (south) {
+                    const southGen = this.chunkGeneratorRegistry?.generators.get(south.type) ?? null;
+                    cGen.generateSeam('S', cb, southGen);
+                    this._generatedSeams.add(seamKeyS);
+                }
+            }
 
-            const east = this.chunkManager.getChunkAt(col + 1, row);
-            const eastGen = east
-                ? (this.chunkGeneratorRegistry?.generators.get(east.type) ?? null)
-                : null;
-            cGen.generateSeam('E', cb, eastGen);
+            // East seam
+            const seamKeyE = `${col},${row},E`;
+            if (!this._generatedSeams.has(seamKeyE)) {
+                const east = this.chunkManager.getChunkAt(col + 1, row);
+                if (east) {
+                    const eastGen = this.chunkGeneratorRegistry?.generators.get(east.type) ?? null;
+                    cGen.generateSeam('E', cb, eastGen);
+                    this._generatedSeams.add(seamKeyE);
+                }
+            }
 
-            // North edge trees: trunks at first row of chunk, crowns spill above.
-            // Always generated — NS seam trees (trunks at chunkY-1) and north edge trees
-            // (trunks at chunkY) are on complementary diamond-grid positions and coexist.
-            cGen.generateNorthEdge(cb);
+            // North edge trees
+            const seamKeyNE = `${col},${row},NE`;
+            if (!this._generatedSeams.has(seamKeyNE)) {
+                cGen.generateNorthEdge(cb);
+                this._generatedSeams.add(seamKeyNE);
+            }
         }
 
         // Great path (y=45-48) is a separate virtual tilemap — no setTileAt() needed.
@@ -1060,9 +1239,36 @@ export class Game {
     }
 
     onTileSelectionComplete() {
+        // Zone-expansion drag mode: add tiles to existing zone instead of creating a job
+        if (this.tileSelector.zoneExpansionMode && this.tileSelector.zoneExpansionTargetId) {
+            const expandZoneId = this.tileSelector.zoneExpansionTargetId;
+            const tiles = this.tileSelector.endSelection();
+            if (tiles.length > 0 && this.replenishZoneManager) {
+                this.replenishZoneManager.expandZone(expandZoneId, tiles);
+            }
+            this.tileSelector.clearSelection();
+            this.tileSelector.zoneExpansionMode = false;
+            this.tileSelector.zoneExpansionTargetId = null;
+            // Hide indicator; re-open zone panel for same zone if it still exists
+            const indicator = document.getElementById('zone-expand-indicator');
+            if (indicator) indicator.style.display = 'none';
+            const zone = this.replenishZoneManager?.zones?.get(expandZoneId);
+            if (zone) this._openZonePanel(zone);
+            this.inputMode = 'pan';
+            this.inputManager.setPanningEnabled(true);
+            return;
+        }
+
         const tiles = this.tileSelector.endSelection();
         if (tiles.length > 0 && this.currentTool) {
             this.jobManager.addJob(this.currentTool, tiles);
+
+            // If replenishMode is on and this is a plant job, create a zone
+            if (this.toolbar?.replenishMode && this.currentTool.id === 'plant' && this.currentTool.seedType !== undefined) {
+                if (this.replenishZoneManager) {
+                    this.replenishZoneManager.createZone(tiles, this.currentTool.seedType);
+                }
+            }
         }
         this.tileSelector.clearSelection();
 
@@ -1581,6 +1787,16 @@ export class Game {
                     return;
                 }
 
+                // Pixel-precise slide: glide to exact pixel instead of calling onTileReached
+                if (this.humanPixelTarget) {
+                    this.humanSlideStart = { x: this.humanPosition.x, y: this.humanPosition.y };
+                    this.humanSlideTarget = this.humanPixelTarget;
+                    this.humanPixelTarget = null;
+                    this.humanSlideElapsed = 0;
+                    this.humanIsSliding = true;
+                    return; // Non-job movement — no onTileReached callback
+                }
+
                 // Job movement - face the work tile and notify job manager
                 if (this.currentWorkTile) {
                     const workTileWorldX = this.currentWorkTile.x * tileSize + tileSize / 2;
@@ -1690,6 +1906,16 @@ export class Game {
             this.goblinCurrentPath.shift();
 
             if (this.goblinCurrentPath.length === 0) {
+                // Pixel-precise slide for goblin
+                if (this.goblinPixelTarget) {
+                    this.goblinSlideStart = { x: this.goblinPosition.x, y: this.goblinPosition.y };
+                    this.goblinSlideTarget = this.goblinPixelTarget;
+                    this.goblinPixelTarget = null;
+                    this.goblinSlideElapsed = 0;
+                    this.goblinIsSliding = true;
+                    return;
+                }
+
                 // Reached final destination - face work tile and notify
                 if (this.goblinCurrentWorkTile) {
                     const workTileWorldX = this.goblinCurrentWorkTile.x * tileSize + tileSize / 2;
@@ -1720,6 +1946,109 @@ export class Game {
             // Update sprite position
             if (this.goblinSprite) {
                 this.goblinSprite.setPosition(this.goblinPosition.x, this.goblinPosition.y);
+            }
+        }
+    }
+
+    // ── Pixel-precise slide helpers ───────────────────────────────────────────
+
+    /** Update sub-tile slide for the human character (300 ms lerp). */
+    _updateHumanSlide(deltaTime) {
+        if (!this.humanIsSliding) return;
+        const SLIDE_DURATION = 300;
+        this.humanSlideElapsed += deltaTime;
+        const t = Math.min(1, this.humanSlideElapsed / SLIDE_DURATION);
+        this.humanPosition.x = this.humanSlideStart.x + (this.humanSlideTarget.px - this.humanSlideStart.x) * t;
+        this.humanPosition.y = this.humanSlideStart.y + (this.humanSlideTarget.py - this.humanSlideStart.y) * t;
+        if (this.humanSprites) {
+            for (const sprite of this.humanSprites) {
+                sprite.setPosition(this.humanPosition.x, this.humanPosition.y);
+            }
+        }
+        if (t >= 1) {
+            this.humanIsSliding = false;
+            this.setAnimation('IDLE', true);
+        }
+    }
+
+    /** Update sub-tile slide for the goblin character (300 ms lerp). */
+    _updateGoblinSlide(deltaTime) {
+        if (!this.goblinIsSliding) return;
+        const SLIDE_DURATION = 300;
+        this.goblinSlideElapsed += deltaTime;
+        const t = Math.min(1, this.goblinSlideElapsed / SLIDE_DURATION);
+        this.goblinPosition.x = this.goblinSlideStart.x + (this.goblinSlideTarget.px - this.goblinSlideStart.x) * t;
+        this.goblinPosition.y = this.goblinSlideStart.y + (this.goblinSlideTarget.py - this.goblinSlideStart.y) * t;
+        if (this.goblinSprite) {
+            this.goblinSprite.setPosition(this.goblinPosition.x, this.goblinPosition.y);
+        }
+        if (t >= 1) {
+            this.goblinIsSliding = false;
+            this.setGoblinAnimation('IDLE', true, null);
+        }
+    }
+
+    /**
+     * Move a worker to an exact pixel position via A* (to nearest tile) + sub-tile slide.
+     * This is standalone movement — does NOT interact with the job system.
+     */
+    moveWorkerToPixel(workerId, px, py) {
+        const tileSize = this.tilemap.tileSize;
+        const tileX = Math.floor(px / tileSize);
+        const tileY = Math.floor(py / tileSize);
+
+        const startSlide = (pos, spriteUpdater) => {
+            const slideStart = { x: pos.x, y: pos.y };
+            const slideTarget = { px, py };
+            // Already on the target tile — just slide
+            return { slideStart, slideTarget };
+        };
+
+        if (workerId === 'human') {
+            const startTileX = Math.floor(this.humanPosition.x / tileSize);
+            const startTileY = Math.floor(this.humanPosition.y / tileSize);
+            if (startTileX === tileX && startTileY === tileY) {
+                const { slideStart, slideTarget } = startSlide(this.humanPosition);
+                this.humanSlideStart = slideStart;
+                this.humanSlideTarget = slideTarget;
+                this.humanPixelTarget = null;
+                this.humanSlideElapsed = 0;
+                this.humanIsSliding = true;
+            } else {
+                this.humanPixelTarget = { px, py };
+                this.currentWorkTile = null;
+                this.currentPath = this.pathfinder.findPath(startTileX, startTileY, tileX, tileY);
+                if (this.currentPath?.length > 0) {
+                    if (this.currentPath[0].x === startTileX && this.currentPath[0].y === startTileY) {
+                        this.currentPath.shift();
+                    }
+                    this.setAnimation('WALKING', true, null);
+                } else {
+                    this.humanPixelTarget = null; // Unreachable
+                }
+            }
+        } else if (workerId === 'goblin') {
+            const startTileX = Math.floor(this.goblinPosition.x / tileSize);
+            const startTileY = Math.floor(this.goblinPosition.y / tileSize);
+            if (startTileX === tileX && startTileY === tileY) {
+                const { slideStart, slideTarget } = startSlide(this.goblinPosition);
+                this.goblinSlideStart = slideStart;
+                this.goblinSlideTarget = slideTarget;
+                this.goblinPixelTarget = null;
+                this.goblinSlideElapsed = 0;
+                this.goblinIsSliding = true;
+            } else {
+                this.goblinPixelTarget = { px, py };
+                this.goblinCurrentWorkTile = null;
+                this.goblinCurrentPath = this.pathfinder.findPath(startTileX, startTileY, tileX, tileY);
+                if (this.goblinCurrentPath?.length > 0) {
+                    if (this.goblinCurrentPath[0].x === startTileX && this.goblinCurrentPath[0].y === startTileY) {
+                        this.goblinCurrentPath.shift();
+                    }
+                    this.setGoblinAnimation('WALKING', true, null);
+                } else {
+                    this.goblinPixelTarget = null;
+                }
             }
         }
     }
@@ -1908,11 +2237,13 @@ export class Game {
             this.idleManager.update(deltaTime);
         }
 
-        // Update character movement (human)
+        // Update character movement (human) + sub-tile slide
         this.updateCharacterMovement(deltaTime);
+        this._updateHumanSlide(deltaTime);
 
-        // Update goblin movement
+        // Update goblin movement + sub-tile slide
         this.updateGoblinMovement(deltaTime);
+        this._updateGoblinSlide(deltaTime);
 
         // Update human character animations
         // Note: Animation callbacks fire here - combat state must be set before this
@@ -1932,8 +2263,9 @@ export class Game {
             this.travelerManager.update(deltaTime);
         }
 
-        // Update stand service state machine
+        // Update stand service state machine and sale effects
         this._updateStandService(deltaTime);
+        if (this.roadsideStand) this.roadsideStand.update(deltaTime);
 
         // Update player damage flash
         if (this.playerDamageFlashing) {
@@ -1978,6 +2310,21 @@ export class Game {
                 this.chimneySmoke.update(deltaTime);
             }
         }
+
+        // Animate gold display count-up (~500ms to complete)
+        if (this._goldAmountEl && this.displayedGold !== this.targetGold) {
+            const diff = this.targetGold - this.displayedGold;
+            const speed = Math.max(Math.abs(diff) / 0.5, 2); // coins per second (min 2/s)
+            const step = Math.sign(diff) * Math.min(Math.abs(diff), speed * deltaTime / 1000);
+            this.displayedGold += step;
+            if (Math.abs(this.targetGold - this.displayedGold) < 0.5) {
+                this.displayedGold = this.targetGold;
+            }
+            this._goldAmountEl.textContent = Math.floor(this.displayedGold);
+        }
+
+        // Update floating seed drop effects
+        updateEffects(this._seedEffects, deltaTime);
 
         // Update other character animations (non-enemy NPCs)
         for (const character of this.characters) {
@@ -2043,6 +2390,12 @@ export class Game {
         // Render crop dirt/ground tiles before all entities so characters always appear on top
         if (this.cropManager) {
             this.cropManager.renderAllCropGroundTiles(this.ctx);
+        }
+
+        // Render replenishable zone borders (green=active, grey=paused) — drawn after ground tiles
+        // so the border is visible on top of the dirt/hoed ground, but below crops and characters
+        if (this.replenishZoneManager) {
+            this.replenishZoneManager.render(this.ctx, this.camera, this.tilemap.tileSize);
         }
 
         // === DEPTH-SORTED RENDERING ===
@@ -2199,6 +2552,15 @@ export class Game {
             });
         }
 
+        // Add well base (middle + bottom rows)
+        if (this.well) {
+            depthEntities.push({
+                type: 'well',
+                entity: this.well,
+                sortY: this.well.getSortY()
+            });
+        }
+
         // Sort by Y position (entities with lower Y render first, so higher Y appears in front)
         depthEntities.sort((a, b) => a.sortY - b.sortY);
 
@@ -2245,6 +2607,9 @@ export class Game {
                     item.entity.renderBase(this.ctx);
                     item.entity.renderTableItems(this.ctx);
                     break;
+                case 'well':
+                    item.entity.renderBase(this.ctx);
+                    break;
             }
         }
 
@@ -2264,6 +2629,11 @@ export class Game {
         // Render roadside stand banner (y=63, above all characters)
         if (this.roadsideStand) {
             this.roadsideStand.renderBanner(this.ctx, this.camera);
+        }
+
+        // Render well top row (above characters, like stand banner)
+        if (this.well) {
+            this.well.renderTop(this.ctx);
         }
 
         // Render new house roof layers and chimney smoke - hidden when player is inside
@@ -2292,6 +2662,13 @@ export class Game {
         }
         if (this.forestGenerator) {
             this.forestGenerator.renderEffects(this.ctx, this.camera);
+        }
+        if (this.roadsideStand) {
+            this.roadsideStand.renderSaleEffects(this.ctx);
+        }
+        if (this._seedEffects.length > 0) {
+            renderFloatingEffects(this.ctx, this._seedEffects, this.tilemap.tilesetImage,
+                id => this.tilemap.getTilesetSourceRect(id), this.tilemap.tileSize);
         }
 
         // Render player health bar if damaged (on top of sprites)
@@ -2424,6 +2801,13 @@ export class Game {
             traveler,
             waitTimer: 0
         };
+        // Pause 1 s at the item before executing the purchase
+        traveler.startPurchasePause(1000);
+    }
+
+    // Called by Traveler after a 1-second pause — now execute the purchase
+    _onPurchaseReady(traveler) {
+        if (this.standService.traveler !== traveler) return; // stale / superseded
         this._dispatchStandServiceWorker();
     }
 
@@ -2492,9 +2876,9 @@ export class Game {
         const nextSlotIndex = traveler.wantedPurchases[traveler.currentPurchaseIndex];
         this.standService.slotIndex = nextSlotIndex;
         this.standService.state = 'dispatching';
-        // Move traveler horizontally to the new slot (traveler stays at standStopWorldY)
+        // Move traveler horizontally to the new slot; worker is dispatched after the
+        // traveler's 1-second pause fires _onPurchaseReady (via Traveler Phase 3 completion)
         traveler.moveToNextSlot(this.roadsideStand.getSlotWorldX(nextSlotIndex));
-        this._dispatchStandServiceWorker();
     }
 
     // Called by JobManager after the stand_service transaction completes
@@ -2541,6 +2925,256 @@ export class Game {
             if (workerId) this.jobManager.resumeWorkerFromStand(workerId);
             this._advanceTravelerPurchase();
         }
+    }
+
+    // Subscribe to inventory changes and keep gold display in sync
+    _initGoldDisplay() {
+        this._goldAmountEl = document.getElementById('gold-amount');
+        if (!this._goldAmountEl) return;
+
+        // Seed initial displayed value from current inventory
+        this.targetGold = this.inventory.getGold();
+        this.displayedGold = this.targetGold;
+        this._goldAmountEl.textContent = this.displayedGold;
+
+        // Chain onto existing onChange callback (UIManager may already be subscribed)
+        const existing = this.inventory.onChangeCallback;
+        this.inventory.onChange(() => {
+            if (existing) existing();
+            this.targetGold = this.inventory.getGold();
+        });
+    }
+
+    // Wire up well menu button event listeners
+    _initWellMenu() {
+        const closeBtn = document.getElementById('well-close-btn');
+        const fillBtn  = document.getElementById('well-fill-btn');
+        const fillGoblinBtn = document.getElementById('well-fill-goblin-btn');
+
+        if (closeBtn) {
+            closeBtn.addEventListener('click', () => {
+                document.getElementById('well-menu').style.display = 'none';
+            });
+        }
+        if (fillBtn) {
+            fillBtn.addEventListener('click', () => {
+                this._queueFillWellJob('human');
+            });
+        }
+        if (fillGoblinBtn) {
+            fillGoblinBtn.addEventListener('click', () => {
+                this._queueFillWellJob('goblin');
+            });
+        }
+    }
+
+    // === Zone Management Panel ===
+
+    _openZonePanel(zone) {
+        if (this.toolbar) this.toolbar.exitZoneManageMode();
+
+        const panel = document.getElementById('zone-manage-panel');
+        if (!panel) return;
+
+        panel.dataset.zoneId = zone.id;
+        panel.querySelector('#zone-panel-title').textContent = `Zone: ${zone.cropName}`;
+        panel.style.display = 'flex';
+
+        // Change seed picker (seed buttons)
+        const seedPicker = panel.querySelector('#zone-seed-picker');
+        if (seedPicker) seedPicker.style.display = 'none';
+    }
+
+    _closeZonePanel() {
+        const panel = document.getElementById('zone-manage-panel');
+        if (panel) {
+            panel.style.display = 'none';
+            delete panel.dataset.zoneId;
+        }
+    }
+
+    _initZonePanel() {
+        const panel = document.getElementById('zone-manage-panel');
+        if (!panel) return;
+
+        panel.querySelector('#zone-panel-close').addEventListener('click', () => this._closeZonePanel());
+
+        panel.querySelector('#zone-delete-btn').addEventListener('click', () => {
+            const zoneId = panel.dataset.zoneId;
+            if (zoneId && this.replenishZoneManager) {
+                this.replenishZoneManager.deleteZone(zoneId);
+            }
+            this._closeZonePanel();
+        });
+
+        panel.querySelector('#zone-change-seed-btn').addEventListener('click', () => {
+            const seedPicker = panel.querySelector('#zone-seed-picker');
+            if (seedPicker) seedPicker.style.display = seedPicker.style.display === 'none' ? 'flex' : 'none';
+        });
+
+        panel.querySelector('#zone-expand-btn').addEventListener('click', () => {
+            const zoneId = panel.dataset.zoneId;
+            if (!zoneId) return;
+            this._closeZonePanel();
+            // Enter zone expansion mode
+            this.tileSelector.zoneExpansionMode = true;
+            this.tileSelector.zoneExpansionTargetId = zoneId;
+            const indicator = document.getElementById('zone-expand-indicator');
+            if (indicator) {
+                indicator.style.display = 'flex';
+                indicator.querySelector('.zone-indicator-label').textContent = 'Drag to add tiles to zone…';
+            }
+            // Switch to tool mode so drag selection works, disable map panning
+            this.inputMode = 'tool';
+            this.inputManager.setPanningEnabled(false);
+        });
+
+        // Seed picker buttons
+        const seedPicker = panel.querySelector('#zone-seed-picker');
+        if (seedPicker) {
+            for (const cropKey of ['CARROT','RADISH','PARSNIP','POTATO','BEETROOT','CABBAGE',
+                                   'CAULIFLOWER','SUNFLOWER','WHEAT','PUMPKIN']) {
+                const cropData = { CARROT:0, RADISH:4, PARSNIP:5, POTATO:6, BEETROOT:8, CABBAGE:7,
+                                   CAULIFLOWER:1, SUNFLOWER:3, WHEAT:9, PUMPKIN:2 };
+                const idx = cropData[cropKey];
+                const cropNames = { 0:'Carrot',1:'Cauliflower',2:'Pumpkin',3:'Sunflower',4:'Radish',
+                                    5:'Parsnip',6:'Potato',7:'Cabbage',8:'Beetroot',9:'Wheat' };
+                const btn = document.createElement('button');
+                btn.className = 'zone-seed-pick-btn';
+                btn.textContent = cropNames[idx];
+                btn.addEventListener('click', () => {
+                    const zoneId = panel.dataset.zoneId;
+                    if (zoneId && this.replenishZoneManager) {
+                        this.replenishZoneManager.changeSeed(zoneId, idx);
+                        panel.querySelector('#zone-panel-title').textContent = `Zone: ${cropNames[idx]}`;
+                    }
+                    seedPicker.style.display = 'none';
+                });
+                seedPicker.appendChild(btn);
+            }
+        }
+
+        // Cancel button on expand indicator
+        const indicator = document.getElementById('zone-expand-indicator');
+        if (indicator) {
+            indicator.querySelector('.zone-indicator-cancel').addEventListener('click', () => {
+                this.tileSelector.zoneExpansionMode = false;
+                this.tileSelector.zoneExpansionTargetId = null;
+                indicator.style.display = 'none';
+                this.inputMode = 'pan';
+                this.inputManager.setPanningEnabled(true);
+                if (this.toolbar) this.toolbar.exitZoneManageMode();
+            });
+        }
+    }
+
+    // Apply the crafting effect for a completed recipe (called by JobManager after cycles done)
+    applyCraftingEffect(recipeId) {
+        switch (recipeId) {
+            // Cauldron — potions added to inventory
+            case 'minor_health_potion':
+                this.inventory.add(RESOURCE_TYPES.MINOR_HEALTH_POTION, 1);
+                break;
+            case 'stamina_tonic':
+                this.inventory.add(RESOURCE_TYPES.STAMINA_TONIC, 1);
+                break;
+            case 'growth_elixir':
+                this.inventory.add(RESOURCE_TYPES.GROWTH_ELIXIR, 1);
+                break;
+            case 'vitality_brew':
+                this.inventory.add(RESOURCE_TYPES.VITALITY_BREW, 1);
+                break;
+
+            // Anvil — tool speed upgrades (same logic as old instant crafting)
+            case 'faster_hoe':
+            case 'faster_axe':
+            case 'faster_pickaxe': {
+                const toolId = recipeId === 'faster_hoe' ? 'hoe'
+                             : recipeId === 'faster_axe' ? 'axe'
+                             : 'pickaxe';
+                this.toolAnimationMultipliers[toolId] = (this.toolAnimationMultipliers[toolId] || 1) * 2;
+                this.homeUpgrades.purchasedToolUpgrades.add(recipeId);
+                break;
+            }
+            case 'vitality_boost':
+                this.playerMaxHealth = Math.round(this.playerMaxHealth * 1.5);
+                this.playerHealth = Math.min(this.playerHealth, this.playerMaxHealth);
+                this.homeUpgrades.purchasedToolUpgrades.add('vitality_boost');
+                break;
+
+            // Shrine — permanent bonuses
+            case 'fertile_soil_1':
+                this.homeUpgrades.shrineUpgrades.fertileSoilLevel = 1;
+                break;
+            case 'fertile_soil_2':
+                this.homeUpgrades.shrineUpgrades.fertileSoilLevel = 2;
+                break;
+            case 'bountiful_harvest':
+                this.homeUpgrades.shrineUpgrades.bountifulHarvest = true;
+                break;
+            case 'roadside_replenishment':
+                this.homeUpgrades.shrineUpgrades.roadsideReplenishment = true;
+                if (this.uiManager) this.uiManager.refreshStandMenuIfOpen();
+                break;
+
+            default:
+                log.warn(`applyCraftingEffect: unknown recipeId '${recipeId}'`);
+        }
+        log.info(`Crafting effect applied: ${recipeId}`);
+    }
+
+    // Add cheat buttons to the debug menu and make the gear button visible
+    _initDebugMenu() {
+        const menu = document.getElementById('customize-menu');
+        if (!menu) return;
+
+        const cheatSection = document.createElement('div');
+        cheatSection.className = 'debug-cheat-section';
+        cheatSection.innerHTML = `
+            <h3>Cheats</h3>
+            <div class="debug-btn-row">
+                <button class="debug-cheat-btn" id="cheat-gold-100">+100g</button>
+                <button class="debug-cheat-btn" id="cheat-gold-1000">+1000g</button>
+                <button class="debug-cheat-btn" id="cheat-gold-10000">+10000g</button>
+            </div>
+            <div class="debug-btn-row">
+                <button class="debug-cheat-btn" id="cheat-seeds">+10 Each Seed</button>
+                <button class="debug-cheat-btn" id="cheat-hire-goblin">Hire Goblin</button>
+            </div>
+            <div class="debug-btn-row">
+                <button class="debug-cheat-btn" id="cheat-unlock-replenishment">Unlock Replenishment</button>
+            </div>
+        `;
+        menu.appendChild(cheatSection);
+
+        document.getElementById('cheat-gold-100').addEventListener('click', () => this.inventory.addGold(100));
+        document.getElementById('cheat-gold-1000').addEventListener('click', () => this.inventory.addGold(1000));
+        document.getElementById('cheat-gold-10000').addEventListener('click', () => this.inventory.addGold(10000));
+
+        document.getElementById('cheat-seeds').addEventListener('click', () => {
+            for (const key of Object.keys(RESOURCE_TYPES)) {
+                if (RESOURCE_TYPES[key].category === 'seed') {
+                    this.inventory.add(RESOURCE_TYPES[key], 10);
+                }
+            }
+        });
+
+        document.getElementById('cheat-hire-goblin').addEventListener('click', () => this.hireGoblin());
+
+        document.getElementById('cheat-unlock-replenishment').addEventListener('click', () => {
+            this.homeUpgrades.shrineUpgrades.roadsideReplenishment = true;
+            if (this.uiManager) this.uiManager.refreshStandMenuIfOpen();
+            log.info('Replenishment unlocked via debug cheat');
+        });
+    }
+
+    // Make goblin controls visible (toolbar queue buttons + job queue sections)
+    hireGoblin() {
+        if (this.goblinHired) return;
+        this.goblinHired = true;
+        if (this.toolbar) this.toolbar.setGoblinHired(true);
+        if (this.jobQueueUI) this.jobQueueUI.setGoblinHired(true);
+        log.info('Goblin hired!');
     }
 
     stop() {

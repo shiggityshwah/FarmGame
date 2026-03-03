@@ -16,36 +16,38 @@ Open `index.html` directly in a web browser. No build step required. Refresh bro
 
 - **config.js** - Centralized game configuration constants (player stats, enemy stats, camera, tiles, path system, goblin stats, chunk system). Import CONFIG object to access values
 - **main.js** - Entry point. DOMContentLoaded initialization of Game and CharacterCustomizer with error handling
-- **Game.js** - Main engine class. Manages game loop (update/render via requestAnimationFrame), initializes all subsystems, handles character loading, movement, and combat. Exposes facade methods so subsystems don't reach 2+ levels deep: `findPath()`, `isTileWalkable()`, `isTileOwned()`, `getCombatTargets()` (returns `[{position, type, onHit}]` for each living combatant)
+- **Game.js** - Main engine class. Manages game loop (update/render via requestAnimationFrame), initializes all subsystems, handles character loading, movement, and combat. Exposes facade methods so subsystems don't reach 2+ levels deep: `findPath()`, `isTileWalkable()`, `isTileOwned()`, `getCombatTargets()` (returns `[{position, type, onHit}]` for each living combatant). `hireGoblin()` reveals goblin toolbar buttons and job queue sections (`goblinHired` flag). `_initGoldDisplay()` subscribes to inventory onChange (chaining after UIManager's callback) and sets `targetGold`; `update()` animates `displayedGold` toward `targetGold` over ~500ms. `_initDebugMenu()` injects cheat buttons into `#customize-menu`. `_seedEffects` array holds floating seed-drop effects for wild crop harvests (created via `createHarvestEffect`, rendered via `renderFloatingEffects` from EffectUtils.js). Wild crop seed drop: on click-harvest of a crop whose underlying tile is NOT `CONFIG.tiles.hoedGround`, 50% chance to add matching seed to inventory and spawn a floating effect. Watering can state: `wateringCanWater/wateringCanMaxWater` (human, default 20/20), `goblinWaterCanWater/goblinWaterCanMaxWater` (goblin). Well created in init and passed to pathfinder. Pixel-precise slide state: `humanPixelTarget`, `humanIsSliding`, `humanSlideStart`, `humanSlideTarget`, `humanSlideElapsed` (and goblin equivalents); `moveWorkerToPixel(workerId, px, py)` pathfinds then slides 300ms to exact position; `_updateHumanSlide(dt)` / `_updateGoblinSlide(dt)` lerp each frame. Starter crops: 1–2 wild instances each of CARROT, RADISH, PARSNIP (tier-1 only, startAsPlanted=false → auto-grow, no watering). Phase 3: `homeUpgrades` object (slots, shrineUpgrades, purchasedToolUpgrades). `applyCraftingEffect(recipeId)` dispatches crafting completion to inventory/homeUpgrades/CropManager. `_openZonePanel(zone)` / `_closeZonePanel()` / `_initZonePanel()` manage the zone management panel. Harvest hook calls `replenishZoneManager.onHarvest()`. Bountiful harvest bonus: +1 crop yield when `shrineUpgrades.bountifulHarvest`. Inventory onChange chain: UIManager → gold display → replenishZoneManager.checkPausedZones(). Zone expansion drag: `inputManager.setPanningEnabled(false)` when entering expansion mode, `true` on complete/cancel.
 - **Camera.js** - Pan/zoom camera with world-to-screen coordinate conversion. Zoom range: 0.5x-4x
 - **InputManager.js** - Unified input handling for keyboard (WASD/arrows), mouse (drag/wheel/click), and touch (drag/pinch/tap). Supports drag callbacks and panning toggle
 - **TilemapRenderer.js** - Sparse chunk-based world renderer. `generateChunkMap()` creates the initial 3×5 grid using `chunkTiles` Map (sparse storage). Supports `setTileAt()`/`getTileAt()` for runtime tile modification. Renders multi-layer TMX maps (home, store, new house ground/roof layers). `renderGreatPath()` draws the y=45–48 path strip separately.
 - **TileUtils.js** - Pure stateless coordinate helpers: `worldToTile`, `tileToWorld`, `tileCenterWorld`, `manhattanDist`. Import instead of inlining `Math.floor(x/tileSize)`.
 - **SpriteAnimator.js** - Horizontal strip sprite animation with configurable FPS (default 8 FPS). Supports non-looping animations with completion callbacks
-- **CharacterCustomizer.js** - UI panel for hair style and animation selection
+- **CharacterCustomizer.js** - UI panel for hair style and animation selection. Triggered by `#debug-btn` (gear icon, bottom-right). Debug menu is always visible. The panel (`#customize-menu`) also contains cheat buttons injected by `Game._initDebugMenu()`.
 - **Logger.js** - Structured logging with configurable log level (`CONFIG.debug.logLevel`). Use `Logger.create('ModuleName')` per module
 - **EffectUtils.js** - Shared floating harvest/resource effect utilities. Functions: `createHarvestEffect(x, y, tileId)` → effect object, `updateEffects(effects, deltaTime)` → mutates array in-place (float up, fade, remove expired), `renderEffects(ctx, effects, tilesetImage, getTilesetSourceRect, tileSize)` → draws tile icon + "+1" text. Imported by CropManager, TreeManager, OreManager, ForestGenerator.
 
 ### Chunk World System (js/)
 
-- **ChunkManager.js** - Sparse dynamic chunk grid. Stores chunks in a `Map("col,row" → chunk)`. Initial 3×5 grid = 3,375 tiles (vs old 50,400). Chunk states: `OWNED`, `TOWN`, `PURCHASABLE`, `LOCKED`. Chunk types: `FARM`, `TOWN`, `FOREST`. Key methods: `initialize()`, `purchaseChunk()`, `getChunkForTile()`, `isPlayerOwned()`, `isTownChunk()`, `isAccessible()`, `getChunkBounds()`, `render()` (borders), `renderPurchaseSigns()`. Fires `onChunkPurchased` callback. Holds pluggable `generatorRegistry`. North forest chunks (rows 0–2) are permanently LOCKED and never become purchasable.
+- **ChunkManager.js** - Sparse dynamic chunk grid. Stores chunks in a `Map("col,row" → chunk)`. Initial 3×5 grid = 3,375 tiles (vs old 50,400). Chunk states: `OWNED`, `TOWN`, `PURCHASABLE`, `LOCKED`. Chunk types: `FARM`, `TOWN`, `FOREST`. Key methods: `initialize()`, `purchaseChunk()` (deducts gold via `inventory.spendGold()`; returns false if can't afford), `getChunkPrice(col, row)` (Manhattan distance from farm chunk → CONFIG.chunks.purchasePrices), `getChunkForTile()`, `isPlayerOwned()`, `isTownChunk()`, `isAccessible()`, `getChunkBounds()`, `render()` (borders), `renderPurchaseSigns()` (shows price in gold or red if unaffordable). Fires `onChunkPurchased` callback. Holds pluggable `generatorRegistry`. Holds `inventory` reference (set by Game.init() after Inventory is created; needed for gold-gated purchases). North forest chunks (rows 0–2) are permanently LOCKED and never become purchasable.
 - **ChunkContentGenerator.js** - Base class/interface for per-biome chunk generators. Override `type`, `generateGround()`, `generateContent()`, `generateSeam()`, `generateNorthEdge()`. All methods are safe no-ops in the base class.
 - **ChunkGeneratorRegistry.js** - Maps biome type strings to `ChunkContentGenerator` instances. Resolves biome type via: (1) designer map override (`setDesignerMap()`), (2) deterministic weighted random hash of (col,row) (`setBiomeWeights()`). Methods: `register()`, `getGenerator()`, `resolveType()`.
-- **ForestChunkGenerator.js** - `ChunkContentGenerator` implementation for forest biome. Wraps `ForestGenerator` and delegates all tree/pocket/seam logic to it. Registered during `Game.init()`. Also exports `DenseForestChunkGenerator` (type `'dense_forest'`) — overrides `generateContent()` with `noPocket:true, density:0.9` for permanently locked north-of-path forest chunks.
+- **ForestChunkGenerator.js** - `ChunkContentGenerator` implementation for forest biome. Wraps `ForestGenerator` and delegates all tree/pocket/seam logic to it. Registered during `Game.init()`. Also exports `DenseForestChunkGenerator` (type `'dense_forest'`) — overrides `generateContent()` with `noPocket:true, density:0.9` for permanently locked north-of-path forest chunks. Calculates Manhattan distance from farm chunk and passes it to `generateForChunk()` as `distance` option — controls ore quality and crop tier in pocket clearings. `ForestGenerator._weightedOreType(dist)` and `_weightedCropType(dist)` use distance-indexed weight tables (dist≤2: stone/iron/tier-1 crops; dist≤4: mid-tier; dist>4: gold/mithril/tier-3–4 crops).
 
 ### Inventory & UI Systems (js/)
 
-- **Inventory.js** - Resource tracking system. Manages crops (10 types), seeds (10 types), flowers, ores (Iron, Coal, Mithril, Gold, Stone), wood, and gold currency. Methods: `add()`, `remove()`, `has()`, `getCount()`, `getByCategory()`
+- **Inventory.js** - Resource tracking system. Manages crops (10 types), seeds (10 types), flowers (generic + FLOWER_BLUE/RED/WHITE color variants), ores (Iron, Coal, Mithril, Gold, Stone), wood, potions (4 types), and gold currency. Methods: `add()`, `remove()`, `has()`, `getCount()`, `getByCategory()`, `getSeedByCropIndex(cropIndex)`, `spendGold(amount)`. Seed prices follow exponential progression: 5g (Carrot) → 50,000g (Pumpkin), ordered cheapest-first. Crop sell_prices (stand full value) range 10g–100,000g. `onChange(callback)` supports chaining: capture existing callback before overwriting. Potion category: MINOR_HEALTH_POTION (50g), STAMINA_TONIC (150g), GROWTH_ELIXIR (500g), VITALITY_BREW (2000g). Flower colors: FLOWER_BLUE (10% rarity), FLOWER_RED (30%), FLOWER_WHITE (60%) — Flower.js harvest now adds color-specific type instead of generic FLOWER.
 - **UIManager.js** - Menu system with three panels:
-  - **Storage Menu**: Display inventory items grouped by category with tile icons
-  - **Crafting Menu**: Purchase upgrades (Efficient Hoe, Sharp Axe, Reinforced Pickaxe, Vitality Boost)
-  - **Shop Menu**: Buy seeds and sell crops/flowers for gold
-- **JobQueueUI.js** - Overlay panel showing queued jobs per worker (Human, Goblin, Shared). Displays active/queued jobs with cancel buttons. Idle jobs shown with "Idle" badge and distinct styling
+  - **Storage Menu**: Display inventory items grouped by category with tile icons (includes potions)
+  - **Crafting Menu** (Phase 3): Slot-based home upgrade system. Shows 1 upgrade slot (Level 1). Click slot → install Cauldron/Anvil/Shrine. Installed upgrade shows recipes below: Cauldron (4 potions), Anvil (4 tool upgrades as craft jobs), Shrine (4 permanent bonuses). Recipe cards show ingredient counts (grey if can't afford). Clicking recipe deducts resources and queues a 'craft' job. Swap Shrine confirmation is inline HTML (no `window.confirm()`). `refreshStandMenuIfOpen()` helper re-renders open stand menus.
+  - **Shop Menu**: Buy seeds (price from RESOURCE_TYPES[].price) and sell crops/flowers/ores/potions for gold. Store sell price = `Math.floor(sell_price / 2)` — half of roadside stand value.
+- **JobQueueUI.js** - Overlay panel showing queued jobs per worker (Human, Goblin, Shared). Displays active/queued jobs with cancel buttons. Idle jobs shown with "Idle" badge and distinct styling. Goblin and Shared sections are hidden (`display:none`) by default. Call `setGoblinHired(true)` to reveal them.
 
 ### Farming Systems (js/)
 
-- **CropManager.js** / **Crop.js** - Crop lifecycle: 5 growth stages (3 seconds each), harvest with floating "+1" feedback, post-harvest decay effects
-- **Flower.js** - Wild flower system with 3 rarity types: Blue (10%), Red (30%), White (60%). Each has 4 tile variations. Harvest yields 1-2 with fade-out animation
+- **Well.js** - Well structure at world tile (24, 53): 2-tile wide × 3-tile tall. Top row (tiles 1256–1257, y=53) visual-only rendered above characters; middle + bottom rows (tiles 1320–1321 / 1384–1385, y=54–55) block movement. `isObstacle(x,y)` checks middle+bottom rows. `getAdjacentServiceTile()` → (23, 54). `registerInteractable()` registers click area for `'openWell'` action. Rendered in depth-sorted pass (`getSortY()`) + upper-layers pass (`renderTop()`). Well menu (`#well-menu`) opened by click, has Fill buttons for human/goblin cans. `game.wateringCanWater/Max` and `game.goblinWaterCanWater/Max` (all default 20).
+- **CropManager.js** / **Crop.js** - Crop lifecycle: 5 growth stages (variable time per crop), harvest with floating "+1" feedback, post-harvest decay effects. Multi-step watering state machine: `wateringState` ∈ `'needs_water' | 'watering_cooldown' | 'growing'`; `wateringsPerStage` per crop type (1 for most, 2 for PUMPKIN/WHEAT/SUNFLOWER); 30s cooldown between multi-waterings. Crop visual feedback uses tile ID: dry ground tile (818) when `needs_water`, wet ground tile (882) when growing/cooldown — no overlay dots. Wild crops (startAsPlanted=false) begin in `'growing'` state, never need watering. `get isWatered()` backward-compat getter. Phase 3: `setGame(game)` called after init; `_getGrowthSpeedMultiplier()` reads `game.homeUpgrades.shrineUpgrades.fertileSoilLevel` (0=1.0×, 1=0.85×, 2=0.70×); `update()` uses `effectiveDt = dt * speedMultiplier` for stage advancement.
+- **Flower.js** - Wild flower system with 3 rarity types: Blue (10%), Red (30%), White (60%). Each has 4 tile variations. Harvest yields 1-2 with fade-out animation. Phase 3: harvest adds FLOWER_BLUE/RED/WHITE color-specific resource types to inventory (not generic FLOWER).
+- **ReplenishZoneManager.js** - Auto-replanting zone system. `createZone(tiles, cropTypeIndex)` → zones are Sets of `"x,y"` tile keys with eviction logic (tile can only belong to one zone). `onHarvest(tileX, tileY)` queues plant job via `jobManager.addJobToQueue()` if seeds available, else pauses zone (grey border). `checkPausedZones()` reactivates on inventory change. `expandZone(id, newTiles)` merges additional tiles. `changeSeed(id, cropTypeIndex)` updates zone's seed type. `deleteZone(id)` removes all tiles. `render(ctx, camera, tileSize)` draws perimeter edges (skips shared edges); world-pixel coords used directly since camera transform already applied — `lineWidth = 2 / zoom`; active zones green, paused zones grey. Zone management panel (`#zone-manage-panel`) opened by clicking a zone tile in zone manage mode; shows Delete, Change Seed, Expand buttons.
 - **FlowerManager.js** - Spawning and management of flowers and weeds. Dynamic spawn rate based on grass coverage. 75% weeds vs 25% flowers. `_getSpawnAreas()` returns farm grass, both town chunks (store + home), and all allocated forest chunk areas.
 - **Weed.js** - Invasive plants with 4 growth stages over 2 minutes. Each click regresses one stage. Multi-tile at stages 3-4 (2 tiles tall)
 
@@ -63,10 +65,10 @@ Open `index.html` directly in a web browser. No build step required. Refresh bro
 
 ### Tool & Job Systems (js/)
 
-- **Toolbar.js** - Bottom toolbar with tool icons extracted from tileset at 400% scale. Handles tool selection and cursor changes
-- **TileSelector.js** - Click/drag tile selection with rectangle highlight. Validates tiles against tool acceptability rules and resource occupancy. Chunk ownership gate: non-owned forest chunks → sword + shovel-on-weed only; owned → all tools. Per-drag `_acceptabilityCache` Map (key `"x,y"`) avoids redundant checks; cleared on drag start and tool change. `_getChoppableTreeAt()` checks both treeManager and forestGenerator.
-- **JobManager.js** - Multi-queue job system. Queues: `all` (shared), `human`, `goblin`. Each worker tracks current job independently. Supports `isIdleJob` flag for idle-sourced jobs. Methods: `addJob()`, `addIdleJob()`, `cancelJob()`, `getAllJobsByQueue()`
-- **Pathfinder.js** - A* pathfinding with MinHeap for O(n log n) performance. Path tiles have 1.5x speed boost (lower cost). Finds paths avoiding obstacles. Returns null if no path found
+- **Toolbar.js** - Bottom toolbar with tool icons extracted from tileset at 400% scale. Handles tool selection and cursor changes. Seed submenu shows owned-count badges (`.seed-count-badge`) and dims/disables buttons when count is 0 (`.seed-unavailable`). Goblin and All queue-selector buttons are hidden by default; call `setGoblinHired(hired)` to reveal them. `refreshSeedSubmenu()` is called on inventory change. Watering can button shows water level badge (`.water-level-badge`) displaying `cur/max`; `refreshWaterDisplay()` updates it after each use or refill. Phase 3: seed submenu includes "⟳ Auto-Replant" toggle (`replenishMode` flag) and "⬚ Manage Zones" button (`zoneManageMode` flag). `_enterZoneManageMode()` deactivates any active tool (including plant button in open-submenu state) and shows `#zone-expand-indicator`. `exitZoneManageMode()` cleans up.
+- **TileSelector.js** - Click/drag tile selection with rectangle highlight. Validates tiles against tool acceptability rules and resource occupancy. Chunk ownership gate: non-owned forest chunks → sword + shovel-on-weed only; owned → all tools. Per-drag `_acceptabilityCache` Map (key `"x,y"`) avoids redundant checks; cleared on drag start and tool change. `_getChoppableTreeAt()` checks both treeManager and forestGenerator. Phase 3: `zoneExpansionMode` flag and `zoneExpansionTargetId` — when true, `startSelection()` bypasses tool check, `updateSelectedTiles()` marks all tiles valid (no tool validation), `endSelection()` returns all selected tiles. Zone expansion drag calls `replenishZoneManager.expandZone()` instead of creating a job.
+- **JobManager.js** - Multi-queue job system. Queues: `all` (shared), `human`, `goblin`. Each worker tracks current job independently. Supports `isIdleJob` flag for idle-sourced jobs. Methods: `addJob()`, `addIdleJob()`, `cancelJob()`, `getAllJobsByQueue()`. Plant jobs guard seed availability: `isTileJobAlreadyDone` skips a tile if no seed in inventory; `applyPlantPhase1` cancels all plant jobs for that worker if seeds run out mid-job. Watering can auto-refill: `_autoQueueWellFill(workerId)` saves remaining tiles to `pendingWateringResume`, aborts the watering job, inserts a `fill_well` job at the front of the worker's private queue; after fill completes, `applyToolEffect('fill_well')` restores and re-queues the saved watering tiles. `_buildJob(tool, tiles, targetQueue)` creates a plain job object without touching queues. Phase 3: `addJobToQueue(tool, tiles, queueName)` — public method that routes directly to a named queue. 'craft' job type: `job.craftingRecipeId`, `job.craftingCycles`, `job.craftingCyclesCompleted`, `job.refundItems` (for cancel refund). `applyToolEffect('craft')` increments cycles; on completion calls `game.applyCraftingEffect(recipeId)`. `cancelJob()` refunds ingredients if `job.refundItems` is set.
+- **Pathfinder.js** - A* pathfinding with MinHeap for O(n log n) performance. Path tiles have 1.5x speed boost (lower cost). Finds paths avoiding obstacles. Returns null if no path found. `setWell(well)` registers the well as an obstacle (checks `well.isObstacle(x,y)` in `isWalkable()`).
 - **TileOverlayManager.js** - Manages sprite overlays on tiles (holes from digging, path edge sprites)
 - **IdleManager.js** - Autonomous idle activity system for the human character. State machine: `inactive → waiting (3-5s) → active`. Evaluates harvest, water, flower-pick, and weed-clear tasks using actual A* path lengths (not just Euclidean distance). Prefers tasks with path length ≤ 35 tiles. Backs off exponentially on failure. Returns home when nothing to do. All activities filter to owned chunks; weed-clearing also allows town chunk. Uses game facade methods (`game.findPath()`, `game.isTileWalkable()`, `game.isTileOwned()`) instead of accessing subsystems directly.
 
@@ -132,6 +134,32 @@ playerAttackRange: 1      isInCombat: false
 combatTarget: null        engagedEnemies: Set
 toolAnimationMultipliers  // Modified by crafting upgrades
 animationSession          // For stale callback invalidation
+goblinHired: false        // true after hireGoblin() — reveals goblin UI
+displayedGold: 0          // animates toward targetGold (count-up display)
+targetGold: 0             // actual gold from inventory.getGold()
+_seedEffects: []          // floating effects for wild crop seed drops
+// Phase 2 additions:
+well: Well                // Well instance (tileX=24, tileY=53)
+wateringCanWater: 20      wateringCanMaxWater: 20      // human can
+goblinWaterCanWater: 20   goblinWaterCanMaxWater: 20   // goblin can
+humanPixelTarget: null    humanIsSliding: false        // sub-tile slide
+humanSlideStart: null     humanSlideTarget: null       humanSlideElapsed: 0
+goblinPixelTarget: null   goblinIsSliding: false       // goblin slide
+// Phase 3 additions:
+homeUpgrades: {
+  slots: [null],              // Level 1: 1 slot; values: null|'cauldron'|'anvil'|'shrine'
+  shrineUpgrades: {
+    fertileSoilLevel: 0,      // 0=none, 1=−15% growth time, 2=−30% growth time
+    bountifulHarvest: false,  // if true: each harvest yields +1 bonus item
+    roadsideReplenishment: false  // if true: ⟳ auto-replenish shown on stand slots
+  },
+  purchasedToolUpgrades: Set  // tracks anvil upgrade IDs already purchased (one-time)
+}
+replenishZoneManager: ReplenishZoneManager  // auto-replanting zone system
+// applyCraftingEffect(recipeId) — dispatches craft completion to inventory/homeUpgrades
+// _openZonePanel(zone) / _closeZonePanel() / _initZonePanel() — zone management UI
+// Harvest hook: calls replenishZoneManager.onHarvest(tileX, tileY) after crop harvest
+// Bountiful harvest: inventory.addCropByIndex(idx, 1 + (bountifulHarvest ? 1 : 0))
 ```
 
 ### Rendering Order
@@ -143,13 +171,16 @@ animationSession          // For stale callback invalidation
 6. Forest tree backgrounds (shadows/trunks; render OVER great path)
 7. `overlayManager.renderNonEdgeOverlays()` — holes
 8. `tilemap.renderGroundLayers()` — new house floor/walls (ABOVE overlays)
-9. Depth-sorted entities (crops, flowers/weeds, trees, ore veins, tile highlight, characters, enemies, effects)
-10. Forest foregrounds (tree crowns; render OVER great path)
-11. `chunkManager.renderPurchaseSigns()` — purchase "?" signs ABOVE trees (north chunks show NO signs)
-12. `tilemap.renderUpperLayers()` — store/home upper building layers
-13. `tilemap.renderRoofLayers()` — new house roof (hidden when player inside)
-14. Chimney smoke (when player outside)
-15. UI
+9. `tileSelector.render()` — selection highlight + work queue overlay
+10. `cropManager.renderAllCropGroundTiles()` — hoed/wet ground under crops
+11. `replenishZoneManager.render()` — zone perimeter borders (green/grey); drawn after ground tiles, before crops/characters
+12. Depth-sorted entities (crops, flowers/weeds, trees, ore veins, characters, enemies, effects)
+13. Forest foregrounds (tree crowns; render OVER great path)
+14. `chunkManager.renderPurchaseSigns()` — purchase "?" signs ABOVE trees (north chunks show NO signs)
+15. `tilemap.renderUpperLayers()` — store/home upper building layers
+16. `tilemap.renderRoofLayers()` — new house roof (hidden when player inside)
+17. Chimney smoke (when player outside)
+18. UI
 
 ### Coordinate Systems
 - World coordinates (pixels) ↔ Tile coordinates (grid positions) ↔ Screen coordinates (canvas viewport)
@@ -205,8 +236,9 @@ import { CONFIG, getRandomDirtTile, getRandomPathTile } from './config.js';
 - `mainPathY: 45` — world Y of great path top row
 - `mainPathGap: 4` — world tile rows reserved for great path between home and farm chunks
 - Gap formula: `worldY(row) = row * 15 + (row > pathBoundaryRow ? mainPathGap : 0)`
+- `purchasePrices: [100, 500, 2000, 10000, 50000]` — gold costs by Manhattan distance index (dist-1) from farm chunk
 
-**CONFIG.debug** - logLevel, showFps, showPathfinding
+**CONFIG.debug** - logLevel, showFps, showPathfinding, developmentMode (true = debug menu always shown)
 
 **Helper functions**:
 - `getRandomDirtTile()` - Returns random dirt tile ID (80% common, 20% rare variants)
@@ -245,7 +277,8 @@ Animation filenames have inconsistencies the code handles:
 - **Axe**: Chops trees. Each hit yields 1 wood. Uses AXE animation
 - **Pickaxe**: Mines ore veins. Each hit yields 1 ore. Uses AXE animation
 - **Sword**: Attacks enemies. Uses ATTACK animation. Damage based on playerDamage stat
-- **Watering Can** (idle only): Waters un-watered crops. Uses WATERING animation
+- **Watering Can**: Waters crops in `needs_water` state. Deducts from `wateringCanWater` (human) or `goblinWaterCanWater` (goblin). Auto-refills at well when empty. Uses WATERING animation
+- **fill_well** (internal): Worker walks to well service tile (23, 54), plays DOING animation once, refills the can to max. Not selectable from toolbar — created automatically by `_autoQueueWellFill()`
 
 **Character behavior**: Character walks to an adjacent tile, faces the work tile, then performs the tool animation. Sprite flips horizontally when facing left.
 
@@ -299,6 +332,7 @@ The `IdleManager` gives the human character autonomous behavior when no player j
 - Seeds are consumed from inventory when planting (JobManager.applyPlantPhase1)
 - Enemy sprites clear callbacks before creating new ones to prevent memory leaks
 - Animation session counter in Game.js invalidates stale callbacks when animations change rapidly
+- Wild crop seed drops (50% on non-hoed tiles) use `_seedEffects` array in Game.js; inventory onChange is chain-subscribed so both UIManager and gold display receive updates
 
 ### Data Structures
 - `engagedEnemies` in Game.js is a Set (not Array) for O(1) lookup/add/delete

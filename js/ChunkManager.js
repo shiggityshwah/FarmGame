@@ -94,6 +94,9 @@ export class ChunkManager {
         this._pathPositions = null;
         this._overlayManager = null;
         this._getRandomPathTile = null;
+
+        // Reference to game inventory for gold checks (set from Game.js)
+        this.inventory = null;
     }
 
     // ─── Initialization ─────────────────────────────────────────────────────────
@@ -340,14 +343,35 @@ export class ChunkManager {
     // ─── Purchase ────────────────────────────────────────────────────────────────
 
     /**
+     * Calculate the gold cost to purchase a chunk based on Manhattan distance from farm chunk.
+     */
+    getChunkPrice(col, row) {
+        const { farmCol, farmRow, purchasePrices } = CONFIG.chunks;
+        const dist = Math.abs(col - farmCol) + Math.abs(row - farmRow);
+        const idx = Math.min(dist - 1, purchasePrices.length - 1);
+        return purchasePrices[Math.max(0, idx)];
+    }
+
+    /**
      * Purchase a chunk and allocate its 4 direct neighbors if they don't exist.
-     * This is the primary mechanism for dynamic world growth.
+     * Deducts gold from inventory. Returns false if chunk is not purchasable or player
+     * cannot afford it.
      */
     purchaseChunk(col, row) {
         const chunk = this.getChunkAt(col, row);
         if (!chunk || chunk.state !== CHUNK_STATES.PURCHASABLE) {
             log.warn(`Cannot purchase chunk (${col},${row}): state=${chunk?.state}`);
             return false;
+        }
+
+        // Check and deduct gold
+        if (this.inventory) {
+            const price = this.getChunkPrice(col, row);
+            if (!this.inventory.spendGold(price)) {
+                log.info(`Cannot afford chunk (${col},${row}): need ${price}g, have ${this.inventory.getGold()}g`);
+                return false;
+            }
+            log.info(`Purchased chunk (${col},${row}) for ${price}g`);
         }
 
         chunk.state = CHUNK_STATES.OWNED;
@@ -447,13 +471,14 @@ export class ChunkManager {
     }
 
     /**
-     * Render purchase signs ("?") on purchasable chunks.
+     * Render purchase signs ("?") on purchasable chunks with gold cost.
      * Call this AFTER all tree/entity rendering so signs appear on top.
      */
     renderPurchaseSigns(ctx, camera) {
         const tileSize = this.tilemap.tileSize;
         const bounds = camera.getVisibleBounds();
         const zoom = camera.zoom;
+        const playerGold = this.inventory ? this.inventory.getGold() : Infinity;
 
         for (const chunk of this.chunks.values()) {
             if (chunk.state !== CHUNK_STATES.PURCHASABLE) continue;
@@ -465,13 +490,16 @@ export class ChunkManager {
             // Skip if not visible
             if (wx < bounds.left || wx > bounds.right || wy < bounds.top || wy > bounds.bottom) continue;
 
+            const price = this.getChunkPrice(chunk.col, chunk.row);
+            const canAfford = playerGold >= price;
+
             const r = 20 / zoom;
             ctx.save();
             ctx.beginPath();
             ctx.arc(wx, wy, r, 0, Math.PI * 2);
-            ctx.fillStyle = 'rgba(255, 200, 50, 0.85)';
+            ctx.fillStyle = canAfford ? 'rgba(255, 200, 50, 0.85)' : 'rgba(180, 80, 80, 0.85)';
             ctx.fill();
-            ctx.strokeStyle = 'rgba(180, 130, 10, 0.9)';
+            ctx.strokeStyle = canAfford ? 'rgba(180, 130, 10, 0.9)' : 'rgba(120, 30, 30, 0.9)';
             ctx.lineWidth = 2 / zoom;
             ctx.setLineDash([]);
             ctx.stroke();
@@ -481,6 +509,15 @@ export class ChunkManager {
             ctx.textAlign = 'center';
             ctx.textBaseline = 'middle';
             ctx.fillText('?', wx, wy);
+
+            // Price label below the circle
+            const priceText = price >= 1000 ? `${(price / 1000).toFixed(price % 1000 === 0 ? 0 : 1)}k` : `${price}`;
+            ctx.font = `bold ${Math.round(10 / zoom)}px sans-serif`;
+            ctx.fillStyle = canAfford ? '#ffd700' : '#ff8888';
+            ctx.strokeStyle = 'rgba(0,0,0,0.8)';
+            ctx.lineWidth = 3 / zoom;
+            ctx.strokeText(`${priceText}g`, wx, wy + r + 8 / zoom);
+            ctx.fillText(`${priceText}g`, wx, wy + r + 8 / zoom);
             ctx.restore();
         }
     }

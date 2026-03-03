@@ -42,22 +42,41 @@ export class Toolbar {
         this.plantSubmenu = null;
         this.queueSelector = null;
         this.selectedQueue = 'all'; // 'all' | 'human' | 'goblin'
+        this._seedBtns = new Map(); // cropIndex → button element
+        this.replenishMode = false;    // When true, plant jobs create a replenish zone
+        this.zoneManageMode = false;   // When true, clicking a tile opens the zone panel
 
         this.createQueueSelector();
         this.createToolbar();
         this.createPlantSubmenu();
+
+        // Subscribe to inventory changes to refresh seed availability badges
+        if (this.game.inventory) {
+            const existing = this.game.inventory.onChangeCallback;
+            this.game.inventory.onChange(() => {
+                if (existing) existing();
+                this.refreshSeedSubmenu();
+            });
+        }
     }
 
     createQueueSelector() {
         const selector = document.createElement('div');
         selector.id = 'queue-selector';
+        // Start with only Human visible; All and Goblin revealed on goblin hire
         selector.innerHTML = `
-            <button class="queue-btn active" data-queue="all" title="Jobs go to shared queue">All</button>
-            <button class="queue-btn" data-queue="human" title="Jobs go to human only">Human</button>
-            <button class="queue-btn" data-queue="goblin" title="Jobs go to goblin only">Goblin</button>
+            <button class="queue-btn" data-queue="all" title="Jobs go to shared queue" style="display:none;">All</button>
+            <button class="queue-btn active" data-queue="human" title="Jobs go to human only">Human</button>
+            <button class="queue-btn" data-queue="goblin" title="Jobs go to goblin only" style="display:none;">Goblin</button>
         `;
         document.body.appendChild(selector);
         this.queueSelector = selector;
+
+        // Force human queue when goblin is not hired
+        this.selectedQueue = 'human';
+        if (this.game.jobManager) {
+            this.game.jobManager.setActiveQueueTarget('human');
+        }
 
         // Add event listeners
         const buttons = selector.querySelectorAll('.queue-btn');
@@ -78,6 +97,23 @@ export class Toolbar {
                 log.debug(`Queue target changed to: ${this.selectedQueue}`);
             });
         });
+    }
+
+    /** Show/hide goblin-related queue buttons. Called by Game.hireGoblin(). */
+    setGoblinHired(hired) {
+        if (!this.queueSelector) return;
+        const allBtn = this.queueSelector.querySelector('[data-queue="all"]');
+        const goblinBtn = this.queueSelector.querySelector('[data-queue="goblin"]');
+        if (allBtn) allBtn.style.display = hired ? '' : 'none';
+        if (goblinBtn) goblinBtn.style.display = hired ? '' : 'none';
+        // Reset to human queue when goblin is unhired
+        if (!hired) {
+            this.selectedQueue = 'human';
+            this.queueSelector.querySelectorAll('.queue-btn').forEach(b => b.classList.remove('active'));
+            const humanBtn = this.queueSelector.querySelector('[data-queue="human"]');
+            if (humanBtn) humanBtn.classList.add('active');
+            if (this.game.jobManager) this.game.jobManager.setActiveQueueTarget('human');
+        }
     }
 
     createToolbar() {
@@ -125,6 +161,16 @@ export class Toolbar {
         img.src = canvas.toDataURL('image/png');
         btn.appendChild(img);
 
+        // Water level badge on the watering can button
+        if (tool.id === 'watering_can') {
+            const badge = document.createElement('span');
+            badge.className = 'water-level-badge';
+            const max = this.game.wateringCanMaxWater ?? 20;
+            badge.textContent = `${max}/${max}`;
+            btn.appendChild(badge);
+            this._waterLevelBadge = badge;
+        }
+
         // Pre-create cursor data URL (32x32 for better cursor size)
         const cursorCanvas = document.createElement('canvas');
         cursorCanvas.width = 32;
@@ -152,6 +198,15 @@ export class Toolbar {
         document.body.appendChild(submenu);
         this.plantSubmenu = submenu;
 
+        // Replenish toggle — marks plant jobs as auto-replanting zones
+        const replenishBtn = document.createElement('button');
+        replenishBtn.className = 'replenish-toggle-btn';
+        replenishBtn.id = 'replenish-toggle-btn';
+        replenishBtn.title = 'Toggle auto-replant: planted tiles will be re-seeded after harvest';
+        replenishBtn.textContent = '⟳ Auto-Replant';
+        submenu.appendChild(replenishBtn);
+        replenishBtn.addEventListener('click', () => this._toggleReplenishMode());
+
         // Create crop buttons
         const cropOrder = ['CARROT', 'CAULIFLOWER', 'PUMPKIN', 'SUNFLOWER', 'RADISH',
                           'PARSNIP', 'POTATO', 'CABBAGE', 'BEETROOT', 'WHEAT'];
@@ -161,6 +216,52 @@ export class Toolbar {
             const btn = this.createCropButton(crop);
             submenu.appendChild(btn);
         }
+
+        // Manage Zones button — activates zone-select mode
+        const zoneBtn = document.createElement('button');
+        zoneBtn.className = 'zone-manage-btn';
+        zoneBtn.id = 'zone-manage-btn';
+        zoneBtn.title = 'Click a tile in a zone to open zone management options';
+        zoneBtn.textContent = '⬚ Manage Zones';
+        submenu.appendChild(zoneBtn);
+        zoneBtn.addEventListener('click', () => this._enterZoneManageMode());
+    }
+
+    _toggleReplenishMode() {
+        this.replenishMode = !this.replenishMode;
+        const btn = document.getElementById('replenish-toggle-btn');
+        if (btn) btn.classList.toggle('active', this.replenishMode);
+        log.debug(`Replenish mode: ${this.replenishMode}`);
+    }
+
+    _enterZoneManageMode() {
+        this.zoneManageMode = true;
+        this.hidePlantSubmenu();
+        // Deselect any active tool (including plant when submenu was open but no seed chosen)
+        if (this.selectedTool) {
+            this.deselectTool();
+        } else {
+            // Plant button may be highlighted even without a formal selectedTool (submenu-open state)
+            const plantBtn = this.toolButtons.get('plant');
+            if (plantBtn) plantBtn.classList.remove('active');
+            document.body.style.cursor = 'default';
+            if (this.game.onToolDeselected) this.game.onToolDeselected();
+        }
+        // Show the zone expand indicator bar as a mode indicator
+        const indicator = document.getElementById('zone-expand-indicator');
+        if (indicator) {
+            indicator.style.display = 'flex';
+            indicator.querySelector('.zone-indicator-label').textContent = 'Click a tile to select zone…';
+        }
+        log.debug('Zone manage mode activated');
+    }
+
+    exitZoneManageMode() {
+        if (!this.zoneManageMode) return;
+        this.zoneManageMode = false;
+        const indicator = document.getElementById('zone-expand-indicator');
+        if (indicator) indicator.style.display = 'none';
+        log.debug('Zone manage mode exited');
     }
 
     createCropButton(crop) {
@@ -191,6 +292,12 @@ export class Toolbar {
         img.src = canvas.toDataURL('image/png');
         btn.appendChild(img);
 
+        // Seed count badge (shows how many seeds player owns)
+        const badge = document.createElement('span');
+        badge.className = 'seed-count-badge';
+        badge.textContent = '0';
+        btn.appendChild(badge);
+
         // Pre-create cursor data URL using SEED tile (32x32 for cursor)
         const seedSrc = this.tilemap.getTilesetSourceRect(crop.seedTileId);
         const cursorCanvas = document.createElement('canvas');
@@ -205,13 +312,42 @@ export class Toolbar {
         );
         this.seedCursorDataUrls.set(crop.index, cursorCanvas.toDataURL('image/png'));
 
+        // Track button for refresh
+        this._seedBtns.set(crop.index, btn);
+
         // Add click handler
         btn.addEventListener('click', () => this.onCropClick(crop));
 
         return btn;
     }
 
+    /** Refresh seed count badges and disabled state based on current inventory. */
+    refreshSeedSubmenu() {
+        if (!this.game.inventory) return;
+        for (const [cropIndex, btn] of this._seedBtns) {
+            const seedResource = this.game.inventory.getSeedByCropIndex(cropIndex);
+            const count = seedResource ? this.game.inventory.getCount(seedResource) : 0;
+            const badge = btn.querySelector('.seed-count-badge');
+            if (badge) badge.textContent = count;
+            if (count === 0) {
+                btn.classList.add('seed-unavailable');
+            } else {
+                btn.classList.remove('seed-unavailable');
+            }
+        }
+    }
+
     onCropClick(crop) {
+        // Check if player has this seed
+        if (this.game.inventory) {
+            const seedResource = this.game.inventory.getSeedByCropIndex(crop.index);
+            const count = seedResource ? this.game.inventory.getCount(seedResource) : 0;
+            if (count === 0) {
+                log.debug(`No ${crop.name} seeds in inventory`);
+                return; // Don't select — player has no seeds
+            }
+        }
+
         // Close submenu
         this.hidePlantSubmenu();
 
@@ -248,12 +384,21 @@ export class Toolbar {
     }
 
     onToolClick(tool) {
+        // Exit zone manage mode when any regular tool is clicked
+        if (this.zoneManageMode) this.exitZoneManageMode();
+
         // Check if tool has submenu
         if (tool.hasSubmenu) {
             // Toggle submenu visibility
             if (this.plantSubmenu && this.plantSubmenu.classList.contains('open')) {
-                // Just close submenu, keep button active
+                // Close submenu and fully deselect the plant button
                 this.hidePlantSubmenu();
+                const btn = this.toolButtons.get(tool.id);
+                if (btn) btn.classList.remove('active');
+                this.selectedTool = null;
+                this.selectedSeed = null;
+                document.body.style.cursor = 'default';
+                if (this.game.onToolDeselected) this.game.onToolDeselected();
             } else {
                 // Close any previous tool selection first
                 if (this.selectedTool) {
@@ -326,5 +471,13 @@ export class Toolbar {
 
     getSelectedTool() {
         return this.selectedTool;
+    }
+
+    /** Update the water-level badge on the watering can button. */
+    refreshWaterDisplay() {
+        if (!this._waterLevelBadge) return;
+        const cur = this.game.wateringCanWater ?? 0;
+        const max = this.game.wateringCanMaxWater ?? 20;
+        this._waterLevelBadge.textContent = `${cur}/${max}`;
     }
 }

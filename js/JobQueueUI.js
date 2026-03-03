@@ -20,6 +20,7 @@ export class JobQueueUI {
     createContainer() {
         this.container = document.createElement('div');
         this.container.id = 'job-queue-panel';
+        // Goblin and Shared sections hidden until goblin is hired
         this.container.innerHTML = `
             <div class="job-queue-header">
                 <span>Job Queue</span>
@@ -30,11 +31,11 @@ export class JobQueueUI {
                     <div class="queue-title">Human</div>
                     <div class="queue-jobs"></div>
                 </div>
-                <div class="queue-section" data-queue="goblin">
+                <div class="queue-section" data-queue="goblin" style="display:none;">
                     <div class="queue-title">Goblin</div>
                     <div class="queue-jobs"></div>
                 </div>
-                <div class="queue-section" data-queue="all">
+                <div class="queue-section" data-queue="all" style="display:none;">
                     <div class="queue-title">Shared</div>
                     <div class="queue-jobs"></div>
                 </div>
@@ -49,6 +50,14 @@ export class JobQueueUI {
             this.container.classList.toggle('collapsed', !this.isExpanded);
             this.container.querySelector('.collapse-btn').textContent = this.isExpanded ? '-' : '+';
         });
+    }
+
+    /** Show/hide goblin and shared queue sections. Called by Game.hireGoblin(). */
+    setGoblinHired(hired) {
+        const goblinSection = this.container?.querySelector('[data-queue="goblin"]');
+        const allSection = this.container?.querySelector('[data-queue="all"]');
+        if (goblinSection) goblinSection.style.display = hired ? '' : 'none';
+        if (allSection) allSection.style.display = hired ? '' : 'none';
     }
 
     render() {

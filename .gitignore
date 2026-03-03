@@ -12,6 +12,9 @@ Thumbs.db
 # Dependencies
 node_modules/
 
+# Design documents (local reference only, not for repo)
+FarmGame_Design_Document.md
+
 # Misc
 NUL
 *.log

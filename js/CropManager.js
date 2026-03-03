@@ -1,4 +1,4 @@
-import { Crop, CROP_TYPES, GROWTH_STAGE, getCropTypeByIndex } from './Crop.js';
+import { Crop, CROP_TYPES, getCropTypeByIndex } from './Crop.js';
 import { Logger } from './Logger.js';
 import { createHarvestEffect, updateEffects, renderEffects as renderFloatingEffects } from './EffectUtils.js';
 
@@ -9,6 +9,21 @@ export class CropManager {
         this.tilemap = tilemap;
         this.crops = [];
         this.harvestEffects = [];
+        this.game = null;
+    }
+
+    setGame(game) {
+        this.game = game;
+    }
+
+    // Returns a deltaTime multiplier based on the shrine's Fertile Soil upgrade level.
+    // Level 1 = −15% growth time → advance timer 1/0.85× faster.
+    // Level 2 = −30% growth time → advance timer 1/0.70× faster.
+    _getGrowthSpeedMultiplier() {
+        const lvl = this.game?.homeUpgrades?.shrineUpgrades?.fertileSoilLevel ?? 0;
+        if (lvl >= 2) return 1 / 0.70;
+        if (lvl >= 1) return 1 / 0.85;
+        return 1.0;
     }
 
     // Plant a new crop at a tile position
@@ -30,7 +45,7 @@ export class CropManager {
     // Water a crop at a tile position
     waterCrop(tileX, tileY) {
         const crop = this.getCropAt(tileX, tileY);
-        if (crop && !crop.isWatered) {
+        if (crop && crop.wateringState === 'needs_water') {
             return crop.water();
         }
         return false;
@@ -67,9 +82,10 @@ export class CropManager {
     }
 
     update(deltaTime) {
-        // Update crop growth
+        // Update crop growth (apply shrine growth speed multiplier if active)
+        const effectiveDt = deltaTime * this._getGrowthSpeedMultiplier();
         for (const crop of this.crops) {
-            crop.update(deltaTime);
+            crop.update(effectiveDt);
         }
 
         // Clean up crops that have completely faded away
@@ -140,6 +156,7 @@ export class CropManager {
     }
 
     // Get crop at tile position (for hover effects, etc.)
+    // Matches both base tile and the top sprite tile of tall crops.
     getCropAt(tileX, tileY) {
         for (const crop of this.crops) {
             // Skip harvested or gone crops
@@ -147,6 +164,17 @@ export class CropManager {
             if (crop.containsTile(tileX, tileY)) {
                 return crop;
             }
+        }
+        return null;
+    }
+
+    // Get crop whose BASE tile (the planted tile) is at the given position.
+    // Unlike getCropAt, does NOT match the top sprite tile of tall crops —
+    // the top sprite is visual only and should not block ground-level actions.
+    getCropBaseAt(tileX, tileY) {
+        for (const crop of this.crops) {
+            if (crop.isHarvested || crop.isGone) continue;
+            if (crop.tileX === tileX && crop.tileY === tileY) return crop;
         }
         return null;
     }

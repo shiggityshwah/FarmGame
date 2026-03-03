@@ -1,16 +1,17 @@
 // Crop types with their tile ID offsets
+// seed_cost / sell_price match the values in Inventory.js RESOURCE_TYPES
 export const CROP_TYPES = {
-    CARROT: { index: 0, name: 'Carrot', tier: 1, seed_cost: 10, sell_price: 18, growth_time_minutes: 2 },
-    CAULIFLOWER: { index: 1, name: 'Cauliflower', tier: 3, seed_cost: 70, sell_price: 170, growth_time_minutes: 10 },
-    PUMPKIN: { index: 2, name: 'Pumpkin', tier: 4, seed_cost: 150, sell_price: 430, growth_time_minutes: 16 },
-    SUNFLOWER: { index: 3, name: 'Sunflower', tier: 3, seed_cost: 80, sell_price: 200, growth_time_minutes: 10 },
-    RADISH: { index: 4, name: 'Radish', tier: 1, seed_cost: 12, sell_price: 22, growth_time_minutes: 2 },
-    PARSNIP: { index: 5, name: 'Parsnip', tier: 1, seed_cost: 15, sell_price: 28, growth_time_minutes: 3 },
-    POTATO: { index: 6, name: 'Potato', tier: 2, seed_cost: 30, sell_price: 65, growth_time_minutes: 5 },
-    CABBAGE: { index: 7, name: 'Cabbage', tier: 2, seed_cost: 40, sell_price: 90, growth_time_minutes: 6 },
-    BEETROOT: { index: 8, name: 'Beetroot', tier: 2, seed_cost: 35, sell_price: 75, growth_time_minutes: 5 },
-    WHEAT: { index: 9, name: 'Wheat', tier: 3, seed_cost: 90, sell_price: 210, growth_time_minutes: 8 },
-    WEED: { index: 10, name: 'Weed', growth_time_minutes: 2 }
+    CARROT:      { index: 0,  name: 'Carrot',      tier: 1, seed_cost: 5,     sell_price: 10,     growth_time_minutes: 2,  wateringsPerStage: 1 },
+    CAULIFLOWER: { index: 1,  name: 'Cauliflower', tier: 3, seed_cost: 2000,  sell_price: 4000,   growth_time_minutes: 10, wateringsPerStage: 1 },
+    PUMPKIN:     { index: 2,  name: 'Pumpkin',     tier: 4, seed_cost: 50000, sell_price: 100000, growth_time_minutes: 16, wateringsPerStage: 2 },
+    SUNFLOWER:   { index: 3,  name: 'Sunflower',   tier: 3, seed_cost: 5000,  sell_price: 10000,  growth_time_minutes: 10, wateringsPerStage: 2 },
+    RADISH:      { index: 4,  name: 'Radish',      tier: 1, seed_cost: 15,    sell_price: 30,     growth_time_minutes: 2,  wateringsPerStage: 1 },
+    PARSNIP:     { index: 5,  name: 'Parsnip',     tier: 1, seed_cost: 40,    sell_price: 80,     growth_time_minutes: 3,  wateringsPerStage: 1 },
+    POTATO:      { index: 6,  name: 'Potato',      tier: 2, seed_cost: 100,   sell_price: 200,    growth_time_minutes: 5,  wateringsPerStage: 1 },
+    CABBAGE:     { index: 7,  name: 'Cabbage',     tier: 2, seed_cost: 800,   sell_price: 1600,   growth_time_minutes: 6,  wateringsPerStage: 1 },
+    BEETROOT:    { index: 8,  name: 'Beetroot',    tier: 2, seed_cost: 300,   sell_price: 600,    growth_time_minutes: 5,  wateringsPerStage: 1 },
+    WHEAT:       { index: 9,  name: 'Wheat',       tier: 3, seed_cost: 15000, sell_price: 30000,  growth_time_minutes: 8,  wateringsPerStage: 2 },
+    WEED:        { index: 10, name: 'Weed',        growth_time_minutes: 2 }
 };
 
 // Helper to get crop type by index
@@ -58,6 +59,9 @@ const DIRT_TILES = {
 // There are 5 growth stages (SEED -> SEEDLING -> EARLY_GROWTH -> ALMOST_HARVESTABLE -> HARVESTABLE)
 const GROWTH_STAGES_COUNT = 5;
 
+// 30-second cooldown between multiple waterings on the same stage
+const WATERING_COOLDOWN_MS = 30000;
+
 // Post-harvest stages
 const HARVEST_STAGE = {
     LARGE_HOLE: 0,
@@ -83,13 +87,31 @@ export class Crop {
         this.stage = startAsPlanted ? GROWTH_STAGE.PLANTING_PHASE1 : GROWTH_STAGE.SEED;
         this.growthTimer = 0;
         this.isHarvested = false;
-        this.isWatered = !startAsPlanted;  // Existing crops start watered, planted crops need watering
+
+        // Watering state machine (replaces the old isWatered boolean)
+        // 'needs_water'       — waiting for water at this stage
+        // 'watering_cooldown' — 30s wait between multiple waterings (multi-water crops only)
+        // 'growing'           — growth timer is running
+        //
+        // Player-planted crops (startAsPlanted=true): begin at PLANTING_PHASE1 needing water.
+        // Wild/forest crops (startAsPlanted=false):   start directly growing (no water needed).
+        this.wateringState = startAsPlanted ? 'needs_water' : 'growing';
+        this.wateringsThisStage = 0;    // count of waterings received for current stage
+        this.wateringCooldownTimer = 0; // ms remaining in watering cooldown
 
         // Post-harvest state
         this.harvestStage = HARVEST_STAGE.LARGE_HOLE;
         this.harvestTimer = 0;
         this.alpha = 1;
         this.isGone = false;
+    }
+
+    /**
+     * Backward-compatible getter — returns true when the crop does NOT need water
+     * (i.e. it is either growing or in its watering cooldown period).
+     */
+    get isWatered() {
+        return this.wateringState !== 'needs_water';
     }
 
     // Advance planting phase (called after each DOING animation)
@@ -101,15 +123,44 @@ export class Crop {
         return false;
     }
 
-    // Water the crop to start growth
+    /**
+     * Water the crop.
+     * Only accepted when wateringState === 'needs_water'.
+     *
+     * For PLANTED stage: immediately transitions to SEED and starts growing.
+     * For later stages:
+     *   - Increments wateringsThisStage.
+     *   - If more waterings are required: enters 'watering_cooldown' (30s).
+     *   - When all required waterings are done: enters 'growing' and starts the growth timer.
+     *
+     * Returns true if water was accepted, false otherwise.
+     */
     water() {
-        if (this.isWatered || this.isHarvested) return false;
-        this.isWatered = true;
-        // If planted but not yet growing, start growing
+        if (this.wateringState !== 'needs_water') return false;
+        if (this.isHarvested) return false;
+
+        // PLANTED → SEED transition (first watering after planting)
         if (this.stage === GROWTH_STAGE.PLANTED) {
             this.stage = GROWTH_STAGE.SEED;
+            this.wateringState = 'growing';
+            this.wateringsThisStage = 0;
+            return true;
         }
-        console.log(`Watered ${this.cropType.name} at (${this.tileX}, ${this.tileY})`);
+
+        this.wateringsThisStage++;
+        const needed = this.cropType.wateringsPerStage ?? 1;
+
+        if (this.wateringsThisStage < needed) {
+            // More waterings required — enter cooldown before accepting the next one
+            this.wateringState = 'watering_cooldown';
+            this.wateringCooldownTimer = WATERING_COOLDOWN_MS;
+        } else {
+            // All required waterings done — start the growth timer
+            this.wateringsThisStage = 0;
+            this.wateringState = 'growing';
+        }
+
+        console.log(`Watered ${this.cropType.name} at (${this.tileX}, ${this.tileY}) [${this.wateringsThisStage}/${needed}]`);
         return true;
     }
 
@@ -140,28 +191,38 @@ export class Crop {
             return;
         }
 
-        // Only grow if watered
-        if (!this.isWatered) return;
-
-        // Handle growth
-        if (this.stage >= GROWTH_STAGE.HARVESTABLE) {
+        // Tick down the watering cooldown (multi-water crops)
+        if (this.wateringState === 'watering_cooldown') {
+            this.wateringCooldownTimer -= deltaTime;
+            if (this.wateringCooldownTimer <= 0) {
+                this.wateringCooldownTimer = 0;
+                this.wateringState = 'needs_water';
+            }
             return;
         }
 
-        // Don't grow if still in planted stage (needs watering first)
-        if (this.stage === GROWTH_STAGE.PLANTED) {
-            return;
-        }
+        // Wait for water if needed
+        if (this.wateringState !== 'growing') return;
 
+        // Nothing to grow past HARVESTABLE, and PLANTED needs water first
+        if (this.stage >= GROWTH_STAGE.HARVESTABLE) return;
+        if (this.stage === GROWTH_STAGE.PLANTED) return;
+
+        // Advance growth timer
         this.growthTimer += deltaTime;
 
         // Calculate growth time per stage based on crop's growth_time_minutes
-        // Convert minutes to milliseconds and divide by number of growth stages
         const growthTimePerStage = (this.cropType.growth_time_minutes || 2) * 60 * 1000 / GROWTH_STAGES_COUNT;
 
         if (this.growthTimer >= growthTimePerStage) {
             this.growthTimer = 0;
             this.stage++;
+
+            // After advancing to a new stage, require watering again (unless now harvestable)
+            if (this.stage < GROWTH_STAGE.HARVESTABLE) {
+                this.wateringState = 'needs_water';
+                this.wateringsThisStage = 0;
+            }
         }
     }
 
@@ -202,24 +263,30 @@ export class Crop {
                     { id: DIRT_TILES.WET, offsetY: 0, isGround: true }
                 ];
 
-            case GROWTH_STAGE.SEEDLING:
+            case GROWTH_STAGE.SEEDLING: {
+                const groundTile = this.wateringState === 'needs_water' ? DIRT_TILES.DRY : DIRT_TILES.WET;
                 return [
-                    { id: DIRT_TILES.WET, offsetY: 0, isGround: true },
+                    { id: groundTile, offsetY: 0, isGround: true },
                     { id: TILE_BASE.SEEDLING + offset, offsetY: 0 }
                 ];
+            }
 
-            case GROWTH_STAGE.EARLY_GROWTH:
+            case GROWTH_STAGE.EARLY_GROWTH: {
+                const groundTile = this.wateringState === 'needs_water' ? DIRT_TILES.DRY : DIRT_TILES.WET;
                 return [
-                    { id: DIRT_TILES.WET, offsetY: 0, isGround: true },
+                    { id: groundTile, offsetY: 0, isGround: true },
                     { id: TILE_BASE.EARLY_GROWTH + offset, offsetY: 0 }
                 ];
+            }
 
-            case GROWTH_STAGE.ALMOST_HARVESTABLE:
+            case GROWTH_STAGE.ALMOST_HARVESTABLE: {
+                const groundTile = this.wateringState === 'needs_water' ? DIRT_TILES.DRY : DIRT_TILES.WET;
                 return [
-                    { id: DIRT_TILES.WET, offsetY: 0, isGround: true },
+                    { id: groundTile, offsetY: 0, isGround: true },
                     { id: TILE_BASE.ALMOST_TOP + offset, offsetY: -1 },
                     { id: TILE_BASE.ALMOST_BOTTOM + offset, offsetY: 0 }
                 ];
+            }
 
             case GROWTH_STAGE.HARVESTABLE:
                 return [

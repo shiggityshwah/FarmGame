@@ -49,11 +49,12 @@ export class ForestChunkGenerator extends ChunkContentGenerator {
      * @param {{pathExcludeYMin?:number|null, pathExcludeYMax?:number|null}} options
      */
     generateContent(col, row, bounds, options = {}) {
+        const dist = Math.abs(col - CONFIG.chunks.farmCol) + Math.abs(row - CONFIG.chunks.farmRow);
         this.forestGenerator.generateForChunk(
             bounds.x, bounds.y, bounds.width, bounds.height,
-            options
+            { ...options, distance: dist }
         );
-        log.debug(`Generated forest content for chunk (${col},${row})`);
+        log.debug(`Generated forest content for chunk (${col},${row}) dist=${dist}`);
     }
 
     /**

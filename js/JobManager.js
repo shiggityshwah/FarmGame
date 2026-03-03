@@ -2,6 +2,7 @@ import { getRandomDirtTile, CONFIG } from './config.js';
 import { RESOURCE_TYPES } from './Inventory.js';
 import { Logger } from './Logger.js';
 import { worldToTile, tileToWorld, tileCenterWorld } from './TileUtils.js';
+import { GROWTH_STAGE } from './Crop.js';
 
 // Create logger for this module
 const log = Logger.create('JobManager');
@@ -66,7 +67,8 @@ export class JobManager {
             isPausedForCombat: false,
             isPausedForStand: false,
             savedJobState: null,
-            pendingStandService: null   // stand service job waiting for current animation to finish
+            pendingStandService: null,     // stand service job waiting for current animation to finish
+            pendingWateringResume: null    // watering job state saved during auto-refill at well
         });
         log.debug(` Registered worker: ${workerId}`);
     }
@@ -366,6 +368,18 @@ export class JobManager {
             return;
         }
 
+        // Auto-refill: if water is empty before walking to next crop, go to well first
+        if (job.tool.id === 'watering_can' && this.game.well) {
+            const water = workerId === 'human'
+                ? (this.game.wateringCanWater ?? 0)
+                : (this.game.goblinWaterCanWater ?? 0);
+            if (water <= 0) {
+                log.debug(`[${workerId}] Watering can empty — auto-queueing well fill`);
+                this._autoQueueWellFill(workerId);
+                return;
+            }
+        }
+
         const targetX = targetTileX * tileSize + tileSize / 2;
         const targetY = targetTileY * tileSize + tileSize / 2;
 
@@ -484,10 +498,20 @@ export class JobManager {
             return;
         }
 
-        const animation = job.tool.animation;
         const toolId = job.tool.id;
-
         const speedMultiplier = this.game.getToolAnimationMultiplier(toolId);
+
+        // Plant tool: begin with DIG animation to auto-dig the hole, unless one already exists
+        let animation = job.tool.animation;
+        if (toolId === 'plant') {
+            const hasHole = this.game.overlayManager?.hasOverlay(job.workTileX, job.workTileY, CONFIG.tiles.holeOverlay) ?? false;
+            if (!hasHole) {
+                animation = 'DIG';
+            } else {
+                // Tile was pre-dug with the shovel — skip the dig phase
+                job.plantingPhase = 1;
+            }
+        }
 
         this.setWorkerAnimation(workerId, animation, false, () => {
             this.onAnimationCompleteForWorker(workerId);
@@ -516,21 +540,30 @@ export class JobManager {
         // Handle tool-specific logic
         if (tool.id === 'plant') {
             if (!job.plantingPhase) {
+                // DIG animation just completed — create the hole, then start DOING phase 1
                 job.plantingPhase = 1;
-            }
-
-            if (job.plantingPhase === 1) {
+                if (this.game.overlayManager) {
+                    this.game.overlayManager.addOverlay(workX, workY, CONFIG.tiles.holeOverlay);
+                }
+                // Atomically continue — dig + plant + close are one sequence, no interrupt allowed
+                this.setWorkerAnimation(workerId, tool.animation, false, () => {
+                    this.onAnimationCompleteForWorker(workerId);
+                }, speedMultiplier);
+                return;
+            } else if (job.plantingPhase === 1) {
+                // First DOING animation: put seed in hole (removes overlay, shows half-closed hole)
                 this.applyPlantPhase1(tool, workX, workY);
                 job.plantingPhase = 2;
-                // Check for stand interrupt after phase 1 (tile not yet complete)
-                if (this._checkInterruptForStand(workerId, false)) return;
+                // Atomically continue — no interrupt between planting and closing
                 this.setWorkerAnimation(workerId, tool.animation, false, () => {
                     this.onAnimationCompleteForWorker(workerId);
                 }, speedMultiplier);
                 return;
             } else {
+                // Second DOING animation: close the hole (advance crop to PLANTED)
                 this.applyPlantPhase2(workX, workY);
                 job.plantingPhase = 0;
+                // Fall through to normal completion (interrupt check + next tile)
             }
         } else if (tool.id === 'sword') {
             const targetEnemy = job.currentTargetEnemy;
@@ -564,6 +597,21 @@ export class JobManager {
                 }, speedMultiplier);
                 return;
             }
+        } else if (tool.id === 'craft') {
+            job.craftingCyclesCompleted = (job.craftingCyclesCompleted || 0) + 1;
+            if (job.craftingCyclesCompleted < job.craftingCycles) {
+                // More cycles needed — replay DOING animation
+                if (this._checkInterruptForStand(workerId, false)) return;
+                this.setWorkerAnimation(workerId, tool.animation, false, () => {
+                    this.onAnimationCompleteForWorker(workerId);
+                }, speedMultiplier);
+                return;
+            }
+            // All cycles done — apply effect and clear refund (no longer needed)
+            this._applyCraftingEffect(job.craftingRecipeId, workerId);
+            job.refundItems = null;
+            job.craftingCyclesCompleted = 0;
+            // Fall through to normal tile completion
         } else {
             this.applyToolEffect(tool, workX, workY, workerId);
         }
@@ -774,14 +822,23 @@ export class JobManager {
             case 'plant': {
                 // Already planted by another worker
                 if (this.game.cropManager && this.game.cropManager.getCropAt(tileX, tileY)) return true;
-                // No hole to plant into
-                if (this.game.overlayManager &&
-                    !this.game.overlayManager.hasOverlay(tileX, tileY, CONFIG.tiles.holeOverlay)) return true;
+                // Tile is plantable if it's hoed ground OR has a hole overlay (pre-dug or in-progress)
+                const key = `${tileX},${tileY}`;
+                const isHoed = this.game.overlayManager?.hoedTiles?.has(key) ?? false;
+                const hasHole = this.game.overlayManager?.hasOverlay(tileX, tileY, CONFIG.tiles.holeOverlay) ?? false;
+                if (!isHoed && !hasHole) return true;
+                // No seeds in inventory → skip tile
+                if (this.game.inventory && tool.seedType !== undefined) {
+                    const seedRes = this.game.inventory.getSeedByCropIndex(tool.seedType);
+                    if (!seedRes || !this.game.inventory.has(seedRes, 1)) return true;
+                }
                 return false;
             }
             case 'watering_can': {
                 const crop = this.game.cropManager?.getCropAt(tileX, tileY);
-                return !crop || crop.isWatered;
+                // Skip if no crop, crop is not in 'needs_water' state, or already harvestable
+                return !crop || crop.wateringState !== 'needs_water' ||
+                       crop.stage >= GROWTH_STAGE.HARVESTABLE;
             }
             case 'idle_harvest': {
                 if (!this.game.cropManager) return true;
@@ -855,12 +912,47 @@ export class JobManager {
                 log.warn('Plant tool should use phase methods');
                 break;
 
-            case 'watering_can':
-                // Water the crop at this tile
-                if (this.game.cropManager) {
-                    this.game.cropManager.waterCrop(tileX, tileY);
+            case 'watering_can': {
+                // Check water level — auto-refill handles the empty case before we reach here,
+                // but guard just in case.
+                const wLevel = workerId === 'human'
+                    ? (this.game.wateringCanWater ?? 1)
+                    : (this.game.goblinWaterCanWater ?? 1);
+                if (wLevel <= 0) break;
+                const watered = this.game.cropManager?.waterCrop(tileX, tileY);
+                if (watered) {
+                    if (workerId === 'human') {
+                        this.game.wateringCanWater = Math.max(0, (this.game.wateringCanWater ?? 1) - 1);
+                    } else {
+                        this.game.goblinWaterCanWater = Math.max(0, (this.game.goblinWaterCanWater ?? 1) - 1);
+                    }
+                    this.game.toolbar?.refreshWaterDisplay?.();
                 }
                 break;
+            }
+
+            case 'fill_well': {
+                // Refill the worker's watering can to maximum
+                if (workerId === 'human') {
+                    this.game.wateringCanWater = this.game.wateringCanMaxWater ?? 20;
+                } else {
+                    this.game.goblinWaterCanWater = this.game.goblinWaterCanMaxWater ?? 20;
+                }
+                this.game.toolbar?.refreshWaterDisplay?.();
+                this.game._refreshWellMenuStatus?.();
+                log.debug(`[${workerId}] Watering can refilled at well`);
+                // Resume any paused watering job
+                const ws = this.workers.get(workerId);
+                if (ws?.pendingWateringResume) {
+                    const resume = ws.pendingWateringResume;
+                    ws.pendingWateringResume = null;
+                    if (resume.tiles.length > 0) {
+                        const resumeJob = this._buildJob(resume.tool, resume.tiles, workerId);
+                        this.queues[workerId].unshift(resumeJob);
+                    }
+                }
+                break;
+            }
 
             // Sword and pickaxe are handled in onAnimationComplete for continuous action
             case 'sword':
@@ -884,7 +976,12 @@ export class JobManager {
                 if (this.game.flowerManager) {
                     const flowerHarvest = this.game.flowerManager.tryHarvest(tileX, tileY);
                     if (flowerHarvest && this.game.inventory) {
-                        this.game.inventory.add(RESOURCE_TYPES.FLOWER, flowerHarvest.yield);
+                        const flowerName = flowerHarvest.flowerType.name;
+                        const flowerResource = flowerName === 'Blue Flower'  ? RESOURCE_TYPES.FLOWER_BLUE
+                                             : flowerName === 'Red Flower'   ? RESOURCE_TYPES.FLOWER_RED
+                                             : flowerName === 'White Flower' ? RESOURCE_TYPES.FLOWER_WHITE
+                                             : RESOURCE_TYPES.FLOWER;
+                        this.game.inventory.add(flowerResource, flowerHarvest.yield);
                         log.debug(`Idle picked: ${flowerHarvest.flowerType.name} x${flowerHarvest.yield}`);
                     }
                 }
@@ -913,6 +1010,7 @@ export class JobManager {
                     this.game.inventory.remove(resource, 1);
                     this.game.inventory.addGold(price);
                     stand.clearSlot(slotIndex);
+                    stand.addSaleEffect(slotIndex, price);
                     log.info(`Stand sale: ${resource.name} for ${price}g at slot ${slotIndex}`);
                     if (shouldReplenish) {
                         this.game.tryReplenishStandSlot(slotIndex, resource);
@@ -931,6 +1029,21 @@ export class JobManager {
     // Plant phase 1: Remove hole overlay, create crop in PLANTING_PHASE1 stage (shows half-closed hole)
     applyPlantPhase1(tool, tileX, tileY) {
         log.debug(`Planting phase 1 at (${tileX}, ${tileY})`);
+
+        // Safety check: verify seed is still available (inventory may have changed mid-job)
+        if (this.game.inventory && tool.seedType !== undefined) {
+            const seedResource = this.game.inventory.getSeedByCropIndex(tool.seedType);
+            if (!seedResource || !this.game.inventory.has(seedResource, 1)) {
+                log.info(`No ${tool.seedName || 'seed'} available — cancelling plant job`);
+                // Find and cancel the current job for each worker
+                for (const [workerId, state] of this.workers) {
+                    if (state.currentJob && state.currentJob.tool.id === 'plant') {
+                        this.cancelJob(state.currentJob.id);
+                    }
+                }
+                return;
+            }
+        }
 
         // Remove the hole overlay first
         if (this.game.overlayManager) {
@@ -1167,6 +1280,62 @@ export class JobManager {
         }
     }
 
+    // Internal helper: build a plain job object without touching any queue.
+    _buildJob(tool, tiles, targetQueue, assignedTo = null) {
+        return {
+            id: `job_${this.jobIdCounter++}`,
+            tool,
+            tiles,
+            currentTileIndex: 0,
+            status: JOB_STATUS.PENDING,
+            assignedTo,
+            targetQueue,
+            createdAt: Date.now()
+        };
+    }
+
+    // Interrupt the current watering job because the can is empty.
+    // Saves the remaining tiles as pendingWateringResume, then unshifts a
+    // fill_well job at the front of the worker's private queue.
+    _autoQueueWellFill(workerId) {
+        if (!this.game.well) return;
+        const ws = this.workers.get(workerId);
+        if (!ws || !ws.currentJob) return;
+
+        const job = ws.currentJob;
+        // Save remaining tiles so we can resume after refill
+        const remaining = job.tiles.slice(job.currentTileIndex);
+        if (remaining.length > 0) {
+            ws.pendingWateringResume = { tool: job.tool, tiles: remaining };
+        }
+
+        // Abort current job
+        ws.currentJob = null;
+        ws.isProcessing = false;
+
+        // Stop movement
+        if (workerId === 'human') {
+            this.game.currentPath = null;
+            this.game.currentWorkTile = null;
+        } else {
+            this.game.goblinCurrentPath = null;
+            this.game.goblinCurrentWorkTile = null;
+        }
+
+        // Queue fill_well job at front of worker's private queue
+        const fillTile = this.game.well.getAdjacentServiceTile();
+        const fillJob = this._buildJob(
+            { id: 'fill_well', name: 'Fill Well', animation: 'DOING' },
+            [{ x: fillTile.x, y: fillTile.y }],
+            workerId
+        );
+        this.queues[workerId].unshift(fillJob);
+        log.debug(`[${workerId}] fill_well job queued; ${remaining.length} watering tiles saved`);
+
+        if (this.onQueueChange) this.onQueueChange();
+        this.tryAssignJobs();
+    }
+
     // Add an idle job directly to a specific worker's private queue.
     // The job is marked isIdleJob:true so it won't block player-job detection.
     addIdleJob(workerId, tool, tiles) {
@@ -1338,12 +1507,15 @@ export class JobManager {
         return count;
     }
 
-    // Cancel a job by ID (from any queue or active job)
+    // Cancel a job by ID (from any queue or active job).
+    // If the job has refundItems (e.g. a craft job with pre-deducted resources), they are
+    // returned to inventory.
     cancelJob(jobId) {
         // Check worker active jobs
         for (const [workerId, workerState] of this.workers) {
             if (workerState.currentJob && workerState.currentJob.id === jobId) {
                 log.debug(`Cancelling active job for ${workerId}: ${jobId}`);
+                this._refundJobResources(workerState.currentJob);
                 workerState.currentJob = null;
                 workerState.isProcessing = false;
                 this.setWorkerAnimation(workerId, 'IDLE', true);
@@ -1367,6 +1539,7 @@ export class JobManager {
             const index = queue.findIndex(job => job.id === jobId);
             if (index !== -1) {
                 log.debug(`Removing job from ${queueName} queue: ${jobId}`);
+                this._refundJobResources(queue[index]);
                 queue.splice(index, 1);
                 if (this.onQueueChange) this.onQueueChange();
                 return true;
@@ -1375,6 +1548,15 @@ export class JobManager {
 
         log.warn(`Job not found: ${jobId}`);
         return false;
+    }
+
+    // Refund pre-deducted resources if a job has them (used by crafting jobs).
+    _refundJobResources(job) {
+        if (!job?.refundItems || !this.game.inventory) return;
+        for (const item of job.refundItems) {
+            this.game.inventory.add(item.resource, item.amount);
+            log.debug(`Refunded ${item.amount}x ${item.resource.name}`);
+        }
     }
 
     // Clear all queues
@@ -1485,6 +1667,49 @@ export class JobManager {
     getWorkerCurrentJob(workerId) {
         const workerState = this.workers.get(workerId);
         return workerState ? workerState.currentJob : null;
+    }
+
+    // Add a craft job to the active queue.
+    // Resources have already been deducted by the caller; refundItems is provided for
+    // returning them to inventory if the job is cancelled before completion.
+    // The crafting tile is always the house-front path tile (17, 57).
+    addCraftJob(recipeId, craftingCycles, refundItems) {
+        const CRAFT_TOOL = { id: 'craft', name: 'Craft', animation: 'DOING' };
+        const craftTile = { x: 17, y: 57 };
+        const job = this._buildJob(CRAFT_TOOL, [craftTile], this.activeQueueTarget);
+        job.craftingRecipeId = recipeId;
+        job.craftingCycles = craftingCycles;
+        job.craftingCyclesCompleted = 0;
+        job.refundItems = refundItems;
+
+        this.queues[this.activeQueueTarget].push(job);
+        log.info(`Craft job added: ${recipeId} (${craftingCycles} cycles)`);
+
+        if (this.onQueueChange) this.onQueueChange();
+        this.tryAssignJobs();
+        return job;
+    }
+
+    // Add a job directly to a specific queue without idle-preemption or activeQueueTarget.
+    // Used by ReplenishZoneManager and other internal systems.
+    addJobToQueue(tool, tiles, targetQueue) {
+        if (tiles.length === 0) return null;
+        const job = this._buildJob(tool, tiles, targetQueue);
+        this.queues[targetQueue].push(job);
+        log.debug(`Job added to ${targetQueue} queue: ${tool.id}`);
+        if (this.onQueueChange) this.onQueueChange();
+        this.tryAssignJobs();
+        return job;
+    }
+
+    // Apply the game effect for a completed crafting recipe.
+    _applyCraftingEffect(recipeId, workerId) {
+        if (!this.game.applyCraftingEffect) {
+            log.warn('game.applyCraftingEffect not available');
+            return;
+        }
+        this.game.applyCraftingEffect(recipeId);
+        log.info(`Crafting effect applied: ${recipeId} by ${workerId}`);
     }
 }
 

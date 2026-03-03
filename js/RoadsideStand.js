@@ -1,4 +1,6 @@
 import { Logger } from './Logger.js';
+import { createHarvestEffect, updateEffects, renderEffects } from './EffectUtils.js';
+import { RESOURCE_TYPES } from './Inventory.js';
 
 const log = Logger.create('RoadsideStand');
 
@@ -27,6 +29,9 @@ export class RoadsideStand {
             `${this.tileX + 1},${this.tileY}`,  // x=24, y=49
             `${this.tileX + 2},${this.tileY}`   // x=25, y=49
         ]);
+
+        // Floating sale effects ("+430 [gold icon]") shown when a transaction completes
+        this.saleEffects = [];
 
         // Set by Game.js — called when a traveler arrives and stops at the stand
         this._onTravelerArrived = null;
@@ -92,6 +97,32 @@ export class RoadsideStand {
 
     // Depth-sort: bottom edge of stand base tile
     getSortY() { return (this.tileY + 1) * this.tileSize; }
+
+    // --- Sale effects ---
+
+    // Spawn a floating "+<amount> [gold coin]" effect above the sold slot.
+    addSaleEffect(slotIndex, amount) {
+        const ts = this.tileSize;
+        const effect = createHarvestEffect(
+            this.slotCentersX[slotIndex],
+            this.tileY * ts,
+            RESOURCE_TYPES.GOLD.tileId
+        );
+        effect.text = `+${amount}`;
+        effect.textColor = '#ffd700';
+        effect.duration = 1500;
+        this.saleEffects.push(effect);
+    }
+
+    update(deltaTime) {
+        updateEffects(this.saleEffects, deltaTime);
+    }
+
+    renderSaleEffects(ctx) {
+        if (!this.saleEffects.length || !this.tilemap.tilesetImage) return;
+        renderEffects(ctx, this.saleEffects, this.tilemap.tilesetImage,
+            id => this.tilemap.getTilesetSourceRect(id), this.tileSize);
+    }
 
     // --- Rendering ---
 

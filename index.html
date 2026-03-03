@@ -9,8 +9,16 @@
 <body>
     <canvas id="gameCanvas"></canvas>
 
-    <!-- Character Customization UI -->
-    <button id="customize-btn">Customize</button>
+    <!-- Gold display (top-right) -->
+    <div id="gold-display">
+        <div id="gold-icon"></div>
+        <span id="gold-amount">0</span>
+    </div>
+
+    <!-- Debug menu button (bottom-right, only shown in developmentMode) -->
+    <button id="debug-btn" title="Debug Menu">⚙</button>
+
+    <!-- Character Customization / Debug Panel -->
     <div id="customize-menu">
         <div class="menu-header">Character Customization</div>
         <div class="menu-section">
@@ -78,6 +86,37 @@
 
     <!-- Toolbar container (populated by Toolbar.js) -->
     <div id="toolbar"></div>
+
+    <!-- Well popup menu -->
+    <div id="well-menu" style="display:none">
+        <div class="menu-header">Well</div>
+        <p id="well-water-status">Human: 20/20</p>
+        <div class="well-menu-buttons">
+            <button id="well-fill-btn">Fill Can</button>
+            <button id="well-fill-goblin-btn" style="display:none">Fill Goblin's Can</button>
+        </div>
+        <button id="well-close-btn" class="well-close">Close</button>
+    </div>
+
+    <!-- Zone management panel -->
+    <div id="zone-manage-panel" style="display:none">
+        <div id="zone-panel-header">
+            <span id="zone-panel-title">Zone</span>
+            <button id="zone-panel-close">✕</button>
+        </div>
+        <div id="zone-panel-buttons">
+            <button id="zone-delete-btn">Delete Zone</button>
+            <button id="zone-change-seed-btn">Change Seed</button>
+            <button id="zone-expand-btn">Expand Zone</button>
+        </div>
+        <div id="zone-seed-picker" style="display:none"></div>
+    </div>
+
+    <!-- Zone expand mode indicator bar -->
+    <div id="zone-expand-indicator" style="display:none">
+        <span class="zone-indicator-label">Select area to expand…</span>
+        <button class="zone-indicator-cancel">✕ Cancel</button>
+    </div>
 
     <script type="module" src="js/main.js"></script>
 </body>

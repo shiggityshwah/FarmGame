@@ -6,7 +6,8 @@ export const CONFIG = {
     debug: {
         logLevel: 'info',           // 'debug', 'info', 'warn', 'error', 'none'
         showFps: false,             // Show FPS counter
-        showPathfinding: false      // Visualize pathfinding
+        showPathfinding: false,     // Visualize pathfinding
+        developmentMode: true       // Show debug menu with cheats
     },
 
     // === PLAYER STATS ===
@@ -196,7 +197,9 @@ export const CONFIG = {
         farmRow: 3,             // Farm chunk row → x=15-29, world y=49-63 (after 4-tile great path gap)
         pathBoundaryRow: 2,     // Last chunk row north of the great path (= homeRow); used in worldY formula
         mainPathY: 45,          // World Y of the great path strip top row (y=45 N-grass, y=46-47 path, y=48 S-grass)
-        mainPathGap: 4          // Number of world tile rows reserved for the great path
+        mainPathGap: 4,         // Number of world tile rows reserved for the great path
+        // Gold cost by Manhattan distance from farm chunk (index 0 = distance 1)
+        purchasePrices: [100, 500, 2000, 10000, 50000]
     }
 };
 

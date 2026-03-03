@@ -33,7 +33,8 @@ export function updateEffects(effects, deltaTime) {
 }
 
 /**
- * Render all effects as a tileset icon + "+1" text.
+ * Render all effects as a tileset icon + text label.
+ * Effects may include optional `text` (default '+1') and `textColor` (default '#ffffff').
  * @param {CanvasRenderingContext2D} ctx
  * @param {Array} effects
  * @param {HTMLImageElement} tilesetImage
@@ -50,14 +51,15 @@ export function renderEffects(ctx, effects, tilesetImage, getTilesetSourceRect, 
             src.x, src.y, src.width, src.height,
             e.x - tileSize / 2, e.y - tileSize / 2, tileSize, tileSize
         );
-        ctx.fillStyle = '#ffffff';
+        const label = e.text ?? '+1';
+        ctx.fillStyle = e.textColor ?? '#ffffff';
         ctx.strokeStyle = '#000000';
         ctx.lineWidth = 2;
         ctx.font = 'bold 8px Arial';
         ctx.textAlign = 'center';
         const textY = e.y - tileSize / 2 - 2;
-        ctx.strokeText('+1', e.x, textY);
-        ctx.fillText('+1', e.x, textY);
+        ctx.strokeText(label, e.x, textY);
+        ctx.fillText(label, e.x, textY);
         ctx.restore();
     }
 }

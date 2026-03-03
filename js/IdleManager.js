@@ -244,8 +244,13 @@ export class IdleManager {
             }
             case 'water': {
                 if (!this.game.cropManager) return null;
+                // Only water crops in 'needs_water' state (skip cooldown and growing)
+                // Also skip if the watering can is empty (will need to refill first)
+                const canHasWater = (this.game.wateringCanWater ?? 1) > 0;
+                if (!canHasWater) return null;
                 const items = this.game.cropManager.getCrops().filter(c =>
-                    !c.isGone && !c.isHarvested && !c.isWatered &&
+                    !c.isGone && !c.isHarvested &&
+                    c.wateringState === 'needs_water' &&
                     c.stage >= GROWTH_STAGE.PLANTED && c.stage < GROWTH_STAGE.HARVESTABLE &&
                     this._isOwnedForIdle(c.tileX, c.tileY)
                 );

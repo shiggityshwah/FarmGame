@@ -35,6 +35,21 @@ export class Traveler {
         this._reachedStandX      = false; // true once traveler has reached standStopWorldX
         this._repositionTargetX  = null;  // non-null while walking to a new slot X between purchases
         this._returningToPath    = false; // true while walking back north to startY after purchases
+
+        // Purchase pause — 1 s hold at each item before the transaction executes
+        this._purchasePending    = false;
+        this._purchasePauseTimer = 0;
+    }
+
+    /**
+     * Pause the traveler for `ms` milliseconds before signalling that the
+     * purchase at the current slot is ready to execute.
+     * When the timer expires, `stand._onPurchaseReady(this)` is called.
+     */
+    startPurchasePause(ms = 1000) {
+        this._purchasePending    = true;
+        this._purchasePauseTimer = ms;
+        this.isStopped           = true;
     }
 
     async load() {
@@ -55,6 +70,16 @@ export class Traveler {
 
     update(deltaTime) {
         if (!this.loaded || this.isDespawned) return;
+
+        // ── Phase 0: 1-second pause before purchase executes ────────────────────
+        if (this._purchasePending) {
+            this._purchasePauseTimer -= deltaTime;
+            if (this._purchasePauseTimer <= 0) {
+                this._purchasePending = false;
+                if (this.stand?._onPurchaseReady) this.stand._onPurchaseReady(this);
+            }
+            return;
+        }
 
         // ── Phase 1: walk east/west to the first slot's X ───────────────────────
         if (this.visitStand && this.standStopWorldX !== null && !this._reachedStandX && !this.isStopped) {
@@ -101,8 +126,9 @@ export class Traveler {
             if (Math.abs(dx) <= step) {
                 this.x = targetX;
                 this._repositionTargetX = null;
-                this.isStopped = true;
                 for (const s of this.sprites) s.setPosition(this.x, this.y);
+                // Pause 1 s at this slot before the next purchase executes
+                this.startPurchasePause(1000);
             } else {
                 this.x += dx > 0 ? step : -step;
                 for (const s of this.sprites) {

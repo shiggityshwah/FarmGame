@@ -1617,7 +1617,8 @@ export class ForestGenerator {
         pathExcludeYMin = null,
         pathExcludeYMax = null,
         noPocket = false,   // set true to skip pocket clearing (e.g. dense forest, owned farm)
-        pocketRadius = 3    // clearing radius in tiles (default 3 for 15×15 chunks; was 6 for 30×30)
+        pocketRadius = 3,   // clearing radius in tiles (default 3 for 15×15 chunks; was 6 for 30×30)
+        distance = 1        // Manhattan distance from farm chunk — controls ore/crop tier
     } = {}) {
         const litChance = 0.2;
 
@@ -1628,7 +1629,11 @@ export class ForestGenerator {
             const pocketCy = chunkY + Math.floor(chunkHeight / 2);
             const pocketTypes = [POCKET_TYPES.ORE, POCKET_TYPES.STONE, POCKET_TYPES.CROP];
             const pocketType = pocketTypes[Math.floor(Math.random() * pocketTypes.length)];
-            const pocket = { centerX: pocketCx, centerY: pocketCy, radius: pocketRadius, type: pocketType };
+            // Determine specific content type based on distance from farm chunk
+            const contentType = pocketType === POCKET_TYPES.ORE ? this._weightedOreType(distance)
+                              : pocketType === POCKET_TYPES.CROP ? this._weightedCropType(distance)
+                              : null;
+            const pocket = { centerX: pocketCx, centerY: pocketCy, radius: pocketRadius, type: pocketType, contentType };
             newPockets.push(pocket);
             this.pockets.push(pocket);
             // Mark pocket tiles so trees are excluded from the clearing
@@ -1819,9 +1824,11 @@ export class ForestGenerator {
 
             if (type === POCKET_TYPES.ORE || type === POCKET_TYPES.STONE) {
                 const oreCount = Math.floor(radius / 2) + 1;
-                const oreKey = type === POCKET_TYPES.ORE
-                    ? oreTypes[Math.floor(Math.random() * oreTypes.length)]
-                    : 'ROCK';
+                // Use pocket.contentType (set by distance weighting) or fall back to random
+                const oreKey = pocket.contentType
+                    ?? (type === POCKET_TYPES.ORE
+                        ? oreTypes[Math.floor(Math.random() * oreTypes.length)]
+                        : 'ROCK');
                 let placed = 0;
                 for (const t of tiles) {
                     if (placed >= oreCount) break;
@@ -1833,7 +1840,8 @@ export class ForestGenerator {
                     placed++;
                 }
             } else if (type === POCKET_TYPES.CROP) {
-                const cropKey = cropTypes[Math.floor(Math.random() * cropTypes.length)];
+                // Use pocket.contentType (set by distance weighting) or fall back to random
+                const cropKey = pocket.contentType ?? cropTypes[Math.floor(Math.random() * cropTypes.length)];
                 const cropCount = Math.floor(radius * 1.5) + 2;
                 let placed = 0;
                 for (const t of tiles) {
@@ -1847,6 +1855,45 @@ export class ForestGenerator {
                 }
             }
         }
+    }
+
+    // ── Distance-based resource weighting helpers ────────────────────────────
+
+    /**
+     * Pick a weighted random entry from an object of { KEY: weight } pairs.
+     */
+    _pickWeighted(weights) {
+        const total = Object.values(weights).reduce((a, b) => a + b, 0);
+        let r = Math.random() * total;
+        for (const [key, w] of Object.entries(weights)) {
+            r -= w;
+            if (r <= 0) return key;
+        }
+        return Object.keys(weights).at(-1);
+    }
+
+    /**
+     * Choose an ore type key based on Manhattan distance from the farm chunk.
+     * Closer chunks yield common ores; farther chunks yield precious ores.
+     */
+    _weightedOreType(distance) {
+        let weights;
+        if (distance <= 2)      weights = { ROCK: 70, IRON: 20, COAL: 10, GOLD: 0,  MITHRIL: 0  };
+        else if (distance <= 4) weights = { ROCK: 30, IRON: 30, COAL: 20, GOLD: 15, MITHRIL: 5  };
+        else                    weights = { ROCK: 10, IRON: 15, COAL: 20, GOLD: 30, MITHRIL: 25 };
+        return this._pickWeighted(weights);
+    }
+
+    /**
+     * Choose a crop type key based on Manhattan distance from the farm chunk.
+     * Closer chunks yield cheap crops; farther chunks yield expensive crops.
+     */
+    _weightedCropType(distance) {
+        let pool;
+        if (distance <= 2)      pool = ['CARROT', 'RADISH', 'PARSNIP'];
+        else if (distance <= 4) pool = ['POTATO', 'CABBAGE', 'BEETROOT'];
+        else                    pool = ['SUNFLOWER', 'CAULIFLOWER', 'WHEAT', 'PUMPKIN'];
+        return pool[Math.floor(Math.random() * pool.length)];
     }
 
     /**

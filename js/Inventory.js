@@ -7,32 +7,45 @@ const log = Logger.create('Inventory');
 
 export const RESOURCE_TYPES = {
     // Crops (harvested from fully grown plants)
-    CROP_CARROT: { id: 'crop_carrot', name: 'Carrot', category: 'crop', tileId: 691, sell_price: 18 },
-    CROP_CAULIFLOWER: { id: 'crop_cauliflower', name: 'Cauliflower', category: 'crop', tileId: 692, sell_price: 170 },
-    CROP_PUMPKIN: { id: 'crop_pumpkin', name: 'Pumpkin', category: 'crop', tileId: 693, sell_price: 430 },
-    CROP_SUNFLOWER: { id: 'crop_sunflower', name: 'Sunflower', category: 'crop', tileId: 694, sell_price: 200 },
-    CROP_RADISH: { id: 'crop_radish', name: 'Radish', category: 'crop', tileId: 695, sell_price: 22 },
-    CROP_PARSNIP: { id: 'crop_parsnip', name: 'Parsnip', category: 'crop', tileId: 696, sell_price: 28 },
-    CROP_POTATO: { id: 'crop_potato', name: 'Potato', category: 'crop', tileId: 697, sell_price: 65 },
-    CROP_CABBAGE: { id: 'crop_cabbage', name: 'Cabbage', category: 'crop', tileId: 698, sell_price: 90 },
-    CROP_BEETROOT: { id: 'crop_beetroot', name: 'Beetroot', category: 'crop', tileId: 699, sell_price: 75 },
-    CROP_WHEAT: { id: 'crop_wheat', name: 'Wheat', category: 'crop', tileId: 700, sell_price: 210 },
+    // sell_price = full value at roadside stand; store sells at 50% of this
+    CROP_CARROT: { id: 'crop_carrot', name: 'Carrot', category: 'crop', tileId: 691, sell_price: 10 },
+    CROP_CAULIFLOWER: { id: 'crop_cauliflower', name: 'Cauliflower', category: 'crop', tileId: 692, sell_price: 4000 },
+    CROP_PUMPKIN: { id: 'crop_pumpkin', name: 'Pumpkin', category: 'crop', tileId: 693, sell_price: 100000 },
+    CROP_SUNFLOWER: { id: 'crop_sunflower', name: 'Sunflower', category: 'crop', tileId: 694, sell_price: 10000 },
+    CROP_RADISH: { id: 'crop_radish', name: 'Radish', category: 'crop', tileId: 695, sell_price: 30 },
+    CROP_PARSNIP: { id: 'crop_parsnip', name: 'Parsnip', category: 'crop', tileId: 696, sell_price: 80 },
+    CROP_POTATO: { id: 'crop_potato', name: 'Potato', category: 'crop', tileId: 697, sell_price: 200 },
+    CROP_CABBAGE: { id: 'crop_cabbage', name: 'Cabbage', category: 'crop', tileId: 698, sell_price: 1600 },
+    CROP_BEETROOT: { id: 'crop_beetroot', name: 'Beetroot', category: 'crop', tileId: 699, sell_price: 600 },
+    CROP_WHEAT: { id: 'crop_wheat', name: 'Wheat', category: 'crop', tileId: 700, sell_price: 30000 },
     CROP_WEED: { id: 'crop_weed', name: 'Weed', category: 'crop', tileId: 701 },
 
-    // Seeds (purchased from shop, used to plant crops)
-    SEED_CARROT: { id: 'seed_carrot', name: 'Carrot Seeds', category: 'seed', tileId: 755, cropIndex: 0, price: 10 },
-    SEED_CAULIFLOWER: { id: 'seed_cauliflower', name: 'Cauliflower Seeds', category: 'seed', tileId: 756, cropIndex: 1, price: 70 },
-    SEED_PUMPKIN: { id: 'seed_pumpkin', name: 'Pumpkin Seeds', category: 'seed', tileId: 757, cropIndex: 2, price: 150 },
-    SEED_SUNFLOWER: { id: 'seed_sunflower', name: 'Sunflower Seeds', category: 'seed', tileId: 758, cropIndex: 3, price: 80 },
-    SEED_RADISH: { id: 'seed_radish', name: 'Radish Seeds', category: 'seed', tileId: 759, cropIndex: 4, price: 12 },
-    SEED_PARSNIP: { id: 'seed_parsnip', name: 'Parsnip Seeds', category: 'seed', tileId: 760, cropIndex: 5, price: 15 },
-    SEED_POTATO: { id: 'seed_potato', name: 'Potato Seeds', category: 'seed', tileId: 761, cropIndex: 6, price: 30 },
-    SEED_CABBAGE: { id: 'seed_cabbage', name: 'Cabbage Seeds', category: 'seed', tileId: 762, cropIndex: 7, price: 40 },
-    SEED_BEETROOT: { id: 'seed_beetroot', name: 'Beetroot Seeds', category: 'seed', tileId: 763, cropIndex: 8, price: 35 },
-    SEED_WHEAT: { id: 'seed_wheat', name: 'Wheat Seeds', category: 'seed', tileId: 764, cropIndex: 9, price: 90 },
+    // Seeds (purchased from store, used to plant crops)
+    // Ordered cheapest → most expensive; prices follow exponential progression
+    SEED_CARROT: { id: 'seed_carrot', name: 'Carrot Seeds', category: 'seed', tileId: 755, cropIndex: 0, price: 5 },
+    SEED_RADISH: { id: 'seed_radish', name: 'Radish Seeds', category: 'seed', tileId: 759, cropIndex: 4, price: 15 },
+    SEED_PARSNIP: { id: 'seed_parsnip', name: 'Parsnip Seeds', category: 'seed', tileId: 760, cropIndex: 5, price: 40 },
+    SEED_POTATO: { id: 'seed_potato', name: 'Potato Seeds', category: 'seed', tileId: 761, cropIndex: 6, price: 100 },
+    SEED_BEETROOT: { id: 'seed_beetroot', name: 'Beetroot Seeds', category: 'seed', tileId: 763, cropIndex: 8, price: 300 },
+    SEED_CABBAGE: { id: 'seed_cabbage', name: 'Cabbage Seeds', category: 'seed', tileId: 762, cropIndex: 7, price: 800 },
+    SEED_CAULIFLOWER: { id: 'seed_cauliflower', name: 'Cauliflower Seeds', category: 'seed', tileId: 756, cropIndex: 1, price: 2000 },
+    SEED_SUNFLOWER: { id: 'seed_sunflower', name: 'Sunflower Seeds', category: 'seed', tileId: 758, cropIndex: 3, price: 5000 },
+    SEED_WHEAT: { id: 'seed_wheat', name: 'Wheat Seeds', category: 'seed', tileId: 764, cropIndex: 9, price: 15000 },
+    SEED_PUMPKIN: { id: 'seed_pumpkin', name: 'Pumpkin Seeds', category: 'seed', tileId: 757, cropIndex: 2, price: 50000 },
 
-    // Flowers (harvested from wild flowers)
+    // Flowers (harvested from wild flowers — color-specific types)
     FLOWER: { id: 'flower', name: 'Flower', category: 'flower', tileId: 227, sell_price: 2 },
+    FLOWER_BLUE:  { id: 'flower_blue',  name: 'Blue Flower',  category: 'flower', tileId: 96,  sell_price: 2 },
+    FLOWER_RED:   { id: 'flower_red',   name: 'Red Flower',   category: 'flower', tileId: 160, sell_price: 2 },
+    FLOWER_WHITE: { id: 'flower_white', name: 'White Flower', category: 'flower', tileId: 224, sell_price: 2 },
+
+    // Potions (crafted at Cauldron upgrade station)
+    // sell_price = full value at roadside stand; store sells at 50% of this
+    // TODO: replace tileId placeholders with correct potion tile IDs from tileset
+    MINOR_HEALTH_POTION: { id: 'minor_health_potion', name: 'Minor Health Potion', category: 'potion', tileId: 1961, sell_price: 50 },
+    STAMINA_TONIC:       { id: 'stamina_tonic',       name: 'Stamina Tonic',       category: 'potion', tileId: 1962, sell_price: 150 },
+    GROWTH_ELIXIR:       { id: 'growth_elixir',        name: 'Growth Elixir',       category: 'potion', tileId: 1963, sell_price: 500 },
+    VITALITY_BREW:       { id: 'vitality_brew',        name: 'Vitality Brew',        category: 'potion', tileId: 1964, sell_price: 2000 },
 
     // Ores (mined from ore veins)
     ORE_IRON: { id: 'ore_iron', name: 'Iron Ore', category: 'ore', tileId: 1463 },

@@ -138,6 +138,7 @@ export class Pathfinder {
         this.treeManager = null;
         this.oreManager = null;
         this.roadsideStand = null;
+        this.well = null;
     }
 
     /**
@@ -160,6 +161,11 @@ export class Pathfinder {
     /** Set the roadside stand so its collision tiles block pathfinding */
     setRoadsideStand(stand) {
         this.roadsideStand = stand;
+    }
+
+    /** Set the well so its solid rows block pathfinding */
+    setWell(well) {
+        this.well = well;
     }
 
     findPath(startX, startY, endX, endY) {
@@ -301,6 +307,11 @@ export class Pathfinder {
 
             // Check roadside stand collision tiles (the two 2470 middle table tiles)
             if (this.roadsideStand && this.roadsideStand.isObstacle(x, y)) {
+                return false;
+            }
+
+            // Check well solid rows (middle + bottom, top row is walkable)
+            if (this.well && this.well.isObstacle(x, y)) {
                 return false;
             }
 
