@@ -15,7 +15,7 @@ export class FlowerManager {
         // Average 1 flower/weed per 5 seconds for every 50 tiles in the grass area
         this.spawnRatePerTile = 1 / (5000 * 50); // flowers/weeds per ms per tile
         this.spawnTimer = 0;
-        this.maxFlowers = 100; // Prevent too many flowers/weeds
+        this.maxFlowers = CONFIG.flowers.maxCount;
 
         // Grass tile count cache — recomputed at most once every 5 seconds
         this._grassTileCount = -1;
@@ -99,9 +99,10 @@ export class FlowerManager {
 
     // Get the count of active (non-harvested) flowers and weeds
     getActiveFlowerCount() {
-        const flowerCount = this.flowers.filter(f => !f.isGone && !f.isHarvested).length;
-        const weedCount = this.weeds.filter(w => !w.isGone && !w.isRemoved).length;
-        return flowerCount + weedCount;
+        let count = 0;
+        for (const f of this.flowers) { if (!f.isGone && !f.isHarvested) count++; }
+        for (const w of this.weeds) { if (!w.isGone && !w.isRemoved) count++; }
+        return count;
     }
 
     // Calculate spawn probability multiplier based on flower coverage
@@ -266,7 +267,7 @@ export class FlowerManager {
         const spawnInForest = forestTiles.length > 0 && Math.random() < (forestTiles.length / totalTiles);
 
         let attempts = 0;
-        const maxAttempts = 50;
+        const maxAttempts = CONFIG.flowers.maxSpawnAttempts;
 
         if (spawnInForest) {
             // Try to spawn in forest
@@ -319,7 +320,7 @@ export class FlowerManager {
         const spawnInForest = forestTiles.length > 0 && Math.random() < (forestTiles.length / totalTiles);
 
         let attempts = 0;
-        const maxAttempts = 50;
+        const maxAttempts = CONFIG.flowers.maxSpawnAttempts;
 
         if (spawnInForest) {
             // Try to spawn in forest
@@ -410,7 +411,7 @@ export class FlowerManager {
                 y: flower.tileY * tileSize,
                 tileId: flower.flowerType.harvestIcon,
                 timer: 0,
-                duration: 1000,
+                duration: CONFIG.effects.floatingDuration,
                 alpha: 1
             });
         }
@@ -472,8 +473,12 @@ export class FlowerManager {
         }
 
         // Clean up gone flowers and weeds
-        this.flowers = this.flowers.filter(f => !f.isGone);
-        this.weeds = this.weeds.filter(w => !w.isGone);
+        for (let i = this.flowers.length - 1; i >= 0; i--) {
+            if (this.flowers[i].isGone) this.flowers.splice(i, 1);
+        }
+        for (let i = this.weeds.length - 1; i >= 0; i--) {
+            if (this.weeds[i].isGone) this.weeds.splice(i, 1);
+        }
 
         // Update harvest effects
         for (let i = this.harvestEffects.length - 1; i >= 0; i--) {

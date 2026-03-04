@@ -91,17 +91,7 @@ export class JobManager {
     addJob(tool, tiles) {
         if (tiles.length === 0) return null;
 
-        const job = {
-            id: `job_${this.jobIdCounter++}`,
-            tool: tool,
-            tiles: tiles,
-            currentTileIndex: 0,
-            status: JOB_STATUS.PENDING,
-            // New multi-queue fields
-            assignedTo: null,                    // 'human' | 'goblin' | null (unassigned)
-            targetQueue: this.activeQueueTarget, // Which queue it was added to
-            createdAt: Date.now()                // For ordering
-        };
+        const job = this._buildJob(tool, tiles, this.activeQueueTarget);
 
         // For sword tool, extract target enemies from tiles
         if (tool.id === 'sword') {
@@ -187,6 +177,9 @@ export class JobManager {
 
     // Assign a job to a specific worker
     assignJobToWorker(workerId) {
+        // Don't assign jobs to goblin if not hired
+        if (workerId === 'goblin' && !this.game.goblinHired) return false;
+
         const workerState = this.workers.get(workerId);
         if (!workerState || workerState.isProcessing || workerState.isPausedForCombat || workerState.isPausedForStand) {
             return false;
@@ -363,6 +356,17 @@ export class JobManager {
 
         // Pre-walk check: skip tile if another worker already completed the job there
         if (this.isTileJobAlreadyDone(job.tool, targetTileX, targetTileY)) {
+            // If a plant tile is being skipped because seeds ran out, pause any replenish
+            // zones for that crop type so checkPausedZones can re-queue the missed tiles
+            // when seeds are restocked (without this, the zone stays "active" indefinitely
+            // and the unplanted tiles are never retried).
+            if (job.tool.id === 'plant' && job.tool.seedType !== undefined
+                    && this.game.replenishZoneManager) {
+                const seedRes = this.game.inventory?.getSeedByCropIndex(job.tool.seedType);
+                if (!seedRes || !this.game.inventory?.has(seedRes, 1)) {
+                    this.game.replenishZoneManager.pauseZonesForCrop(job.tool.seedType);
+                }
+            }
             log.debug(`[${workerId}] Skipping ${job.tool.id} at (${targetTileX},${targetTileY}) — already done`);
             this.moveToNextTileForWorker(workerId);
             return;
@@ -967,6 +971,10 @@ export class JobManager {
                     if (harvested && this.game.inventory) {
                         this.game.inventory.addCropByIndex(harvested.index);
                         log.debug(`Idle harvested: ${harvested.name}`);
+                        // Notify replenish zone manager so it can queue auto-replant
+                        if (this.game.replenishZoneManager) {
+                            this.game.replenishZoneManager.onHarvest(tileX, tileY);
+                        }
                     }
                 }
                 break;
@@ -1035,6 +1043,12 @@ export class JobManager {
             const seedResource = this.game.inventory.getSeedByCropIndex(tool.seedType);
             if (!seedResource || !this.game.inventory.has(seedResource, 1)) {
                 log.info(`No ${tool.seedName || 'seed'} available — cancelling plant job`);
+                // Pause any active replenish zones for this crop type so they
+                // transition to inactive; checkPausedZones will re-queue missed
+                // tiles when seeds are restocked.
+                if (this.game.replenishZoneManager && tool.seedType !== undefined) {
+                    this.game.replenishZoneManager.pauseZonesForCrop(tool.seedType);
+                }
                 // Find and cancel the current job for each worker
                 for (const [workerId, state] of this.workers) {
                     if (state.currentJob && state.currentJob.tool.id === 'plant') {
@@ -1341,22 +1355,12 @@ export class JobManager {
     addIdleJob(workerId, tool, tiles) {
         if (!tiles || tiles.length === 0) return null;
 
-        const job = {
-            id: `job_${this.jobIdCounter++}`,
-            tool: tool,
-            tiles: tiles,
-            currentTileIndex: 0,
-            status: JOB_STATUS.PENDING,
-            assignedTo: null,
-            targetQueue: workerId,
-            createdAt: Date.now(),
-            isIdleJob: true
-        };
+        const targetQueue = this.queues[workerId] ? workerId : 'all';
+        const job = this._buildJob(tool, tiles, targetQueue);
+        job.isIdleJob = true;
 
         log.debug(`Idle job added: ${job.id} - ${tool.name} for ${workerId}`);
 
-        // Add to worker's private queue (human or goblin); fall back to shared
-        const targetQueue = this.queues[workerId] ? workerId : 'all';
         this.queues[targetQueue].push(job);
 
         // Assign immediately if the worker is free

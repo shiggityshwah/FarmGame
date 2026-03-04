@@ -124,15 +124,27 @@ export class ReplenishZoneManager {
         }
     }
 
-    // Called on inventory change. Reactivates paused zones that now have seeds.
-    // Does NOT retroactively queue jobs for all zone tiles — only tiles that get
-    // harvested in the future will queue. This avoids spamming the job queue on
-    // large zones when a single seed pack is bought.
+    // Called on inventory change. Reactivates paused zones that now have seeds,
+    // and queues replant jobs for any zone tiles that are hoed but currently empty
+    // (e.g. harvested while the zone was paused, or missed due to seed exhaustion mid-job).
     checkPausedZones() {
         for (const zone of this.zones.values()) {
             if (!zone.active && this._hasSeedForCrop(zone.cropTypeIndex)) {
                 zone.active = true;
                 log.info(`Zone ${zone.id} reactivated for ${zone.cropName}`);
+                this._replantEmptyZoneTiles(zone);
+            }
+        }
+    }
+
+    // Pause all active zones for a specific crop type.
+    // Called when seeds are exhausted mid-job so the zone transitions to paused,
+    // which lets checkPausedZones re-queue the missed tiles when seeds arrive.
+    pauseZonesForCrop(cropTypeIndex) {
+        for (const zone of this.zones.values()) {
+            if (zone.active && zone.cropTypeIndex === cropTypeIndex) {
+                zone.active = false;
+                log.info(`Zone ${zone.id} paused — seeds exhausted for ${zone.cropName}`);
             }
         }
     }
@@ -190,5 +202,29 @@ export class ReplenishZoneManager {
         const plantTool = { ...PLANT_TOOL_BASE, seedType: cropTypeIndex, seedName: cropName };
         this.jobManager.addJobToQueue(plantTool, [{ x: tileX, y: tileY }], 'all');
         log.debug(`Replant queued at (${tileX},${tileY}) for ${cropName}`);
+    }
+
+    // Queue replant jobs for all zone tiles that are hoed but have no live crop.
+    // Used when reactivating a paused zone so empty tiles don't stay barren.
+    _replantEmptyZoneTiles(zone) {
+        const overlayManager = this.game.overlayManager;
+        const cropManager = this.game.cropManager;
+        let queued = 0;
+        for (const key of zone.tiles) {
+            // Re-check seeds each iteration — may exhaust partway through
+            if (!this._hasSeedForCrop(zone.cropTypeIndex)) {
+                zone.active = false;
+                log.info(`Zone ${zone.id} re-paused — seeds exhausted while queuing missed tiles`);
+                break;
+            }
+            // Must be a hoed tile
+            if (!(overlayManager?.hoedTiles?.has(key) ?? false)) continue;
+            const [tx, ty] = key.split(',').map(Number);
+            // Skip if a live crop is already present
+            if (cropManager?.getCropAt(tx, ty)) continue;
+            this._queueReplant(zone.cropTypeIndex, tx, ty);
+            queued++;
+        }
+        if (queued > 0) log.info(`Zone ${zone.id}: queued replant for ${queued} empty tile(s)`);
     }
 }

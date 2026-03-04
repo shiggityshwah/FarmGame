@@ -28,28 +28,24 @@ export class TravelerManager {
         return spawnIntervalMin + Math.random() * (spawnIntervalMax - spawnIntervalMin);
     }
 
-    // Returns the current visible left/right bounds in world pixels.
-    // Falls back to map tile bounds if no camera is set.
-    _getVisibleBounds() {
-        if (this.camera) {
-            const bounds = this.camera.getVisibleBounds();
-            return { leftPx: bounds.left, rightPx: bounds.right };
-        }
+    // Returns the current world pixel bounds of the great path (map left/right edges).
+    // mapStartX and mapWidth are updated by ChunkManager._updateMapBounds() on every
+    // chunk purchase, so this automatically reflects the expanded world.
+    _getWorldBounds() {
         const tileSize = this.tilemap.tileSize;
-        const leftPx = (this.tilemap.mapStartX || 0) * tileSize;
-        const rightPx = ((this.tilemap.mapStartX || 0) + this.tilemap.mapWidth) * tileSize;
+        const leftPx  = (this.tilemap.mapStartX || 0) * tileSize;
+        const rightPx = (this.tilemap.mapWidth  || CONFIG.chunks.initialGridCols * CONFIG.chunks.size) * tileSize;
         return { leftPx, rightPx };
     }
 
     async _spawnTraveler() {
-        const { leftPx, rightPx } = this._getVisibleBounds();
+        const { leftPx, rightPx } = this._getWorldBounds();
         const margin = CONFIG.traveler.despawnMargin;
         const { hairStyles, pathCenterY } = CONFIG.traveler;
 
         const direction = Math.random() < 0.5 ? 'east' : 'west';
 
-        // Spawn just outside the player's current viewport so they always appear
-        // walking onto screen rather than teleporting in from a distant map edge.
+        // Spawn just off the world edge so they walk onto the great path naturally.
         const spawnX  = direction === 'east' ? leftPx  - margin : rightPx + margin;
         const despawnX = direction === 'east' ? rightPx + margin : leftPx  - margin;
 
@@ -98,6 +94,7 @@ export class TravelerManager {
 
         if (!listedIds.length) {
             traveler.visitStand = false;
+            log.debug(`Traveler skips stand: stand is empty`);
             return;
         }
 
@@ -108,9 +105,13 @@ export class TravelerManager {
             traveler.visitStand = true;
         } else if (allHated) {
             traveler.visitStand = false;
+            log.debug(`Traveler skips stand: all listed items are hated`);
             return;
         } else {
             traveler.visitStand = Math.random() < tCfg.neutralVisitChance;
+            if (!traveler.visitStand) {
+                log.debug(`Traveler skips stand: neutral visit chance failed`);
+            }
         }
 
         if (!traveler.visitStand) return;
@@ -156,6 +157,7 @@ export class TravelerManager {
 
         if (!purchases.length) {
             traveler.visitStand = false;
+            log.debug(`Traveler skips stand: no affordable purchases (gold=${traveler.gold}, liked=${traveler.likedItems.join(',')}, listed=${listedIds.join(',')})`);
             return;
         }
 

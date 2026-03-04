@@ -52,11 +52,7 @@ export class Toolbar {
 
         // Subscribe to inventory changes to refresh seed availability badges
         if (this.game.inventory) {
-            const existing = this.game.inventory.onChangeCallback;
-            this.game.inventory.onChange(() => {
-                if (existing) existing();
-                this.refreshSeedSubmenu();
-            });
+            this.game.inventory.onChange(() => this.refreshSeedSubmenu());
         }
     }
 

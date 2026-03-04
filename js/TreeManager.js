@@ -1,14 +1,14 @@
 import { Tree, TREE_TYPES, CHOP_STAGE, getRandomTreeType } from './Tree.js';
 import { Logger } from './Logger.js';
-import { createHarvestEffect, updateEffects, renderEffects as renderFloatingEffects } from './EffectUtils.js';
+import { createHarvestEffect } from './EffectUtils.js';
+import { ResourceManager } from './ResourceManager.js';
 
 const log = Logger.create('TreeManager');
 
-export class TreeManager {
+export class TreeManager extends ResourceManager {
     constructor(tilemap) {
-        this.tilemap = tilemap;
-        this.trees = [];
-        this.choppingEffects = []; // Floating "+1 wood" effects
+        super(tilemap);
+        this.trees = this.resources; // Alias for readability
     }
 
     // Spawn a tree at a specific tile position (bottom-left base tile)
@@ -146,27 +146,13 @@ export class TreeManager {
     // Create floating "+1" effect for chopped tree
     createChoppingEffect(tree, woodTileId) {
         const tileSize = this.tilemap.tileSize;
-        // Position at center of tree base
         const centerX = (tree.tileX + tree.treeType.width / 2) * tileSize;
         const centerY = tree.tileY * tileSize;
-
-        this.choppingEffects.push(createHarvestEffect(centerX, centerY, woodTileId));
-
+        this.effects.push(createHarvestEffect(centerX, centerY, woodTileId));
         log.debug(`+1 wood from ${tree.treeType.name}!`);
     }
 
-    update(deltaTime) {
-        // Update trees
-        for (const tree of this.trees) {
-            tree.update(deltaTime);
-        }
-
-        // Clean up gone trees
-        this.trees = this.trees.filter(tree => !tree.isGone);
-
-        // Update chopping effects
-        updateEffects(this.choppingEffects, deltaTime);
-    }
+    // update() and _cleanupGone() inherited from ResourceManager
 
     // Get all trees for depth-sorted rendering
     getTrees() {
@@ -205,15 +191,12 @@ export class TreeManager {
         }
     }
 
-    // Render only the chopping effects (rendered after all entities)
-    renderEffects(ctx, camera) {
-        const tileSize = this.tilemap.tileSize;
-        renderFloatingEffects(ctx, this.choppingEffects, this.tilemap.tilesetImage,
-            id => this.tilemap.getTilesetSourceRect(id), tileSize);
-    }
+    // renderEffects() inherited from ResourceManager
 
     getTreeCount() {
-        return this.trees.filter(tree => !tree.isGone).length;
+        let count = 0;
+        for (const tree of this.trees) { if (!tree.isGone) count++; }
+        return count;
     }
 
     // Check if a tile is blocked by a tree trunk (for pathfinding)

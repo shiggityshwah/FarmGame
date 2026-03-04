@@ -91,7 +91,9 @@ export const CONFIG = {
         rarityRed: 0.30,            // 30% red
         rarityWhite: 0.60,          // 60% white
         harvestYieldMin: 1,
-        harvestYieldMax: 2
+        harvestYieldMax: 2,
+        maxCount: 100,              // max total flowers + weeds on map
+        maxSpawnAttempts: 50        // random-position retries per spawn call
     },
     weeds: {
         growthTime: 30000,          // ms per growth stage (2 min total for 4 stages)
@@ -128,6 +130,24 @@ export const CONFIG = {
         healthBarWidth: 32,
         healthBarHeight: 5,
         healthBarOffset: 24        // pixels above sprite
+    },
+
+    // === WATERING CAN ===
+    watering: {
+        canMaxCapacity: 20          // starting capacity for human and goblin cans
+    },
+
+    // === IDLE MANAGER ===
+    idle: {
+        maxEuclideanDistance: 20,   // tile radius for candidate search
+        maxPathLength: 35,          // A* tile steps before task is considered too far
+        pathCheckCandidates: 3,     // top-N closest candidates to pathfind to
+        backoffMax: 15000           // ms — maximum exponential backoff delay
+    },
+
+    // === EFFECTS ===
+    effects: {
+        floatingDuration: 1000      // ms for floating "+1 item" effect
     },
 
     // === UI ===
@@ -170,7 +190,8 @@ export const CONFIG = {
             goldMax: 1000,
             neutralVisitChance: 0.5,     // chance to visit stand with only neutral items
             neutralBaseProbability: 0.70,// first neutral-item buy probability
-            neutralDecayRate: 0.15       // probability reduction per additional purchase
+            neutralDecayRate: 0.15,      // probability reduction per additional purchase
+            queuePatience: 15000         // ms a queued traveler will wait before leaving
         }
     },
 

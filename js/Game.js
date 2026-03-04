@@ -171,15 +171,16 @@ export class Game {
         // Roadside stand and traveler service
         this.roadsideStand = null;
         this.standService = { state: 'idle', workerId: null, slotIndex: -1, traveler: null, waitTimer: 0 };
+        this.standQueue = [];   // Array of { traveler, waitTimer } waiting for the stand
 
         // Well (placed on farm chunk, east of house)
         this.well = null;
 
         // Watering can water levels (human + goblin)
-        this.wateringCanWater = 20;
-        this.wateringCanMaxWater = 20;
-        this.goblinWaterCanWater = 20;
-        this.goblinWaterCanMaxWater = 20;
+        this.wateringCanWater = CONFIG.watering.canMaxCapacity;
+        this.wateringCanMaxWater = CONFIG.watering.canMaxCapacity;
+        this.goblinWaterCanWater = CONFIG.watering.canMaxCapacity;
+        this.goblinWaterCanMaxWater = CONFIG.watering.canMaxCapacity;
 
         // Chimney smoke animation (rendered above roof when player is outside new house)
         this.chimneySmoke = null;
@@ -488,12 +489,8 @@ export class Game {
 
             // Initialize replenishable zone manager (auto-replanting system)
             this.replenishZoneManager = new ReplenishZoneManager(this, this.jobManager, this.inventory);
-            // Chain inventory onChange so zone manager reactivates paused zones when seeds are acquired
-            const existingOnChange = this.inventory.onChangeCallback;
-            this.inventory.onChange(() => {
-                if (existingOnChange) existingOnChange();
-                this.replenishZoneManager.checkPausedZones();
-            });
+            // Subscribe: reactivate paused zones when seeds are acquired
+            this.inventory.onChange(() => this.replenishZoneManager.checkPausedZones());
 
             // Spawn enemies from forest pockets
             await this.spawnForestPocketEnemies();
@@ -2790,10 +2787,23 @@ export class Game {
 
     // Called by Traveler when it stops at the stand
     _onTravelerAtStand(traveler) {
-        if (this.standService.state !== 'idle' || !traveler.wantedPurchases?.length) {
+        if (!traveler.wantedPurchases?.length) {
+            log.debug(`Traveler leaving stand immediately: no wantedPurchases`);
             traveler.resumeWalking();
             return;
         }
+        if (this.standService.state !== 'idle') {
+            // Stand is busy — join the queue and wait
+            this.standQueue.push({ traveler, waitTimer: 0 });
+            log.debug(`Traveler queued at stand (queue length=${this.standQueue.length}, state=${this.standService.state})`);
+            traveler.isStopped = true;
+            return;
+        }
+        this._beginServingTraveler(traveler);
+    }
+
+    // Begin a new stand service session for the given traveler.
+    _beginServingTraveler(traveler) {
         this.standService = {
             state: 'dispatching',
             workerId: null,
@@ -2803,6 +2813,20 @@ export class Game {
         };
         // Pause 1 s at the item before executing the purchase
         traveler.startPurchasePause(1000);
+        log.debug(`Serving traveler at stand, slot=${traveler.wantedPurchases[0]}`);
+    }
+
+    // When the stand becomes idle, pull the next queued traveler (if any).
+    _dequeueNextTraveler() {
+        // Purge any despawned entries first
+        this.standQueue = this.standQueue.filter(e => !e.traveler.isDespawned);
+        if (this.standQueue.length === 0) {
+            this.standService = { state: 'idle', workerId: null, slotIndex: -1, traveler: null, waitTimer: 0 };
+            return;
+        }
+        const next = this.standQueue.shift();
+        log.debug(`Dequeuing next traveler (queue remaining=${this.standQueue.length})`);
+        this._beginServingTraveler(next.traveler);
     }
 
     // Called by Traveler after a 1-second pause — now execute the purchase
@@ -2835,14 +2859,16 @@ export class Game {
         const slot = this.roadsideStand.slots[slotIndex];
 
         if (!slot?.resource) {
+            log.debug(`Traveler slot ${slotIndex} is empty (sold since evaluation), advancing`);
             this._advanceTravelerPurchase();
             return;
         }
 
         const workerId = this._findClosestWorkerToStand(slotIndex);
         if (!workerId) {
+            log.debug(`Traveler leaving stand: no available worker to serve slot ${slotIndex}`);
             traveler.resumeWalking();
-            this.standService = { state: 'idle', workerId: null, slotIndex: -1, traveler: null, waitTimer: 0 };
+            this._dequeueNextTraveler();
             return;
         }
 
@@ -2862,14 +2888,14 @@ export class Game {
     _advanceTravelerPurchase() {
         const { traveler } = this.standService;
         if (!traveler) {
-            this.standService = { state: 'idle', workerId: null, slotIndex: -1, traveler: null, waitTimer: 0 };
+            this._dequeueNextTraveler();
             return;
         }
 
         traveler.currentPurchaseIndex++;
         if (traveler.currentPurchaseIndex >= traveler.wantedPurchases.length) {
             traveler.resumeWalking();
-            this.standService = { state: 'idle', workerId: null, slotIndex: -1, traveler: null, waitTimer: 0 };
+            this._dequeueNextTraveler();
             return;
         }
 
@@ -2909,6 +2935,21 @@ export class Game {
 
     // Update the stand service state machine each frame
     _updateStandService(deltaTime) {
+        // Tick patience for queued travelers; drop any who give up
+        if (this.standQueue.length > 0) {
+            const patience = CONFIG.stand.traveler.queuePatience;
+            this.standQueue = this.standQueue.filter(entry => {
+                if (entry.traveler.isDespawned) return false;
+                entry.waitTimer += deltaTime;
+                if (entry.waitTimer >= patience) {
+                    log.debug(`Queued traveler lost patience after ${Math.round(entry.waitTimer)}ms`);
+                    entry.traveler.resumeWalking();
+                    return false;
+                }
+                return true;
+            });
+        }
+
         if (this.standService.state !== 'waiting') return;
 
         this.standService.waitTimer += deltaTime;
@@ -2917,7 +2958,7 @@ export class Game {
         // If traveler despawned mid-service, clean up immediately
         if (!traveler || traveler.isDespawned) {
             if (workerId) this.jobManager.resumeWorkerFromStand(workerId);
-            this.standService = { state: 'idle', workerId: null, slotIndex: -1, traveler: null, waitTimer: 0 };
+            this._dequeueNextTraveler();
             return;
         }
 
@@ -2937,12 +2978,7 @@ export class Game {
         this.displayedGold = this.targetGold;
         this._goldAmountEl.textContent = this.displayedGold;
 
-        // Chain onto existing onChange callback (UIManager may already be subscribed)
-        const existing = this.inventory.onChangeCallback;
-        this.inventory.onChange(() => {
-            if (existing) existing();
-            this.targetGold = this.inventory.getGold();
-        });
+        this.inventory.onChange(() => { this.targetGold = this.inventory.getGold(); });
     }
 
     // Wire up well menu button event listeners
@@ -3140,6 +3176,7 @@ export class Game {
             <div class="debug-btn-row">
                 <button class="debug-cheat-btn" id="cheat-seeds">+10 Each Seed</button>
                 <button class="debug-cheat-btn" id="cheat-hire-goblin">Hire Goblin</button>
+                <button class="debug-cheat-btn" id="cheat-fire-goblin" style="display:none">Fire Goblin</button>
             </div>
             <div class="debug-btn-row">
                 <button class="debug-cheat-btn" id="cheat-unlock-replenishment">Unlock Replenishment</button>
@@ -3159,7 +3196,16 @@ export class Game {
             }
         });
 
-        document.getElementById('cheat-hire-goblin').addEventListener('click', () => this.hireGoblin());
+        document.getElementById('cheat-hire-goblin').addEventListener('click', () => {
+            this.hireGoblin();
+            document.getElementById('cheat-hire-goblin').style.display = 'none';
+            document.getElementById('cheat-fire-goblin').style.display = '';
+        });
+        document.getElementById('cheat-fire-goblin').addEventListener('click', () => {
+            this.fireGoblin();
+            document.getElementById('cheat-fire-goblin').style.display = 'none';
+            document.getElementById('cheat-hire-goblin').style.display = '';
+        });
 
         document.getElementById('cheat-unlock-replenishment').addEventListener('click', () => {
             this.homeUpgrades.shrineUpgrades.roadsideReplenishment = true;
@@ -3175,6 +3221,65 @@ export class Game {
         if (this.toolbar) this.toolbar.setGoblinHired(true);
         if (this.jobQueueUI) this.jobQueueUI.setGoblinHired(true);
         log.info('Goblin hired!');
+    }
+
+    // Remove goblin from job system and hide all goblin UI.
+    // Any player-submitted jobs the goblin was doing or had queued are moved
+    // to queues.all so the human can pick them up.
+    fireGoblin() {
+        if (!this.goblinHired) return;
+        this.goblinHired = false;
+
+        if (this.jobManager) {
+            const goblinState = this.jobManager.workers.get('goblin');
+            const SYSTEM_TOOLS = new Set(['fill_well', 'stand_service', 'sword']);
+
+            // Re-queue remaining tiles of the active job (if it's a player job)
+            if (goblinState?.currentJob) {
+                const job = goblinState.currentJob;
+                if (!job.isIdleJob && !SYSTEM_TOOLS.has(job.tool.id)) {
+                    const remaining = job.tiles.slice(job.currentTileIndex);
+                    if (remaining.length > 0) {
+                        const requeued = this.jobManager._buildJob(job.tool, remaining, 'all');
+                        this.jobManager.queues.all.push(requeued);
+                        log.info(`Goblin fired — re-queued ${remaining.length} tiles of job ${job.id} to queues.all`);
+                    }
+                }
+                // Clear goblin worker state directly (skip cancelJob to avoid its cleanup callbacks)
+                goblinState.currentJob = null;
+                goblinState.isProcessing = false;
+            }
+
+            // Re-queue any player jobs waiting in the goblin's private queue
+            for (const queuedJob of this.jobManager.queues.goblin) {
+                if (!queuedJob.isIdleJob && !SYSTEM_TOOLS.has(queuedJob.tool.id)) {
+                    const requeued = this.jobManager._buildJob(queuedJob.tool, queuedJob.tiles, 'all');
+                    this.jobManager.queues.all.push(requeued);
+                    log.info(`Goblin fired — moved queued job ${queuedJob.id} to queues.all`);
+                }
+            }
+            this.jobManager.queues.goblin = [];
+
+            // Clear goblin movement state
+            this.goblinCurrentPath = null;
+            this.goblinCurrentWorkTile = null;
+
+            if (this.jobManager.onQueueChange) this.jobManager.onQueueChange();
+            this.jobManager.tryAssignJobs();
+        }
+
+        // Reset goblin to idle animation
+        this.setGoblinAnimation('IDLE', true);
+
+        // Hide goblin UI controls
+        if (this.toolbar) this.toolbar.setGoblinHired(false);
+        if (this.jobQueueUI) this.jobQueueUI.setGoblinHired(false);
+
+        // Hide well goblin fill button if the well menu is open
+        const fillGoblinBtn = document.getElementById('well-fill-goblin-btn');
+        if (fillGoblinBtn) fillGoblinBtn.style.display = 'none';
+
+        log.info('Goblin fired!');
     }
 
     stop() {

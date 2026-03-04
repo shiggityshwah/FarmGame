@@ -248,6 +248,10 @@
         import './CropManager.test.js';
         import './ChunkSystem.test.js';
         import './EffectUtils.test.js';
+        import './ReplenishZoneManager.test.js';
+        import './Phase3Integration.test.js';
+        import './Phase1Economy.test.js';
+        import './Phase2Farming.test.js';
 
         // Store results for display
         let testResults = [];
@@ -333,6 +337,10 @@
             await import('./CropManager.test.js?' + Date.now());
             await import('./ChunkSystem.test.js?' + Date.now());
             await import('./EffectUtils.test.js?' + Date.now());
+            await import('./ReplenishZoneManager.test.js?' + Date.now());
+            await import('./Phase3Integration.test.js?' + Date.now());
+            await import('./Phase1Economy.test.js?' + Date.now());
+            await import('./Phase2Farming.test.js?' + Date.now());
 
             captureOutput();
 

@@ -1,14 +1,14 @@
 import { OreVein, ORE_TYPES, MINING_STAGE, getRandomOreType } from './OreVein.js';
 import { Logger } from './Logger.js';
-import { createHarvestEffect, updateEffects, renderEffects as renderFloatingEffects } from './EffectUtils.js';
+import { createHarvestEffect } from './EffectUtils.js';
+import { ResourceManager } from './ResourceManager.js';
 
 const log = Logger.create('OreManager');
 
-export class OreManager {
+export class OreManager extends ResourceManager {
     constructor(tilemap) {
-        this.tilemap = tilemap;
-        this.oreVeins = [];
-        this.miningEffects = []; // Floating "+1 ore" effects
+        super(tilemap);
+        this.oreVeins = this.resources; // Alias for readability
     }
 
     // Spawn an ore vein at a specific tile position (top-left of 2x2)
@@ -95,27 +95,13 @@ export class OreManager {
     // Create floating "+1" effect for mined ore
     createMiningEffect(ore, oreTileId) {
         const tileSize = this.tilemap.tileSize;
-        // Position at center of the 2x2 ore vein
         const centerX = (ore.tileX + 1) * tileSize;
         const centerY = (ore.tileY + 1) * tileSize;
-
-        this.miningEffects.push(createHarvestEffect(centerX, centerY, oreTileId));
-
+        this.effects.push(createHarvestEffect(centerX, centerY, oreTileId));
         log.debug(`+1 ${ore.oreType.name} ore!`);
     }
 
-    update(deltaTime) {
-        // Update ore veins
-        for (const ore of this.oreVeins) {
-            ore.update(deltaTime);
-        }
-
-        // Clean up gone ore veins
-        this.oreVeins = this.oreVeins.filter(ore => !ore.isGone);
-
-        // Update mining effects
-        updateEffects(this.miningEffects, deltaTime);
-    }
+    // update() and _cleanupGone() inherited from ResourceManager
 
     render(ctx, camera) {
         const tileSize = this.tilemap.tileSize;
@@ -159,8 +145,7 @@ export class OreManager {
         }
 
         // Render mining effects
-        renderFloatingEffects(ctx, this.miningEffects, this.tilemap.tilesetImage,
-            id => this.tilemap.getTilesetSourceRect(id), tileSize);
+        this.renderEffects(ctx, null);
     }
 
     // Check if a tile is blocked by the bottom row of an ore vein (for pathfinding)
@@ -176,7 +161,9 @@ export class OreManager {
     }
 
     getOreCount() {
-        return this.oreVeins.filter(ore => !ore.isGone).length;
+        let count = 0;
+        for (const ore of this.oreVeins) { if (!ore.isGone) count++; }
+        return count;
     }
 
     // Get all ore veins for depth-sorted rendering
@@ -223,10 +210,5 @@ export class OreManager {
         }
     }
 
-    // Render only the mining effects (rendered after all entities)
-    renderEffects(ctx, camera) {
-        const tileSize = this.tilemap.tileSize;
-        renderFloatingEffects(ctx, this.miningEffects, this.tilemap.tilesetImage,
-            id => this.tilemap.getTilesetSourceRect(id), tileSize);
-    }
+    // renderEffects() inherited from ResourceManager
 }

@@ -1,14 +1,14 @@
 import { Crop, CROP_TYPES, getCropTypeByIndex } from './Crop.js';
 import { Logger } from './Logger.js';
-import { createHarvestEffect, updateEffects, renderEffects as renderFloatingEffects } from './EffectUtils.js';
+import { createHarvestEffect } from './EffectUtils.js';
+import { ResourceManager } from './ResourceManager.js';
 
 const log = Logger.create('CropManager');
 
-export class CropManager {
+export class CropManager extends ResourceManager {
     constructor(tilemap) {
-        this.tilemap = tilemap;
-        this.crops = [];
-        this.harvestEffects = [];
+        super(tilemap);
+        this.crops = this.resources; // Alias for readability
         this.game = null;
     }
 
@@ -81,18 +81,13 @@ export class CropManager {
         log.debug(`Spawned ${this.crops.length} crops`);
     }
 
-    update(deltaTime) {
-        // Update crop growth (apply shrine growth speed multiplier if active)
+    // Override _updateResources to apply shrine growth-speed multiplier.
+    // The base update() still handles cleanup and effect ticking.
+    _updateResources(deltaTime) {
         const effectiveDt = deltaTime * this._getGrowthSpeedMultiplier();
         for (const crop of this.crops) {
             crop.update(effectiveDt);
         }
-
-        // Clean up crops that have completely faded away
-        this.cleanupGoneCrops();
-
-        // Update harvest effects
-        updateEffects(this.harvestEffects, deltaTime);
     }
 
     render(ctx, camera) {
@@ -129,8 +124,7 @@ export class CropManager {
         }
 
         // Render harvest effects
-        renderFloatingEffects(ctx, this.harvestEffects, this.tilemap.tilesetImage,
-            id => this.tilemap.getTilesetSourceRect(id), tileSize);
+        this.renderEffects(ctx, null);
     }
 
     // Try to harvest a crop at the given tile position
@@ -142,7 +136,7 @@ export class CropManager {
 
                 // Create harvest effect
                 const tileSize = this.tilemap.tileSize;
-                this.harvestEffects.push(createHarvestEffect(
+                this.effects.push(createHarvestEffect(
                     crop.tileX * tileSize + tileSize / 2,
                     crop.tileY * tileSize,
                     harvestedTileId
@@ -177,11 +171,6 @@ export class CropManager {
             if (crop.tileX === tileX && crop.tileY === tileY) return crop;
         }
         return null;
-    }
-
-    // Clean up crops that have completely faded away
-    cleanupGoneCrops() {
-        this.crops = this.crops.filter(crop => !crop.isGone);
     }
 
     // Get all crops for depth-sorted rendering
@@ -256,10 +245,5 @@ export class CropManager {
         }
     }
 
-    // Render only the harvest effects (rendered after all entities)
-    renderEffects(ctx, camera) {
-        const tileSize = this.tilemap.tileSize;
-        renderFloatingEffects(ctx, this.harvestEffects, this.tilemap.tilesetImage,
-            id => this.tilemap.getTilesetSourceRect(id), tileSize);
-    }
+    // renderEffects() inherited from ResourceManager
 }

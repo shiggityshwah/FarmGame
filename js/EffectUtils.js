@@ -5,6 +5,8 @@
  * Effect struct: { x, y, tileId, timer, duration, alpha }
  */
 
+import { CONFIG } from './config.js';
+
 /**
  * Create a floating harvest effect object.
  * @param {number} x - World pixel X (center of tile)
@@ -13,7 +15,7 @@
  * @returns {{ x, y, tileId, timer, duration, alpha }}
  */
 export function createHarvestEffect(x, y, tileId) {
-    return { x, y, tileId, timer: 0, duration: 1000, alpha: 1 };
+    return { x, y, tileId, timer: 0, duration: CONFIG.effects.floatingDuration, alpha: 1 };
 }
 
 /**

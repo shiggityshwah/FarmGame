@@ -1170,26 +1170,29 @@ export class ForestGenerator {
         }
 
         // Clean up gone trees from arrays and maps
-        this.trees = this.trees.filter(tree => {
+        for (let i = this.trees.length - 1; i >= 0; i--) {
+            const tree = this.trees[i];
             if (tree.isGone) {
-                // Remove from treeMap when fully gone
                 this.treeMap.delete(`${tree.baseX},${tree.baseY}`);
-                return false;
+                this.trees.splice(i, 1);
             }
-            return true;
-        });
+        }
 
         // Update pocket ore veins
         for (const ore of this.pocketOreVeins) {
             ore.update(deltaTime);
         }
-        this.pocketOreVeins = this.pocketOreVeins.filter(ore => !ore.isGone);
+        for (let i = this.pocketOreVeins.length - 1; i >= 0; i--) {
+            if (this.pocketOreVeins[i].isGone) this.pocketOreVeins.splice(i, 1);
+        }
 
         // Update pocket crops
         for (const crop of this.pocketCrops) {
             crop.update(deltaTime);
         }
-        this.pocketCrops = this.pocketCrops.filter(crop => !crop.isGone);
+        for (let i = this.pocketCrops.length - 1; i >= 0; i--) {
+            if (this.pocketCrops[i].isGone) this.pocketCrops.splice(i, 1);
+        }
 
         // Update chopping effects
         updateEffects(this.choppingEffects, deltaTime);
@@ -1502,14 +1505,14 @@ export class ForestGenerator {
      * Get all trees for depth-sorted rendering
      */
     getTrees() {
-        return this.trees.filter(t => !t.isGone);
+        return this.trees;
     }
 
     /**
      * Get tree count
      */
     getTreeCount() {
-        return this.trees.filter(t => !t.isGone).length;
+        return this.trees.length;
     }
 
     /**

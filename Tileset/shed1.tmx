@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<map version="1.10" tiledversion="1.11.2" orientation="orthogonal" renderorder="right-down" width="5" height="4" tilewidth="16" tileheight="16" infinite="0" nextlayerid="7" nextobjectid="7">
+ <editorsettings>
+  <export target="shed1.csv" format="csv"/>
+ </editorsettings>
+ <tileset firstgid="1" source="spr_tileset_sunnysideworld_16px.tsx"/>
+ <layer id="4" name="Ground" width="5" height="4">
+  <data encoding="csv">
+0,0,0,0,0,
+0,578,578,578,0,
+0,578,578,578,0,
+0,0,910,646,0
+</data>
+ </layer>
+ <layer id="3" name="Wall" width="5" height="4">
+  <data encoding="csv">
+981,0,0,0,989,
+725,646,646,646,733,
+789,0,0,0,797,
+853,646,910,646,861
+</data>
+ </layer>
+ <layer id="1" name="Roof" width="5" height="4">
+  <data encoding="csv">
+0,982,659,988,0,
+0,726,659,732,0,
+0,790,857,796,0,
+0,792,781,792,0
+</data>
+ </layer>
+ <layer id="2" name="Roof Detail" width="5" height="4">
+  <data encoding="csv">
+0,0,986,0,0,
+0,0,0,0,0,
+0,0,0,0,0,
+0,0,0,0,0
+</data>
+ </layer>
+ <objectgroup id="6" name="Collision">
+  <object id="2" x="9.62406" y="11.0944" width="60.8187" height="4.67836"/>
+  <object id="3" x="9.75773" y="16.5748" width="5.7477" height="46.9173"/>
+  <object id="4" x="16.4411" y="58.4127" width="14.9708" height="5.21303"/>
+  <object id="5" x="48.5213" y="59.2147" width="15.1044" height="4.41103"/>
+  <object id="6" x="64.5614" y="16.1738" width="5.48037" height="47.452"/>
+ </objectgroup>
+ <objectgroup id="5" name="Interactables">
+  <object id="1" x="9.08939" y="1.20301" width="61.8881" height="62.6901">
+   <properties>
+    <property name="action" value="openStorage"/>
+   </properties>
+  </object>
+ </objectgroup>
+</map>

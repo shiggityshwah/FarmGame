@@ -96,8 +96,8 @@ export class Inventory {
     constructor() {
         // Store quantities by resource ID
         this.items = {};
-        // Callback for when inventory changes
-        this.onChangeCallback = null;
+        // Subscribers notified when inventory changes
+        this._changeListeners = [];
 
         // Initialize all resource types with 0
         for (const key of Object.keys(RESOURCE_TYPES)) {
@@ -105,15 +105,19 @@ export class Inventory {
         }
     }
 
-    // Set callback for inventory changes
+    // Subscribe to inventory changes. Passing null clears all listeners (for teardown).
     onChange(callback) {
-        this.onChangeCallback = callback;
+        if (callback === null) {
+            this._changeListeners = [];
+        } else {
+            this._changeListeners.push(callback);
+        }
     }
 
-    // Notify listeners of change
+    // Notify all listeners of a change
     notifyChange() {
-        if (this.onChangeCallback) {
-            this.onChangeCallback();
+        for (const listener of this._changeListeners) {
+            listener();
         }
     }
 

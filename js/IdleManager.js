@@ -1,35 +1,38 @@
 import { GROWTH_STAGE } from './Crop.js';
 import { Logger } from './Logger.js';
 import { worldToTile } from './TileUtils.js';
+import { CONFIG } from './config.js';
 
 const log = Logger.create('IdleManager');
 
 // Pseudo-tool definitions for idle-only actions
 const IDLE_TOOLS = {
-    HARVEST: { id: 'idle_harvest', name: 'Harvest',     animation: 'DOING' },
-    FLOWER:  { id: 'idle_flower',  name: 'Pick Flower', animation: 'DOING' },
-    WEED:    { id: 'idle_weed',    name: 'Clear Weed',  animation: 'DOING' },
-    RETURN:  { id: 'idle_return',  name: 'Return Home', animation: 'IDLE'  }
+    HARVEST:   { id: 'idle_harvest', name: 'Harvest',     animation: 'DOING'    },
+    FLOWER:    { id: 'idle_flower',  name: 'Pick Flower', animation: 'DOING'    },
+    WEED:      { id: 'idle_weed',    name: 'Clear Weed',  animation: 'DOING'    },
+    RETURN:    { id: 'idle_return',  name: 'Return Home', animation: 'IDLE'     },
+    FILL_WELL: { id: 'fill_well',    name: 'Fill Can',    animation: 'DOING'    }
 };
 
 // Weighted activity list
 const ACTIVITY_WEIGHTS = [
-    { weight: 30, key: 'harvest' },
-    { weight: 30, key: 'water'   },
-    { weight: 20, key: 'flower'  },
-    { weight: 20, key: 'weed'    }
+    { weight: 30, key: 'harvest'   },
+    { weight: 30, key: 'water'     },
+    { weight: 30, key: 'fill_well' },  // only evaluates when can is empty
+    { weight: 20, key: 'flower'    },
+    { weight: 20, key: 'weed'      }
 ];
 
 // Max Euclidean distance (tiles) for the pre-filter – items further away are never checked
-const MAX_IDLE_DISTANCE = 20;
+const MAX_IDLE_DISTANCE = CONFIG.idle.maxEuclideanDistance;
 
 // Actual path length (tiles) above which a task is considered "far" and deprioritised.
 // A task over this limit is only picked if every other activity is also over the limit.
-const MAX_IDLE_PATH_LENGTH = 35;
+const MAX_IDLE_PATH_LENGTH = CONFIG.idle.maxPathLength;
 
 // How many Euclidean-closest candidates get actual pathfinding done per activity.
 // Higher = more accurate but more CPU per idle decision.
-const PATH_CHECK_CANDIDATES = 3;
+const PATH_CHECK_CANDIDATES = CONFIG.idle.pathCheckCandidates;
 
 // Weeds must be within this many tiles of the spawn/house
 const NEAR_HOUSE_RADIUS = 15;
@@ -109,7 +112,7 @@ export class IdleManager {
                     if (elapsed < 500) {
                         // Resolved almost instantly → pathfinding failed / tile skipped
                         this._consecutiveFailures++;
-                        const backoff = Math.min(1000 * Math.pow(2, this._consecutiveFailures - 1), 15000);
+                        const backoff = Math.min(1000 * Math.pow(2, this._consecutiveFailures - 1), CONFIG.idle.backoffMax);
                         this.state = 'waiting';
                         this.waitDelay = backoff;
                         this.waitTimer = 0;
@@ -154,6 +157,10 @@ export class IdleManager {
         if (this.activeIdleJobId) {
             this.game.jobManager.cancelJob(this.activeIdleJobId);
             this.activeIdleJobId = null;
+            // After cancelling, let any queued player jobs get picked up immediately.
+            // cancelJob() clears isProcessing but does not call tryAssignJobs(), so a player
+            // job sitting in queues.human would otherwise stay stuck until the next addJob call.
+            this.game.jobManager.tryAssignJobs();
         }
     }
 
@@ -280,6 +287,20 @@ export class IdleManager {
                 }
                 return this._getClosestReachable(items, w => w.tileX, w => w.tileY);
             }
+            case 'fill_well': {
+                // Only go fill when the can is completely empty and a well exists
+                if ((this.game.wateringCanWater ?? 1) > 0) return null;
+                if (!this.game.well) return null;
+                const service = this.game.well.getAdjacentServiceTile();
+                if (!service) return null;
+                const tileSize = this.game.tilemap.tileSize;
+                const hx = worldToTile(this.game.humanPosition.x, tileSize);
+                const hy = worldToTile(this.game.humanPosition.y, tileSize);
+                const path = this.game.findPath(hx, hy, service.x, service.y);
+                if (!path || path.length === 0) return null;
+                // Return as a synthetic "item" with tileX/tileY for createJobForEvaluation
+                return { item: { tileX: service.x, tileY: service.y }, pathLength: path.length };
+            }
         }
         return null;
     }
@@ -289,10 +310,11 @@ export class IdleManager {
         const tile = { x: item.tileX, y: item.tileY };
         let tool;
         switch (key) {
-            case 'harvest': tool = IDLE_TOOLS.HARVEST; break;
-            case 'water':   tool = { id: 'watering_can', name: 'Watering Can', animation: 'WATERING' }; break;
-            case 'flower':  tool = IDLE_TOOLS.FLOWER;  break;
-            case 'weed':    tool = IDLE_TOOLS.WEED;    break;
+            case 'harvest':   tool = IDLE_TOOLS.HARVEST;   break;
+            case 'water':     tool = { id: 'watering_can', name: 'Watering Can', animation: 'WATERING' }; break;
+            case 'flower':    tool = IDLE_TOOLS.FLOWER;    break;
+            case 'weed':      tool = IDLE_TOOLS.WEED;      break;
+            case 'fill_well': tool = IDLE_TOOLS.FILL_WELL; break;
             default: return null;
         }
         const job = this.game.jobManager.addIdleJob('human', tool, [tile]);
