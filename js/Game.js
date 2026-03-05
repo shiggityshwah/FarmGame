@@ -28,6 +28,7 @@ import { TravelerManager } from './TravelerManager.js';
 import { RoadsideStand } from './RoadsideStand.js';
 import { createHarvestEffect, updateEffects, renderEffects as renderFloatingEffects } from './EffectUtils.js';
 import { ReplenishZoneManager } from './ReplenishZoneManager.js';
+import { SaveManager } from './SaveManager.js';
 import { Logger } from './Logger.js';
 
 const log = Logger.create('Game');
@@ -167,6 +168,9 @@ export class Game {
 
         // Replenishable zone manager (auto-replanting system)
         this.replenishZoneManager = null;
+
+        // Save/load manager
+        this.saveManager = null;
 
         // Roadside stand and traveler service
         this.roadsideStand = null;
@@ -578,6 +582,10 @@ export class Game {
                 this.chimneySmoke.setOnComplete(() => { this.chimneySmokePauseTimer = 2; });
             }
 
+            // Initialize save manager and start auto-save
+            this.saveManager = new SaveManager(this);
+            this.saveManager.startAutoSave();
+
             log.info('Game initialized successfully!');
         } catch (error) {
             log.error('Failed to initialize game:', error);
@@ -980,10 +988,11 @@ export class Game {
                         this.replenishZoneManager.onHarvest(tileX, tileY);
                     }
 
-                    // Wild crop seed drop: 50% chance when harvesting from non-hoed ground
+                    // Seed drop on harvest: 75% for wild crops (non-hoed), 25% for planted crops (hoed)
                     const underTileId = this.tilemap.getTileAt(tileX, tileY);
                     const isHoed = underTileId !== null && CONFIG.tiles.hoedGround.includes(underTileId);
-                    if (!isHoed && Math.random() < 0.5) {
+                    const seedDropChance = isHoed ? 0.25 : 0.75;
+                    if (Math.random() < seedDropChance) {
                         const seedRes = this.inventory.getSeedByCropIndex(harvested.index);
                         if (seedRes) {
                             this.inventory.add(seedRes, 1);
@@ -2104,12 +2113,12 @@ export class Game {
         //    Connects east to home path at homeEastX and gives access to store entrance.
         placeRow(storeChunkY + chunkSize - 1, storeChunkX, storeChunkRight - 1); // y=29, x=15–29
 
-        // 4. Home approach fork — just below home bottom (y=40), branches left to entrance
-        //    Home is at y=30–39; approach at y=40; entrance center = homeOffsetX + floor(homeWidth/2)
+        // 4. Home approach fork — at door row y=37, branches left to door entrance at x=20
+        //    Home doors (tile 206) are at world y=37, x=20 and x=23; approach runs along same row.
         if (map.townHomeWidth > 0) {
-            const homeApproachY = map.townHomeOffsetY + map.townHomeHeight; // 30+10=40
-            const homeEntranceX = map.townHomeOffsetX + Math.floor(map.townHomeWidth / 2); // 17+5=22
-            placeRow(homeApproachY, homeEntranceX, homeEastX); // y=40, x=22–29
+            const homeApproachY = map.townHomeOffsetY + 7; // 30+7=37
+            const homeEntranceX = map.townHomeOffsetX + 3; // 17+3=20
+            placeRow(homeApproachY, homeEntranceX, homeEastX); // y=37, x=20–29
         }
 
         // 5. House east-side path — from farm top (y=49) down to house front row (y=57)
@@ -2122,6 +2131,16 @@ export class Game {
         //    Door at local (1,4) → world (17, 56); houseFrontY=57 is the last house row
         const doorX = map.newHouseOffsetX + 1; // 17
         placeRow(houseFrontY, doorX - 1, houseEastX); // y=57, x=16–22
+
+        // 7. Door threshold paths — at each TMX tile-206 position from store/home tilemaps.
+        //    These mark the tile directly in front of each building entrance; the path tile
+        //    renders underneath the door decor tile in the layer stack.
+        if (map.doorTilePositions) {
+            for (const pos of map.doorTilePositions) {
+                map.setTileAt(pos.x, pos.y, getRandomPathTile());
+                this.pathPositions.push({ x: pos.x, y: pos.y });
+            }
+        }
     }
 
     initPathEdgeOverlays() {
@@ -2357,10 +2376,14 @@ export class Game {
             this.forestGenerator.render(this.ctx, this.camera);
         }
 
-        // Render edge overlays (hoed tile neighbor overlays) before tree/rock bottoms
+        // Render edge overlays (path/hoed tile borders) before building layers and tree bottoms
         if (this.overlayManager) {
             this.overlayManager.renderEdgeOverlays(this.ctx, this.camera, renderBounds);
         }
+
+        // Render building layers (Decor, Buildings Base/Detail) AFTER path edge overlays
+        // so path borders appear underneath building walls/decor.
+        this.tilemap.renderBuildingLayers(this.ctx, this.camera);
 
         // Render tree trunk and shadow tiles (behind characters) - includes tree bottoms that should be on top of edge overlays
         if (this.forestGenerator) {
@@ -3211,6 +3234,96 @@ export class Game {
             this.homeUpgrades.shrineUpgrades.roadsideReplenishment = true;
             if (this.uiManager) this.uiManager.refreshStandMenuIfOpen();
             log.info('Replenishment unlocked via debug cheat');
+        });
+
+        // ── Save / Load section ───────────────────────────────────────────────
+        const saveSection = document.createElement('div');
+        saveSection.className = 'debug-cheat-section';
+        saveSection.innerHTML = `
+            <h3>Save / Load</h3>
+            <div class="debug-btn-row">
+                <button class="debug-cheat-btn" id="save-game-btn">Save Game</button>
+                <button class="debug-cheat-btn" id="download-save-btn">Download Save</button>
+            </div>
+            <div class="debug-btn-row">
+                <button class="debug-cheat-btn" id="copy-save-btn">Copy to Clipboard</button>
+                <button class="debug-cheat-btn" id="paste-load-btn">Paste &amp; Load</button>
+            </div>
+            <div id="paste-load-area" style="display:none; margin-top:6px;">
+                <textarea id="paste-json-input" rows="5" style="width:100%; box-sizing:border-box; font-size:10px; resize:vertical;" placeholder="Paste save JSON here..."></textarea>
+                <div class="debug-btn-row" style="margin-top:4px;">
+                    <button class="debug-cheat-btn" id="paste-json-confirm">Load</button>
+                    <button class="debug-cheat-btn" id="paste-json-cancel">Cancel</button>
+                </div>
+            </div>
+            <div class="debug-btn-row" style="margin-top:4px;">
+                <button class="debug-cheat-btn" id="new-game-btn" style="background:#8b2222;">New Game</button>
+            </div>
+            <div id="new-game-confirm" style="display:none; color:#f87; font-size:0.85em; margin-top:4px; text-align:center;">
+                Click again to confirm — all progress will be lost!
+            </div>
+        `;
+        menu.appendChild(saveSection);
+
+        // Helper: briefly flash button text then restore
+        const flashBtn = (id, msg, duration = 1200) => {
+            const btn = document.getElementById(id);
+            if (!btn) return;
+            const orig = btn.textContent;
+            btn.textContent = msg;
+            btn.disabled = true;
+            setTimeout(() => { btn.textContent = orig; btn.disabled = false; }, duration);
+        };
+
+        document.getElementById('save-game-btn').addEventListener('click', () => {
+            if (this.saveManager?.saveToStorage()) flashBtn('save-game-btn', 'Saved!');
+        });
+
+        document.getElementById('download-save-btn').addEventListener('click', () => {
+            this.saveManager?.downloadSave();
+        });
+
+        document.getElementById('copy-save-btn').addEventListener('click', async () => {
+            await this.saveManager?.copyToClipboard();
+            flashBtn('copy-save-btn', 'Copied!');
+        });
+
+        document.getElementById('paste-load-btn').addEventListener('click', () => {
+            const area = document.getElementById('paste-load-area');
+            area.style.display = area.style.display === 'none' ? '' : 'none';
+        });
+
+        document.getElementById('paste-json-confirm').addEventListener('click', async () => {
+            const json = document.getElementById('paste-json-input').value.trim();
+            if (!json) return;
+            try {
+                await this.saveManager.loadFromJson(json);
+                document.getElementById('paste-load-area').style.display = 'none';
+                document.getElementById('paste-json-input').value = '';
+            } catch (e) {
+                alert('Load failed: ' + e.message);
+            }
+        });
+
+        document.getElementById('paste-json-cancel').addEventListener('click', () => {
+            document.getElementById('paste-load-area').style.display = 'none';
+        });
+
+        // Two-click confirm for New Game
+        let newGamePending = false;
+        let newGameTimeout = null;
+        document.getElementById('new-game-btn').addEventListener('click', () => {
+            if (!newGamePending) {
+                newGamePending = true;
+                document.getElementById('new-game-confirm').style.display = '';
+                newGameTimeout = setTimeout(() => {
+                    newGamePending = false;
+                    document.getElementById('new-game-confirm').style.display = 'none';
+                }, 4000);
+            } else {
+                clearTimeout(newGameTimeout);
+                this.saveManager?.newGame();
+            }
         });
     }
 

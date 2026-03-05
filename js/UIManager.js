@@ -196,7 +196,13 @@ export class UIManager {
         } else if (this.activeMenu === 'shop') {
             this.renderShopMenu(this.shopActiveTab || 'buy');
         } else if (this.activeMenu === 'stand' && this.activeStand) {
-            this.renderStandMenu(this.activeStand);
+            if (this.standSlotSubmenu) {
+                // Submenu is open — refresh stand menu slots without closing it, then update submenu content
+                this.renderStandMenu(this.activeStand, true);
+                this._refreshStandSlotSubmenu(this._standSubmenuSlotIndex, this.activeStand);
+            } else {
+                this.renderStandMenu(this.activeStand);
+            }
         }
     }
 
@@ -1006,8 +1012,8 @@ export class UIManager {
         }
     }
 
-    renderStandMenu(stand) {
-        this._closeStandSlotSubmenu();
+    renderStandMenu(stand, keepSubmenu = false) {
+        if (!keepSubmenu) this._closeStandSlotSubmenu();
 
         let html = `
             <div style="background: linear-gradient(180deg, #8b7355 0%, #6b5a45 100%); color: #f5e6c8; padding: 12px 16px; text-align: center; border-bottom: 3px solid #5a4a38;">
@@ -1092,6 +1098,7 @@ export class UIManager {
 
     _openStandSlotSubmenu(slotIndex, stand) {
         this._closeStandSlotSubmenu();
+        this._standSubmenuSlotIndex = slotIndex;
 
         const inventory = this.game.inventory;
 
@@ -1198,6 +1205,69 @@ export class UIManager {
         }, 0);
     }
 
+    _refreshStandSlotSubmenu(slotIndex, stand) {
+        if (!this.standSlotSubmenu) return;
+        const inventory = this.game.inventory;
+
+        const claimedCounts = {};
+        for (let i = 0; i < stand.slots.length; i++) {
+            if (i === slotIndex) continue;
+            const r = stand.slots[i].resource;
+            if (r) claimedCounts[r.id] = (claimedCounts[r.id] || 0) + 1;
+        }
+
+        const available = Object.values(RESOURCE_TYPES).filter(r => {
+            if (r.sell_price === undefined) return false;
+            const owned = inventory.getCount(r);
+            const claimed = claimedCounts[r.id] || 0;
+            return owned - claimed > 0;
+        });
+
+        let innerHtml = `<div style="font-size: 13px; font-weight: bold; color: #5a4a38; margin-bottom: 8px; text-align: center; border-bottom: 2px solid #c4a882; padding-bottom: 6px;">Choose Item for Slot ${slotIndex + 1}</div>`;
+
+        if (available.length === 0) {
+            innerHtml += `<p style="color: #7a6a5a; font-size: 12px; text-align: center; font-style: italic;">No sellable items available</p>`;
+        } else {
+            innerHtml += `<div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px;">`;
+            for (const r of available) {
+                const owned = inventory.getCount(r);
+                const claimed = claimedCounts[r.id] || 0;
+                const net = owned - claimed;
+                innerHtml += `
+                    <div class="stand-item-choice" data-resource-id="${r.id}" style="background: linear-gradient(180deg, #fff 0%, #e8e0d0 100%); border: 2px solid #a89070; border-radius: 6px; padding: 6px; text-align: center; cursor: pointer; transition: border-color 0.1s;">
+                        <div style="width: 28px; height: 28px; margin: 0 auto 3px auto; display: flex; align-items: center; justify-content: center;">
+                            <div style="width: 16px; height: 16px; image-rendering: pixelated; background-image: url('Tileset/spr_tileset_sunnysideworld_16px.png'); background-position: ${this.getTilePosition(r.tileId)}; background-size: 1024px 1024px; transform: scale(1.75);"></div>
+                        </div>
+                        <div style="font-size: 9px; color: #5a4a38; line-height: 1.2;">${r.name}</div>
+                        <div style="font-size: 9px; color: #7a6a5a;">x${net}</div>
+                        <div style="display: flex; align-items: center; justify-content: center; gap: 2px; margin-top: 2px;">
+                            <div style="width: 8px; height: 8px; image-rendering: pixelated; background-image: url('Tileset/spr_tileset_sunnysideworld_16px.png'); background-position: ${this.getTilePosition(RESOURCE_TYPES.GOLD.tileId)}; background-size: 1024px 1024px;"></div>
+                            <span style="font-size: 9px; color: #2d4d1f; font-weight: bold;">${r.sell_price}</span>
+                        </div>
+                    </div>
+                `;
+            }
+            innerHtml += `</div>`;
+        }
+
+        this.standSlotSubmenu.innerHTML = innerHtml;
+
+        for (const btn of this.standSlotSubmenu.querySelectorAll('.stand-item-choice')) {
+            btn.addEventListener('mouseenter', () => { btn.style.borderColor = '#4a7c59'; });
+            btn.addEventListener('mouseleave', () => { btn.style.borderColor = '#a89070'; });
+            btn.addEventListener('click', () => {
+                const resourceId = btn.dataset.resourceId;
+                const resource = Object.values(RESOURCE_TYPES).find(r => r.id === resourceId);
+                if (resource) {
+                    stand.slots[slotIndex].resource = resource;
+                    stand.slots[slotIndex].autoReplenish = false;
+                    this._closeStandSlotSubmenu();
+                    this.renderStandMenu(stand);
+                }
+            });
+        }
+    }
+
     _closeStandSlotSubmenu() {
         // Always remove the tracked outside-click listener first to prevent accumulation
         if (this._standSubmenuOutsideClickHandler) {
@@ -1208,6 +1278,7 @@ export class UIManager {
             this.standSlotSubmenu.remove();
             this.standSlotSubmenu = null;
         }
+        this._standSubmenuSlotIndex = null;
     }
 
     // Get tile position for CSS background

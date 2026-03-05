@@ -6,6 +6,7 @@ window.addEventListener('DOMContentLoaded', async () => {
     try {
         const game = new Game('gameCanvas');
         await game.init();
+        await game.saveManager.tryLoadFromStorage();
         game.start();
 
         // Initialize character customization UI

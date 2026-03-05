@@ -1,35 +1,10 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<map version="1.10" tiledversion="1.11.2" orientation="orthogonal" renderorder="right-down" width="10" height="10" tilewidth="16" tileheight="16" infinite="0" nextlayerid="8" nextobjectid="4">
+<map version="1.10" tiledversion="1.11.2" orientation="orthogonal" renderorder="right-down" width="10" height="10" tilewidth="16" tileheight="16" infinite="0" nextlayerid="9" nextobjectid="4">
+ <editorsettings>
+  <export target="store.csv" format="csv"/>
+ </editorsettings>
  <tileset firstgid="1" source="spr_tileset_sunnysideworld_16px.tsx"/>
- <layer id="1" name="Ground" width="10" height="10">
-  <data encoding="csv">
-67,67,67,67,67,67,67,194,67,67,
-67,194,67,67,193,67,67,67,130,67,
-67,67,67,67,67,67,193,132,67,67,
-67,258,67,67,130,67,67,67,194,67,
-67,193,67,67,67,67,67,67,67,67,
-67,67,67,67,194,259,67,67,194,258,
-194,67,130,67,67,194,67,67,259,67,
-67,67,67,67,67,67,67,67,193,67,
-67,131,193,483,483,483,67,67,130,67,
-67,67,67,67,483,67,67,194,67,67
-</data>
- </layer>
- <layer id="2" name="Decor" width="10" height="10">
-  <data encoding="csv">
-0,0,0,0,0,0,286,0,0,0,
-0,156,0,0,0,0,0,0,0,0,
-0,0,0,0,0,0,0,0,0,157,
-0,0,0,0,0,0,0,0,0,0,
-0,0,0,0,0,0,0,0,0,0,
-0,0,0,0,0,0,0,0,0,0,
-95,0,0,0,0,0,0,0,0,222,
-0,0,0,0,0,0,0,0,0,0,
-0,552,487,206,207,208,547,553,1254,1255,
-0,289,552,487,0,547,553,1062,1318,1319
-</data>
- </layer>
- <layer id="3" name="Buildings (Base)" width="10" height="10">
+ <layer id="8" name="Ground" width="10" height="10">
   <data encoding="csv">
 0,0,0,0,0,0,0,0,0,0,
 0,0,0,0,0,0,0,0,0,0,
@@ -38,8 +13,8 @@
 0,0,0,0,0,0,0,0,0,0,
 0,0,0,0,0,0,0,0,0,0,
 0,0,0,0,0,0,0,0,0,0,
-0,2901,2328,2328,1829,2328,2328,2328,2909,0,
 0,0,0,0,0,0,0,0,0,0,
+0,0,0,206,207,208,0,0,0,0,
 0,0,0,0,0,0,0,0,0,0
 </data>
  </layer>
@@ -53,6 +28,20 @@
 0,0,0,0,0,0,0,0,0,0,
 0,0,0,0,2328,0,0,0,0,0,
 0,0,0,847,0,0,847,0,0,0,
+0,0,0,0,0,0,0,0,0,0,
+0,0,0,0,0,0,0,0,0,0
+</data>
+ </layer>
+ <layer id="3" name="Buildings (Base)" width="10" height="10">
+  <data encoding="csv">
+0,0,0,0,0,0,0,0,0,0,
+0,0,0,0,0,0,0,0,0,0,
+0,0,0,0,0,0,0,0,0,0,
+0,0,0,0,0,0,0,0,0,0,
+0,0,0,0,0,0,0,0,0,0,
+0,0,0,0,0,0,0,0,0,0,
+0,0,0,0,0,0,0,0,0,0,
+0,2901,2328,2328,1829,2328,2328,2328,2909,0,
 0,0,0,0,0,0,0,0,0,0,
 0,0,0,0,0,0,0,0,0,0
 </data>
@@ -78,7 +67,7 @@
    </properties>
   </object>
  </objectgroup>
- <objectgroup id="7" name="Collision">
+ <objectgroup id="7" name="Collision" locked="1">
   <object id="2" x="27.1345" y="52.264" width="105.865" height="75.5221"/>
  </objectgroup>
 </map>

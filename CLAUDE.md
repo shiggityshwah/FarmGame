@@ -45,7 +45,7 @@ Open `index.html` directly in a web browser. No build step required. Refresh bro
 
 ### Farming Systems (js/)
 
-- **Well.js** - Well structure at world tile (24, 53): 2-tile wide × 3-tile tall. Top row (tiles 1256–1257, y=53) visual-only rendered above characters; middle + bottom rows (tiles 1320–1321 / 1384–1385, y=54–55) block movement. `isObstacle(x,y)` checks middle+bottom rows. `getAdjacentServiceTile()` → (23, 54). `registerInteractable()` registers click area for `'openWell'` action. Rendered in depth-sorted pass (`getSortY()`) + upper-layers pass (`renderTop()`). Well menu (`#well-menu`) opened by click, has Fill buttons for human/goblin cans. `game.wateringCanWater/Max` and `game.goblinWaterCanWater/Max` (all default 20).
+- **Well.js** - Well structure at world tile (24, 53): 2-tile wide × 3-tile tall. Top row (tiles 1256–1257, y=53) visual-only rendered above characters; middle + bottom rows (tiles 1320–1321 / 1384–1385, y=54–55) block movement. `isObstacle(x,y)` checks middle+bottom rows. `getAdjacentServiceTile()` → (24, 55). `registerInteractable()` registers click area for `'openWell'` action. Rendered in depth-sorted pass (`getSortY()`) + upper-layers pass (`renderTop()`). Well menu (`#well-menu`) opened by click, has Fill buttons for human/goblin cans. `game.wateringCanWater/Max` and `game.goblinWaterCanWater/Max` (all default 20).
 - **CropManager.js** / **Crop.js** - Extends `ResourceManager` (`this.crops = this.resources`). Crop lifecycle: 5 growth stages (variable time per crop), harvest with floating "+1" feedback via `this.effects`, post-harvest decay effects. Overrides `_updateResources(deltaTime)` to apply shrine growth-speed multiplier before passing to each crop. Multi-step watering state machine: `wateringState` ∈ `'needs_water' | 'watering_cooldown' | 'growing'`; `wateringsPerStage` per crop type (1 for most, 2 for PUMPKIN/WHEAT/SUNFLOWER); 30s cooldown between multi-waterings. Crop visual feedback uses tile ID: dry ground tile (818) when `needs_water`, wet ground tile (882) when growing/cooldown — no overlay dots. Wild crops (startAsPlanted=false) begin in `'growing'` state, never need watering. `get isWatered()` backward-compat getter. Phase 3: `setGame(game)` called after init; `_getGrowthSpeedMultiplier()` reads `game.homeUpgrades.shrineUpgrades.fertileSoilLevel` (0=1.0×, 1=0.85×, 2=0.70×); `update()` uses `effectiveDt = dt * speedMultiplier` for stage advancement.
 - **Flower.js** - Wild flower system with 3 rarity types: Blue (10%), Red (30%), White (60%). Each has 4 tile variations. Harvest yields 1-2 with fade-out animation. Phase 3: harvest adds FLOWER_BLUE/RED/WHITE color-specific resource types to inventory (not generic FLOWER).
 - **ReplenishZoneManager.js** - Auto-replanting zone system. `createZone(tiles, cropTypeIndex)` → zones are Sets of `"x,y"` tile keys with eviction logic (tile can only belong to one zone). `onHarvest(tileX, tileY)` queues plant job via `jobManager.addJobToQueue()` if seeds available, else pauses zone (grey border). `checkPausedZones()` reactivates on inventory change and queues replant for any hoed-but-empty tiles. `pauseZonesForCrop(cropTypeIndex)` marks all active zones for that crop type as inactive (called by JobManager when seeds exhaust mid-job so missed tiles get retried on restock). `expandZone(id, newTiles)` merges additional tiles. `changeSeed(id, cropTypeIndex)` updates zone's seed type. `deleteZone(id)` removes all tiles. `render(ctx, camera, tileSize)` draws perimeter edges (skips shared edges); world-pixel coords used directly since camera transform already applied — `lineWidth = 2 / zoom`; active zones green, paused zones grey. Zone management panel (`#zone-manage-panel`) opened by clicking a zone tile in zone manage mode; shows Delete, Change Seed, Expand buttons.
@@ -94,7 +94,7 @@ Row 4:  [forest+res]   [forest+res]   [forest+res]    worldY = 64–78
   - y=45: N-grass + `'S'` edge overlay; y=46–47: path tiles (speed boost); y=48: S-grass + `'N'` edge overlay
   - Rendered by `tilemap.renderGreatPath()` after `tilemap.render()`
   - North bridge at x=29 (home east-edge path); south bridge at x=22 (farm house path)
-- **Store** (10×10): world (18, 19) — in store chunk (`storeOffsetX=18, storeOffsetY=19`)
+- **Store** (10×10): world (18, 21) — in store chunk (`storeOffsetX=18, storeOffsetY=21`)
 - **Town home** (home.tmx, 10×10): world (17, 30) — in home chunk (`townHomeOffsetX=17, townHomeOffsetY=30`)
 - **New house** (house.tmx, 6×6): world (16, 52) — in farm chunk (`newHouseOffsetX=16, newHouseOffsetY=52`)
 - **Player spawn**: world tile (17, 55) in farm chunk
@@ -121,8 +121,8 @@ Row 4:  [forest+res]   [forest+res]   [forest+res]    worldY = 64–78
 - Path tile IDs: `[482, 490, 491, 554, 555]`. Speed multiplier: 1.5x
 - **Great path** (y=45–48): SEPARATE tilemap via `renderGreatPath()` — no `setTileAt` calls
 - **Home east-edge path**: x=29, y=30–44 (full east column of home chunk)
-- **Store bottom path**: y=29, x=15–29 (bottom row of store chunk)
-- **Home approach fork**: y=40, x=22–29 (branches left to home entrance at x=22)
+- **Store bottom path**: y=29, x=15–29 (bottom row of store chunk; storeOffsetY=21 so door row 8 = world y=29)
+- **Home approach fork**: y=37, x=20–29 (runs along door row; home doors (tile 206) at y=37, x=20 and x=23)
 - **House east-side path**: x=22, y=49–57 (east of house, farm top to house front)
 - **House front E-W**: y=57, x=16–22
 

@@ -722,7 +722,24 @@ export class TilemapRenderer {
             }
         }
 
-        // Render additional layers on top
+        // Building layers (Decor, Buildings Base/Detail) are rendered separately via
+        // renderBuildingLayers() so path edge overlays can be drawn underneath them.
+    }
+
+    // Render store + town home building layers (Decor, Buildings Base, Buildings Detail).
+    // Call AFTER path edge overlays so the path borders appear beneath building walls.
+    renderBuildingLayers(ctx, camera) {
+        if (!this.loaded || this.layers.length === 0) return;
+
+        const bounds = camera.getVisibleBounds();
+        const mapStartTileX = this.mapStartX || 0;
+        const mapStartTileY = this.mapStartY || 0;
+        const startCol = Math.max(mapStartTileX, Math.floor(bounds.left  / this.tileSize));
+        const endCol   = Math.min(this.mapWidth  - 1, Math.ceil(bounds.right  / this.tileSize));
+        const startRow = Math.max(mapStartTileY, Math.floor(bounds.top   / this.tileSize));
+        const endRow   = Math.min(this.mapHeight - 1, Math.ceil(bounds.bottom / this.tileSize));
+
+        const overlap = 0.5;
         for (const layer of this.layers) {
             this.renderLayer(ctx, layer, startCol, endCol, startRow, endRow, overlap);
         }
@@ -1060,7 +1077,7 @@ export class TilemapRenderer {
             this.storeWidth  = storeData.width;   // 10
             this.storeHeight = storeData.height;  // 10
             this.storeOffsetX = storeCol * this.CHUNK_SIZE + 3;  // 15 + 3 = 18
-            this.storeOffsetY = storeRow * this.CHUNK_SIZE + 4;  // 15 + 4 = 19
+            this.storeOffsetY = storeRow * this.CHUNK_SIZE + 6;  // 15 + 6 = 21 (door row 8 = world y=29 = store bottom path)
 
             // --- New house (house.tmx) in farm chunk (col=1, row=3, world x=15-29, world y=49-63) ---
             this.newHouseWidth  = houseData.width;  // 6
@@ -1128,6 +1145,32 @@ export class TilemapRenderer {
                         const tile = homeGroundLayer.data[ly][lx];
                         if (tile >= 0) {
                             this.setTileAt(this.townHomeOffsetX + lx, this.townHomeOffsetY + ly, tile);
+                        }
+                    }
+                }
+            }
+
+            // --- Collect door threshold positions (TMX tile 206 = parsed 205, 0-indexed) ---
+            // These positions get path tiles placed underneath them in placePathTilesInMap().
+            // Store Ground layer: tile 206 composited to chunk, will be overwritten with path tile.
+            // Home Decor layer: tile 206 renders above chunk via this.layers, path tile goes in chunk.
+            this.doorTilePositions = [];
+            const doorMarkerId = 205; // 0-indexed (TMX firstgid=1, so TMX 206 → parsed 205)
+            if (storeGroundLayer) {
+                for (let ly = 0; ly < this.storeHeight; ly++) {
+                    for (let lx = 0; lx < this.storeWidth; lx++) {
+                        if (storeGroundLayer.data[ly][lx] === doorMarkerId) {
+                            this.doorTilePositions.push({ x: this.storeOffsetX + lx, y: this.storeOffsetY + ly });
+                        }
+                    }
+                }
+            }
+            const homeDecorLayer = homeData.tileLayers.find(l => l.name === 'Decor');
+            if (homeDecorLayer) {
+                for (let ly = 0; ly < this.townHomeHeight; ly++) {
+                    for (let lx = 0; lx < this.townHomeWidth; lx++) {
+                        if (homeDecorLayer.data[ly][lx] === doorMarkerId) {
+                            this.doorTilePositions.push({ x: this.townHomeOffsetX + lx, y: this.townHomeOffsetY + ly });
                         }
                     }
                 }

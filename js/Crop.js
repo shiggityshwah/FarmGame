@@ -84,6 +84,7 @@ export class Crop {
         this.tileX = tileX;
         this.tileY = tileY;
         this.cropType = cropType;
+        this.startAsPlanted = startAsPlanted;
         this.stage = startAsPlanted ? GROWTH_STAGE.PLANTING_PHASE1 : GROWTH_STAGE.SEED;
         this.growthTimer = 0;
         this.isHarvested = false;
@@ -218,8 +219,8 @@ export class Crop {
             this.growthTimer = 0;
             this.stage++;
 
-            // After advancing to a new stage, require watering again (unless now harvestable)
-            if (this.stage < GROWTH_STAGE.HARVESTABLE) {
+            // After advancing to a new stage, require watering again (unless now harvestable or wild)
+            if (this.stage < GROWTH_STAGE.HARVESTABLE && this.startAsPlanted) {
                 this.wateringState = 'needs_water';
                 this.wateringsThisStage = 0;
             }

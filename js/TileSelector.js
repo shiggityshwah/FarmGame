@@ -505,6 +505,8 @@ export class TileSelector {
             if (!inMainFarmableArea && !inForestGrass && !inOwnedChunk) {
                 return false;
             }
+            // Can't hoe the house/courtyard area (x=15–26, y=49–57)
+            if (tileX >= 15 && tileX <= 26 && tileY >= 49 && tileY <= 57) return false;
             // Can't hoe where there's a weed
             if (this.flowerManager && this.flowerManager.getWeedAt(tileX, tileY)) {
                 return false;

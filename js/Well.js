@@ -43,10 +43,10 @@ export class Well {
 
     /**
      * Returns the best adjacent walkable tile for characters to stand at while using the well.
-     * Uses the tile west of the middle row (x=23, y=54) — clear of obstacles.
+     * Uses the tile east of the bottom row (x=26, y=55) — right of and below the well.
      */
     getAdjacentServiceTile() {
-        return { x: this.tileX - 1, y: this.tileY + 1 };
+        return { x: this.tileX , y: this.tileY + 2 };
     }
 
     /**
