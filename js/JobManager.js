@@ -1,5 +1,6 @@
-import { getRandomDirtTile, CONFIG } from './config.js';
+import { getRandomDirtTile, getRandomPathTile, CONFIG } from './config.js';
 import { RESOURCE_TYPES } from './Inventory.js';
+import { BUILDING_DEFS, buildingCostToRefundItems } from './BuildingRegistry.js';
 import { Logger } from './Logger.js';
 import { worldToTile, tileToWorld, tileCenterWorld } from './TileUtils.js';
 import { GROWTH_STAGE } from './Crop.js';
@@ -592,7 +593,7 @@ export class JobManager {
                 return;
             }
         } else if (tool.id === 'axe') {
-            const shouldContinue = this.chopTree(workX, workY);
+            const shouldContinue = this.chopTree(workX, workY, workerId);
             if (shouldContinue) {
                 // One chop done, tree still alive — interrupt for stand if pending
                 if (this._checkInterruptForStand(workerId, false)) return;
@@ -615,6 +616,20 @@ export class JobManager {
             this._applyCraftingEffect(job.craftingRecipeId, workerId);
             job.refundItems = null;
             job.craftingCyclesCompleted = 0;
+            // Fall through to normal tile completion
+        } else if (tool.id === 'construct') {
+            job.constructionCyclesCompleted = (job.constructionCyclesCompleted || 0) + 1;
+            if (job.constructionCyclesCompleted < job.constructionCycles) {
+                // More cycles needed — replay HAMMERING animation
+                this.setWorkerAnimation(workerId, tool.animation, false, () => {
+                    this.onAnimationCompleteForWorker(workerId);
+                }, speedMultiplier);
+                return;
+            }
+            // All cycles done — complete the building
+            this.game.buildingManager?.completeBuildingById(job.buildingId);
+            job.refundItems = null;
+            job.constructionCyclesCompleted = 0;
             // Fall through to normal tile completion
         } else {
             this.applyToolEffect(tool, workX, workY, workerId);
@@ -862,6 +877,19 @@ export class JobManager {
                 const weed = this.game.flowerManager?.getWeedAt(tileX, tileY);
                 return !weed;
             }
+            case 'construct': {
+                // Find job by buildingId and check state
+                const workerState = [...this.workers.values()].find(ws => ws.currentJob?.buildingId != null);
+                const job = workerState?.currentJob;
+                if (!job) return true;
+                const b = this.game.buildingManager?.getBuildingById(job.buildingId);
+                return !b || b.state !== 'under_construction';
+            }
+            case 'path': {
+                // Already a path tile — nothing to do
+                const tileId = this.game.tilemap.getTileAt(tileX, tileY);
+                return tileId !== null && CONFIG.tiles.path.includes(tileId);
+            }
             default:
                 return false;
         }
@@ -970,6 +998,7 @@ export class JobManager {
                     const harvested = this.game.cropManager.tryHarvest(tileX, tileY);
                     if (harvested && this.game.inventory) {
                         this.game.inventory.addCropByIndex(harvested.index);
+                        if (this.game.milestones) this.game.milestones.totalCropsHarvested++;
                         log.debug(`Idle harvested: ${harvested.name}`);
                         // Notify replenish zone manager so it can queue auto-replant
                         if (this.game.replenishZoneManager) {
@@ -1024,6 +1053,24 @@ export class JobManager {
                         this.game.tryReplenishStandSlot(slotIndex, resource);
                     }
                 }
+                break;
+            }
+
+            case 'path': {
+                // Deduct 1 stone; place a random path tile; register edge overlays
+                if (!this.game.inventory.has(RESOURCE_TYPES.ORE_STONE, CONFIG.build.pathCostPerTile)) {
+                    // No stone left — clear remaining tiles so the worker stops walking
+                    const ws = this.workers.get(workerId);
+                    if (ws?.currentJob) ws.currentJob.tiles = [];
+                    this.game._showNotification?.('Out of stone');
+                    break;
+                }
+                this.game.inventory.remove(RESOURCE_TYPES.ORE_STONE, CONFIG.build.pathCostPerTile);
+                const pathTileId = getRandomPathTile();
+                this.game.tilemap.setTileAt(tileX, tileY, pathTileId);
+                this.game.playerPlacedPaths.add(`${tileX},${tileY}`);
+                this.game.overlayManager?.markTileAsPath(tileX, tileY);
+                this.game._onPathChanged?.();
                 break;
             }
 
@@ -1088,6 +1135,7 @@ export class JobManager {
             const crop = this.game.cropManager.getCropAt(tileX, tileY);
             if (crop) {
                 crop.advancePlantingPhase();
+                if (this.game.milestones) this.game.milestones.totalCropsPlanted++;
             }
         }
     }
@@ -1205,29 +1253,27 @@ export class JobManager {
 
     // Chop a tree at the specified tile (regular tree or forest tree)
     // Returns true if tree is still choppable and should continue chopping
-    chopTree(tileX, tileY) {
+    chopTree(tileX, tileY, workerId = 'human') {
         // Try regular tree first
         if (this.game.treeManager) {
             const tree = this.game.treeManager.getTreeAt(tileX, tileY);
             if (tree && tree.canBeChopped()) {
-                // Chop the regular tree
                 const result = this.game.treeManager.chopTree(tileX, tileY);
 
                 if (result && result.woodYielded) {
-                    // Add wood to inventory
-                    if (this.game.inventory) {
-                        this.game.inventory.addWood();
-                    }
+                    if (this.game.inventory) this.game.inventory.addWood();
                     log.debug(`Chopped ${tree.treeType.name}!`);
                 }
 
-                // Check if we should continue chopping
-                if (tree.canBeChopped()) {
-                    return true; // Continue chopping
-                }
+                if (tree.canBeChopped()) return true;
 
+                // Tree fully depleted — drop a seed (farm trees are never lit)
+                if (this.game._onTreeDepleted) {
+                    const seedKey = this.game.forestGenerator.pickSeedType(false);
+                    this.game._onTreeDepleted(tileX, tileY, seedKey, workerId);
+                }
                 log.info(`${tree.treeType.name} removed!`);
-                return false; // Stop chopping
+                return false;
             }
         }
 
@@ -1235,24 +1281,22 @@ export class JobManager {
         if (this.game.forestGenerator) {
             const forestTree = this.game.forestGenerator.getTreeAt(tileX, tileY);
             if (forestTree && forestTree.canBeChopped()) {
-                // Chop the forest tree
                 const result = this.game.forestGenerator.chopTree(tileX, tileY);
 
                 if (result && result.woodYielded) {
-                    // Add wood to inventory
-                    if (this.game.inventory) {
-                        this.game.inventory.addWood();
-                    }
+                    if (this.game.inventory) this.game.inventory.addWood();
                     log.debug(`Chopped forest tree!`);
                 }
 
-                // Check if we should continue chopping
-                if (forestTree.canBeChopped()) {
-                    return true; // Continue chopping
-                }
+                if (forestTree.canBeChopped()) return true;
 
+                // Forest tree fully depleted — drop a seed based on lit status
+                if (result?.depleted && this.game._onTreeDepleted) {
+                    const seedKey = this.game.forestGenerator.pickSeedType(result.wasInitiallyLit ?? false);
+                    this.game._onTreeDepleted(tileX, tileY, seedKey, workerId);
+                }
                 log.info(`Forest tree removed!`);
-                return false; // Stop chopping
+                return false;
             }
         }
 
@@ -1688,6 +1732,31 @@ export class JobManager {
 
         this.queues[this.activeQueueTarget].push(job);
         log.info(`Craft job added: ${recipeId} (${craftingCycles} cycles)`);
+
+        if (this.onQueueChange) this.onQueueChange();
+        this.tryAssignJobs();
+        return job;
+    }
+
+    // Add a construction job for a placed building.
+    // Worker walks to the building door tile and hammers for constructionCycles animations.
+    addConstructJob(building) {
+        const def = BUILDING_DEFS[building.definitionId];
+        if (!def) { log.warn(`No def found for ${building.definitionId}`); return null; }
+
+        // Door tile in world coords (building top-left + doorOffset)
+        const doorX = building.tileX + def.doorOffset.x;
+        const doorY = building.tileY + def.doorOffset.y;
+
+        const CONSTRUCT_TOOL = { id: 'construct', name: 'Construct', animation: 'HAMMERING' };
+        const job = this._buildJob(CONSTRUCT_TOOL, [{ x: doorX, y: doorY }], this.activeQueueTarget);
+        job.buildingId = building.id;
+        job.constructionCycles = def.constructionCycles;
+        job.constructionCyclesCompleted = 0;
+        job.refundItems = buildingCostToRefundItems(def.cost);
+
+        this.queues[this.activeQueueTarget].push(job);
+        log.info(`Construct job added for building ${building.id} (${def.constructionCycles} cycles) at door (${doorX},${doorY})`);
 
         if (this.onQueueChange) this.onQueueChange();
         this.tryAssignJobs();

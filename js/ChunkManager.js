@@ -33,9 +33,8 @@
  * INITIAL STATE:
  * --------------
  * Start with ONLY 3×5 chunks allocated (45×79 tiles = 3,375 tiles):
- *   Store: col=1, row=1  (x=15-29, y=15-29)
- *   Home:  col=1, row=2  (x=15-29, y=30-44)
- *   Farm:  col=1, row=3  (x=15-29, world y=49-63)  ← player's initial owned chunk
+ *   Town: col=1, row=1  (x=15-29, y=15-29)  ← TOWN state, blue border
+ *   Farm: col=1, row=2  (x=15-29, world y=34-48)  ← player's initial OWNED chunk
  *   All others: forest chunks (locked; north rows permanently locked)
  *
  * DYNAMIC GROWTH:
@@ -106,17 +105,19 @@ export class ChunkManager {
      * This replaces the old 7×8 pre-allocation (50,400 tiles → 3,375 tiles).
      */
     initialize() {
-        const { storeCol, storeRow, homeCol, homeRow, farmCol, farmRow, initialGridCols, initialGridRows } = CONFIG.chunks;
+        const { homeCol, homeRow, farmCol, farmRow, initialGridCols, initialGridRows } = CONFIG.chunks;
 
-        // Create ONLY the initial 3×5 chunk grid
+        // Create ONLY the initial 3×4 chunk grid
         for (let row = 0; row < initialGridRows; row++) {
             for (let col = 0; col < initialGridCols; col++) {
                 let type, state;
 
-                if ((col === storeCol && row === storeRow) || (col === homeCol && row === homeRow)) {
-                    type = CHUNK_TYPES.TOWN;
+                if (col === homeCol && row === homeRow) {
+                    // Town chunk: player's starting town area — sparse forest, TOWN state
+                    type = CHUNK_TYPES.FOREST;
                     state = CHUNK_STATES.TOWN;
                 } else if (col === farmCol && row === farmRow) {
+                    // Farm chunk: player's starting farm area — OWNED state
                     type = CHUNK_TYPES.FARM;
                     state = CHUNK_STATES.OWNED;
                 } else {
@@ -204,12 +205,11 @@ export class ChunkManager {
             if (chunk.state !== CHUNK_STATES.OWNED) continue;
             for (const { dc, dr } of dirs) {
                 const neighbor = this.getChunkAt(chunk.col + dc, chunk.row + dr);
-                if (neighbor && neighbor.state === CHUNK_STATES.LOCKED) {
-                    // Only allow purchasing chunks at or below the farm row.
-                    // North-of-great-path forest chunks are for town expansion (different mechanic).
-                    if (neighbor.row >= farmRow) {
-                        neighbor.state = CHUNK_STATES.PURCHASABLE;
-                    }
+                if (!neighbor || neighbor.state !== CHUNK_STATES.LOCKED) continue;
+                // South forest chunks (row >= farmRow) become purchasable.
+                // Dense-forest flanking chunks at north rows stay permanently locked.
+                if (neighbor.row >= farmRow) {
+                    neighbor.state = CHUNK_STATES.PURCHASABLE;
                 }
             }
         }
@@ -226,7 +226,16 @@ export class ChunkManager {
         if (!chunk) {
             // Resolve biome type via registry (designer-map override → weighted random).
             // Falls back to FOREST when no registry is wired.
-            const type = this.generatorRegistry?.resolveType(col, row) ?? CHUNK_TYPES.FOREST;
+            let type = this.generatorRegistry?.resolveType(col, row) ?? CHUNK_TYPES.FOREST;
+
+            // Chunks at or north of the town row that aren't the town chunk itself
+            // are permanently locked dense forest with no pockets.
+            const { homeRow, homeCol } = CONFIG.chunks;
+            const isTownPos = (col === homeCol && row === homeRow);
+            if (row <= homeRow && !isTownPos) {
+                type = 'dense_forest';
+            }
+
             chunk = {
                 col, row,
                 type,
@@ -343,11 +352,15 @@ export class ChunkManager {
     // ─── Purchase ────────────────────────────────────────────────────────────────
 
     /**
-     * Calculate the gold cost to purchase a chunk based on Manhattan distance from farm chunk.
+     * Calculate the gold cost to purchase a chunk.
+     * Town plots measure distance from the home chunk; forest chunks from the farm chunk.
      */
     getChunkPrice(col, row) {
-        const { farmCol, farmRow, purchasePrices } = CONFIG.chunks;
-        const dist = Math.abs(col - farmCol) + Math.abs(row - farmRow);
+        const { farmCol, farmRow, homeCol, homeRow, purchasePrices } = CONFIG.chunks;
+        const chunk = this.getChunkAt(col, row);
+        const baseCol = chunk?.isTownPlot ? homeCol : farmCol;
+        const baseRow = chunk?.isTownPlot ? homeRow : farmRow;
+        const dist = Math.abs(col - baseCol) + Math.abs(row - baseRow);
         const idx = Math.min(dist - 1, purchasePrices.length - 1);
         return purchasePrices[Math.max(0, idx)];
     }
@@ -357,15 +370,15 @@ export class ChunkManager {
      * Deducts gold from inventory. Returns false if chunk is not purchasable or player
      * cannot afford it.
      */
-    purchaseChunk(col, row) {
+    purchaseChunk(col, row, free = false) {
         const chunk = this.getChunkAt(col, row);
         if (!chunk || chunk.state !== CHUNK_STATES.PURCHASABLE) {
             log.warn(`Cannot purchase chunk (${col},${row}): state=${chunk?.state}`);
             return false;
         }
 
-        // Check and deduct gold
-        if (this.inventory) {
+        // Check and deduct gold (skipped if free=true for debug purposes)
+        if (!free && this.inventory) {
             const price = this.getChunkPrice(col, row);
             if (!this.inventory.spendGold(price)) {
                 log.info(`Cannot afford chunk (${col},${row}): need ${price}g, have ${this.inventory.getGold()}g`);
@@ -374,8 +387,15 @@ export class ChunkManager {
             log.info(`Purchased chunk (${col},${row}) for ${price}g`);
         }
 
-        chunk.state = CHUNK_STATES.OWNED;
-        log.info(`Chunk (${col},${row}) purchased`);
+        // Town plots get TOWN state; regular forest purchases get OWNED state
+        if (chunk.isTownPlot) {
+            chunk.state = CHUNK_STATES.TOWN;
+            chunk.purchasedAsTown = true;
+            log.info(`Chunk (${col},${row}) purchased as town plot`);
+        } else {
+            chunk.state = CHUNK_STATES.OWNED;
+            log.info(`Chunk (${col},${row}) purchased`);
+        }
 
         // Allocate all 8 neighbors (cardinal + diagonal) if they don't exist
         // This ensures we can see all chunks surrounding any owned chunk
@@ -419,7 +439,7 @@ export class ChunkManager {
     // ─── Rendering ───────────────────────────────────────────────────────────────
 
     /**
-     * Render dashed white borders around owned chunks and purchase signs on purchasable chunks.
+     * Render dashed borders around owned chunks (white) and town chunks (blue), and purchase signs on purchasable chunks.
      * Call this AFTER camera transform is applied, in world coordinates.
      */
     render(ctx, camera) {
@@ -466,7 +486,47 @@ export class ChunkManager {
             }
         }
 
-        // Town chunk does NOT get a border (only owned chunks have white borders)
+        ctx.restore();
+
+        // --- Town chunk borders (blue dashed outline) ---
+        ctx.save();
+        ctx.setLineDash([8 / zoom, 8 / zoom]);
+        ctx.lineWidth = 3 / zoom;
+        ctx.strokeStyle = 'rgba(88, 166, 255, 0.9)'; // Blue color
+
+        for (const chunk of this.chunks.values()) {
+            if (chunk.state !== CHUNK_STATES.TOWN) continue;
+
+            const cb = this.getChunkBounds(chunk.col, chunk.row);
+            const bx = cb.x * tileSize;
+            const by = cb.y * tileSize;
+            const bw = this.chunkSize * tileSize;
+            const bh = this.chunkSize * tileSize;
+
+            // Skip if not visible
+            if (bx + bw < bounds.left || bx > bounds.right ||
+                by + bh < bounds.top || by > bounds.bottom) continue;
+
+            const dirs = [{ dc: 0, dr: -1 }, { dc: 0, dr: 1 }, { dc: -1, dr: 0 }, { dc: 1, dr: 0 }];
+            for (const { dc, dr } of dirs) {
+                const neighbor = this.getChunkAt(chunk.col + dc, chunk.row + dr);
+                const isTownNeighbor = neighbor && neighbor.state === CHUNK_STATES.TOWN;
+                if (isTownNeighbor) continue; // Don't draw border between two town chunks
+
+                ctx.beginPath();
+                if (dr === -1) { // Top border
+                    ctx.moveTo(bx, by); ctx.lineTo(bx + bw, by);
+                } else if (dr === 1) { // Bottom border
+                    ctx.moveTo(bx, by + bh); ctx.lineTo(bx + bw, by + bh);
+                } else if (dc === -1) { // Left border
+                    ctx.moveTo(bx, by); ctx.lineTo(bx, by + bh);
+                } else if (dc === 1) { // Right border
+                    ctx.moveTo(bx + bw, by); ctx.lineTo(bx + bw, by + bh);
+                }
+                ctx.stroke();
+            }
+        }
+
         ctx.restore();
     }
 
@@ -492,19 +552,26 @@ export class ChunkManager {
 
             const price = this.getChunkPrice(chunk.col, chunk.row);
             const canAfford = playerGold >= price;
+            const isTownPlot = !!chunk.isTownPlot;
 
             const r = 20 / zoom;
             ctx.save();
             ctx.beginPath();
             ctx.arc(wx, wy, r, 0, Math.PI * 2);
-            ctx.fillStyle = canAfford ? 'rgba(255, 200, 50, 0.85)' : 'rgba(180, 80, 80, 0.85)';
-            ctx.fill();
-            ctx.strokeStyle = canAfford ? 'rgba(180, 130, 10, 0.9)' : 'rgba(120, 30, 30, 0.9)';
+            if (isTownPlot) {
+                ctx.fillStyle = canAfford ? 'rgba(80, 160, 255, 0.85)' : 'rgba(180, 80, 80, 0.85)';
+                ctx.fill();
+                ctx.strokeStyle = canAfford ? 'rgba(30, 90, 200, 0.9)' : 'rgba(120, 30, 30, 0.9)';
+            } else {
+                ctx.fillStyle = canAfford ? 'rgba(255, 200, 50, 0.85)' : 'rgba(180, 80, 80, 0.85)';
+                ctx.fill();
+                ctx.strokeStyle = canAfford ? 'rgba(180, 130, 10, 0.9)' : 'rgba(120, 30, 30, 0.9)';
+            }
             ctx.lineWidth = 2 / zoom;
             ctx.setLineDash([]);
             ctx.stroke();
 
-            ctx.fillStyle = '#3a2000';
+            ctx.fillStyle = isTownPlot ? '#00163a' : '#3a2000';
             ctx.font = `bold ${Math.round(18 / zoom)}px sans-serif`;
             ctx.textAlign = 'center';
             ctx.textBaseline = 'middle';
@@ -513,11 +580,21 @@ export class ChunkManager {
             // Price label below the circle
             const priceText = price >= 1000 ? `${(price / 1000).toFixed(price % 1000 === 0 ? 0 : 1)}k` : `${price}`;
             ctx.font = `bold ${Math.round(10 / zoom)}px sans-serif`;
-            ctx.fillStyle = canAfford ? '#ffd700' : '#ff8888';
+            ctx.fillStyle = canAfford ? (isTownPlot ? '#aaddff' : '#ffd700') : '#ff8888';
             ctx.strokeStyle = 'rgba(0,0,0,0.8)';
             ctx.lineWidth = 3 / zoom;
             ctx.strokeText(`${priceText}g`, wx, wy + r + 8 / zoom);
             ctx.fillText(`${priceText}g`, wx, wy + r + 8 / zoom);
+
+            // "Town Plot" label above the circle for town expansion chunks
+            if (isTownPlot) {
+                ctx.font = `bold ${Math.round(9 / zoom)}px sans-serif`;
+                ctx.fillStyle = canAfford ? '#aaddff' : '#ff8888';
+                ctx.strokeStyle = 'rgba(0,0,0,0.8)';
+                ctx.lineWidth = 3 / zoom;
+                ctx.strokeText('Town Plot', wx, wy - r - 6 / zoom);
+                ctx.fillText('Town Plot', wx, wy - r - 6 / zoom);
+            }
             ctx.restore();
         }
     }

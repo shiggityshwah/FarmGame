@@ -214,34 +214,20 @@ export class FlowerManager {
         return { farmLeft: 0, farmRight: this.tilemap.mapWidth, grassStartY, farmBottom: this.tilemap.mapHeight };
     }
 
-    // Returns spawn area rects for all valid spawn zones (farm chunk grass + town chunks + forest chunks)
+    // Returns spawn area rects for all valid spawn zones (farm chunk grass + owned chunks)
     _getSpawnAreas() {
         const areas = [];
         const { farmLeft, farmRight, grassStartY, farmBottom } = this._getFarmBounds();
         areas.push({ left: farmLeft, right: farmRight, top: grassStartY, bottom: farmBottom });
 
-        if (this.tilemap.mapType === 'chunk') {
-            // Town store chunk bounds (derived from store offset snapped to chunk boundary)
-            const cs = this.tilemap.CHUNK_SIZE; // 15
-            const storeBoundsLeft   = Math.floor(this.tilemap.storeOffsetX / cs) * cs;
-            const storeBoundsTop    = Math.floor(this.tilemap.storeOffsetY / cs) * cs;
-            areas.push({ left: storeBoundsLeft, right: storeBoundsLeft + cs, top: storeBoundsTop, bottom: storeBoundsTop + cs });
-
-            // Town home chunk bounds (derived from home offset snapped to chunk boundary)
-            const homeBoundsLeft = Math.floor(this.tilemap.townHomeOffsetX / cs) * cs;
-            const homeBoundsTop  = Math.floor(this.tilemap.townHomeOffsetY / cs) * cs;
-            areas.push({ left: homeBoundsLeft, right: homeBoundsLeft + cs, top: homeBoundsTop, bottom: homeBoundsTop + cs });
-
-            // Forest chunks: include all allocated chunks that aren't the store, home, or farm chunk
-            if (this.chunkManager) {
-                const { storeCol, storeRow, homeCol, homeRow, farmCol, farmRow } = CONFIG.chunks;
-                for (const [, chunk] of this.chunkManager.chunks) {
-                    if (chunk.col === storeCol && chunk.row === storeRow) continue;
-                    if (chunk.col === homeCol  && chunk.row === homeRow)  continue;
-                    if (chunk.col === farmCol  && chunk.row === farmRow)  continue;
-                    const bounds = this.chunkManager.getChunkBounds(chunk.col, chunk.row);
-                    areas.push({ left: bounds.x, right: bounds.x + bounds.width, top: bounds.y, bottom: bounds.y + bounds.height });
-                }
+        if (this.tilemap.mapType === 'chunk' && this.chunkManager) {
+            // Include all OWNED chunks except the farm chunk (it already has explicit bounds above)
+            const { farmCol, farmRow } = CONFIG.chunks;
+            for (const [, chunk] of this.chunkManager.chunks) {
+                if (chunk.state !== 'owned') continue;
+                if (chunk.col === farmCol && chunk.row === farmRow) continue;
+                const bounds = this.chunkManager.getChunkBounds(chunk.col, chunk.row);
+                areas.push({ left: bounds.x, right: bounds.x + bounds.width, top: bounds.y, bottom: bounds.y + bounds.height });
             }
         }
 

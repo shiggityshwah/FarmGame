@@ -1,4 +1,5 @@
 import { Logger } from './Logger.js';
+import { BUILDING_DEFS } from './BuildingRegistry.js';
 
 const log = Logger.create('Toolbar');
 
@@ -11,7 +12,8 @@ const TOOLS = {
     SHOVEL: { id: 'shovel', tileId: 3114, name: 'Shovel', animation: 'DIG' },
     FISHING_ROD: { id: 'fishing_rod', tileId: 3178, name: 'Fishing Rod', animation: 'CASTING' },
     PICKAXE: { id: 'pickaxe', tileId: 3113, name: 'Pickaxe', animation: 'MINING' },
-    PLANT: { id: 'plant', tileId: 2857, name: 'Plant', animation: 'DOING', hasSubmenu: true }
+    PLANT: { id: 'plant', tileId: 2857, name: 'Plant', animation: 'DOING', hasSubmenu: true },
+    BUILD: { id: 'build', tileId: 3045, name: 'Build', animation: 'HAMMERING', hasSubmenu: true }
 };
 
 // Crop data with icon (harvested crop) and seed tile IDs
@@ -40,6 +42,9 @@ export class Toolbar {
         this.cursorDataUrls = new Map();
         this.seedCursorDataUrls = new Map();
         this.plantSubmenu = null;
+        this.buildSubmenu = null;
+        this._buildBtns = new Map();
+        this._specialBuildingSection = null;
         this.queueSelector = null;
         this.selectedQueue = 'all'; // 'all' | 'human' | 'goblin'
         this._seedBtns = new Map(); // cropIndex → button element
@@ -49,6 +54,7 @@ export class Toolbar {
         this.createQueueSelector();
         this.createToolbar();
         this.createPlantSubmenu();
+        this.createBuildSubmenu();
 
         // Subscribe to inventory changes to refresh seed availability badges
         if (this.game.inventory) {
@@ -119,7 +125,7 @@ export class Toolbar {
         document.body.appendChild(toolbar);
 
         // Create tool buttons
-        const toolOrder = ['WATERING_CAN', 'AXE', 'HOE', 'SWORD', 'SHOVEL', 'FISHING_ROD', 'PICKAXE', 'PLANT'];
+        const toolOrder = ['WATERING_CAN', 'AXE', 'HOE', 'SWORD', 'SHOVEL', 'FISHING_ROD', 'PICKAXE', 'PLANT', 'BUILD'];
 
         for (const toolKey of toolOrder) {
             const tool = TOOLS[toolKey];
@@ -385,10 +391,15 @@ export class Toolbar {
 
         // Check if tool has submenu
         if (tool.hasSubmenu) {
-            // Toggle submenu visibility
-            if (this.plantSubmenu && this.plantSubmenu.classList.contains('open')) {
-                // Close submenu and fully deselect the plant button
-                this.hidePlantSubmenu();
+            const isPlant = tool.id === 'plant';
+            const isBuild = tool.id === 'build';
+            const submenu = isPlant ? this.plantSubmenu : isBuild ? this.buildSubmenu : null;
+            const isOpen = submenu && submenu.classList.contains('open');
+
+            if (isOpen) {
+                // Close submenu and fully deselect the button
+                if (isPlant) this.hidePlantSubmenu();
+                if (isBuild) this.hideBuildSubmenu();
                 const btn = this.toolButtons.get(tool.id);
                 if (btn) btn.classList.remove('active');
                 this.selectedTool = null;
@@ -403,14 +414,15 @@ export class Toolbar {
                     this.selectedTool = null;
                     this.selectedSeed = null;
                     document.body.style.cursor = 'default';
-                    // Notify game of deselection
-                    if (this.game.onToolDeselected) {
-                        this.game.onToolDeselected();
-                    }
+                    if (this.game.onToolDeselected) this.game.onToolDeselected();
                 }
-                // Show submenu
-                this.showPlantSubmenu();
-                // Highlight the plant button
+                // Close any other open submenu
+                this.hidePlantSubmenu();
+                this.hideBuildSubmenu();
+                // Show this submenu
+                if (isPlant) this.showPlantSubmenu();
+                if (isBuild) this.showBuildSubmenu();
+                // Highlight the button
                 const btn = this.toolButtons.get(tool.id);
                 if (btn) btn.classList.add('active');
             }
@@ -456,13 +468,131 @@ export class Toolbar {
         this.selectedSeed = null;
         document.body.style.cursor = 'default';
 
-        // Hide plant submenu if open
+        // Hide submenus if open
         this.hidePlantSubmenu();
+        this.hideBuildSubmenu();
 
         // Notify game
         if (this.game.onToolDeselected) {
             this.game.onToolDeselected();
         }
+    }
+
+    createBuildSubmenu() {
+        const submenu = document.createElement('div');
+        submenu.id = 'build-submenu';
+        submenu.className = 'build-submenu';
+        document.body.appendChild(submenu);
+        this.buildSubmenu = submenu;
+
+        // Section 1: Paths
+        const pathSection = document.createElement('div');
+        pathSection.className = 'build-section';
+        const pathTitle = document.createElement('div');
+        pathTitle.className = 'build-section-title';
+        pathTitle.textContent = 'Paths';
+        pathSection.appendChild(pathTitle);
+
+        const pathBtn = document.createElement('button');
+        pathBtn.className = 'build-item-btn';
+        pathBtn.id = 'place-path-btn';
+        pathBtn.innerHTML = `<span class="build-item-name">Stone Path</span><span class="build-item-cost">1 Stone/tile</span>`;
+        pathBtn.addEventListener('click', () => {
+            this.hideBuildSubmenu();
+            const buildBtn = this.toolButtons.get('build');
+            if (buildBtn) buildBtn.classList.remove('active');
+            if (this.game.enterPathPlacementMode) this.game.enterPathPlacementMode();
+        });
+        pathSection.appendChild(pathBtn);
+        submenu.appendChild(pathSection);
+
+        // Section 2: Houses
+        const houseSection = document.createElement('div');
+        houseSection.className = 'build-section';
+        const houseTitle = document.createElement('div');
+        houseTitle.className = 'build-section-title';
+        houseTitle.textContent = 'Houses';
+        houseSection.appendChild(houseTitle);
+
+        const houseDefs = Object.values(BUILDING_DEFS).filter(d => d.category === 'house' && d.hasTilemap && !d.debugOnly);
+        for (const def of houseDefs) {
+            const btn = this._createBuildingButton(def);
+            houseSection.appendChild(btn);
+            this._buildBtns.set(def.id, btn);
+        }
+        submenu.appendChild(houseSection);
+
+        // Section 3: Special Buildings
+        const specialSection = document.createElement('div');
+        specialSection.className = 'build-section';
+        const specialTitle = document.createElement('div');
+        specialTitle.className = 'build-section-title';
+        specialTitle.textContent = 'Special Buildings';
+        specialSection.appendChild(specialTitle);
+
+        const emptyMsg = document.createElement('div');
+        emptyMsg.className = 'build-section-empty';
+        emptyMsg.id = 'special-buildings-empty';
+        emptyMsg.textContent = 'Recruit villagers to unlock special buildings.';
+        specialSection.appendChild(emptyMsg);
+
+        this._specialBuildingSection = specialSection;
+        submenu.appendChild(specialSection);
+    }
+
+    _createBuildingButton(def) {
+        const btn = document.createElement('button');
+        btn.className = 'build-item-btn';
+        btn.dataset.defId = def.id;
+        btn.title = def.name;
+
+        const costParts = [];
+        if (def.cost.gold)  costParts.push(`${def.cost.gold}g`);
+        if (def.cost.wood)  costParts.push(`${def.cost.wood} Wood`);
+        if (def.cost.stone) costParts.push(`${def.cost.stone} Stone`);
+        for (const [key, val] of Object.entries(def.cost)) {
+            if (!['gold', 'wood', 'stone'].includes(key)) costParts.push(`${val} ${key}`);
+        }
+
+        btn.innerHTML = `<span class="build-item-name">${def.name}</span><span class="build-item-cost">${costParts.join(', ')}</span>`;
+        btn.addEventListener('click', () => {
+            this.hideBuildSubmenu();
+            const buildBtn = this.toolButtons.get('build');
+            if (buildBtn) buildBtn.classList.remove('active');
+            if (this.game.enterBuildingPlacementMode) this.game.enterBuildingPlacementMode(def.id);
+        });
+        return btn;
+    }
+
+    /** Called when a new villager is recruited — refreshes special buildings list. */
+    refreshBuildSubmenu() {
+        if (!this._specialBuildingSection) return;
+        const unlockedIds = this.game.villagerManager?.getUnlockedSpecialBuildings() ?? [];
+        const existingBtns = this._specialBuildingSection.querySelectorAll('.build-item-btn');
+        existingBtns.forEach(b => b.remove());
+
+        const emptyMsg = document.getElementById('special-buildings-empty');
+        if (unlockedIds.length === 0) {
+            if (emptyMsg) emptyMsg.style.display = '';
+            return;
+        }
+        if (emptyMsg) emptyMsg.style.display = 'none';
+
+        for (const defId of unlockedIds) {
+            const def = BUILDING_DEFS[defId];
+            if (!def || !def.hasTilemap) continue;
+            const btn = this._createBuildingButton(def);
+            this._specialBuildingSection.appendChild(btn);
+            this._buildBtns.set(defId, btn);
+        }
+    }
+
+    showBuildSubmenu() {
+        if (this.buildSubmenu) this.buildSubmenu.classList.add('open');
+    }
+
+    hideBuildSubmenu() {
+        if (this.buildSubmenu) this.buildSubmenu.classList.remove('open');
     }
 
     getSelectedTool() {

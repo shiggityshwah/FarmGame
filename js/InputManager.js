@@ -49,6 +49,14 @@ export class InputManager {
         this.onDragEndCallback = callback;
     }
 
+    setHoverCallback(callback) {
+        this.onHoverCallback = callback;
+    }
+
+    setKeyCallback(callback) {
+        this.onKeyCallback = callback;
+    }
+
     setPanningEnabled(enabled) {
         this.panningEnabled = enabled;
     }
@@ -77,6 +85,7 @@ export class InputManager {
 
     onKeyDown(e) {
         this.keys[e.key.toLowerCase()] = true;
+        if (this.onKeyCallback) this.onKeyCallback(e.key);
     }
 
     onKeyUp(e) {
@@ -103,6 +112,15 @@ export class InputManager {
     }
 
     onMouseMove(e) {
+        // Always fire hover callback for ghost preview etc.
+        if (this.onHoverCallback) {
+            const rect = this.canvas.getBoundingClientRect();
+            const screenX = e.clientX - rect.left;
+            const screenY = e.clientY - rect.top;
+            const worldX = this.camera.screenToWorldX(screenX);
+            const worldY = this.camera.screenToWorldY(screenY);
+            this.onHoverCallback(worldX, worldY);
+        }
         if (this.isDragging) {
             const dx = e.clientX - this.lastMouseX;
             const dy = e.clientY - this.lastMouseY;

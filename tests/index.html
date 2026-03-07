@@ -252,6 +252,8 @@
         import './Phase3Integration.test.js';
         import './Phase1Economy.test.js';
         import './Phase2Farming.test.js';
+        import './Phase4a.test.js';
+        import './Phase4b.test.js';
 
         // Store results for display
         let testResults = [];
@@ -341,6 +343,8 @@
             await import('./Phase3Integration.test.js?' + Date.now());
             await import('./Phase1Economy.test.js?' + Date.now());
             await import('./Phase2Farming.test.js?' + Date.now());
+            await import('./Phase4a.test.js?' + Date.now());
+            await import('./Phase4b.test.js?' + Date.now());
 
             captureOutput();
 

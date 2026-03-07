@@ -14,7 +14,7 @@ import { OreVein, ORE_TYPES } from './OreVein.js';
 
 const log = Logger.create('SaveManager');
 
-const SAVE_VERSION = 1;
+const SAVE_VERSION = 4;
 const SAVE_KEY = 'farmgame_save';
 
 // Mirrors CROP_NAMES from ReplenishZoneManager.js
@@ -124,7 +124,16 @@ export class SaveManager {
                 x: g.camera.x,
                 y: g.camera.y,
                 zoom: g.camera.zoom
-            }
+            },
+            // Phase 4a
+            buildings: (g.buildingManager?.placedBuildings ?? []).map(b => ({
+                id: b.id, definitionId: b.definitionId, tileX: b.tileX, tileY: b.tileY,
+                state: b.state, occupant: b.occupant ?? null, pathConnected: b.pathConnected
+            })),
+            playerPlacedPaths: [...(g.playerPlacedPaths ?? [])],
+            milestones: { ...(g.milestones ?? {}) },
+            villagers: (g.villagerManager?.villagers ?? []).map(v => ({ ...v })),
+            displacedQueue: [...(g.villagerManager?.displacedQueue ?? [])],
         };
     }
 
@@ -136,7 +145,11 @@ export class SaveManager {
     _serializeChunks() {
         const chunks = [];
         for (const chunk of this.game.chunkManager.chunks.values()) {
-            chunks.push({ col: chunk.col, row: chunk.row, type: chunk.type, state: chunk.state });
+            chunks.push({
+                col: chunk.col, row: chunk.row, type: chunk.type, state: chunk.state,
+                isTownPlot: chunk.isTownPlot ?? false,
+                purchasedAsTown: chunk.purchasedAsTown ?? false,
+            });
         }
         return chunks;
     }
@@ -336,6 +349,12 @@ export class SaveManager {
         // 14. UI refresh (fires onChange listeners, gold display, water display)
         this._refreshUI();
 
+        // 15. Phase 4a: buildings, paths, milestones, villagers
+        await this._restoreBuildings(data.buildings ?? []);
+        this._restorePlayerPlacedPaths(data.playerPlacedPaths ?? []);
+        this._restoreMilestones(data.milestones ?? {});
+        this._restoreVillagers(data.villagers ?? [], data.displacedQueue ?? []);
+
         log.info('Save data applied successfully');
     }
 
@@ -361,12 +380,16 @@ export class SaveManager {
                 existing.state = sc.state;
                 existing.type = sc.type;
                 existing.generated = true;
+                if (sc.isTownPlot)      existing.isTownPlot = sc.isTownPlot;
+                if (sc.purchasedAsTown) existing.purchasedAsTown = sc.purchasedAsTown;
             } else {
                 // Chunk was created after initial 3×5 grid (e.g. purchased expansion)
                 cm.chunks.set(key, {
                     col: sc.col, row: sc.row,
                     type: sc.type, state: sc.state,
-                    generated: true
+                    generated: true,
+                    isTownPlot: sc.isTownPlot ?? false,
+                    purchasedAsTown: sc.purchasedAsTown ?? false,
                 });
             }
         }
@@ -583,6 +606,60 @@ export class SaveManager {
         g.inventory.notifyChange();
         // Refresh watering can display
         if (g.toolbar?.refreshWaterDisplay) g.toolbar.refreshWaterDisplay();
+    }
+
+    // Phase 4a restore methods
+
+    async _restoreBuildings(savedBuildings) {
+        const g = this.game;
+        if (!g.buildingManager) return;
+        g.buildingManager.placedBuildings = [];
+        g.buildingManager._nextId = 0;
+        g.buildingManager._layerCache = new Map();
+
+        for (const b of savedBuildings) {
+            try {
+                const building = await g.buildingManager.placeBuilding(
+                    b.definitionId, b.tileX, b.tileY, b.state
+                );
+                building.occupant = b.occupant ?? null;
+                building.pathConnected = b.pathConnected ?? false;
+            } catch (err) {
+                log.warn(`Failed to restore building ${b.id} (${b.definitionId}):`, err);
+            }
+        }
+        log.info(`Restored ${savedBuildings.length} buildings`);
+    }
+
+    _restorePlayerPlacedPaths(savedPaths) {
+        const g = this.game;
+        g.playerPlacedPaths = new Set(savedPaths);
+        if (g.pathConnectivity) {
+            g.pathConnectivity.setPlayerPlacedPaths(g.playerPlacedPaths);
+            g.pathConnectivity.invalidate();
+        }
+        // Rebuild path edge overlays for player-placed paths so borders render correctly
+        if (g.overlayManager && savedPaths.length > 0) {
+            for (const key of savedPaths) {
+                const [x, y] = key.split(',').map(Number);
+                g.overlayManager.markTileAsPath(x, y);
+            }
+        }
+    }
+
+    _restoreMilestones(savedMilestones) {
+        const g = this.game;
+        if (g.milestones) Object.assign(g.milestones, savedMilestones);
+        g._prevInventoryGold = g.inventory.getGold();
+    }
+
+    _restoreVillagers(savedVillagers, savedDisplacedQueue) {
+        const g = this.game;
+        if (!g.villagerManager) return;
+        g.villagerManager.villagers = savedVillagers.map(v => ({ ...v }));
+        g.villagerManager.displacedQueue = [...savedDisplacedQueue];
+        // Refresh toolbar special buildings section
+        if (g.toolbar?.refreshBuildSubmenu) g.toolbar.refreshBuildSubmenu();
     }
 
     // ─── Download / Clipboard ─────────────────────────────────────────────────

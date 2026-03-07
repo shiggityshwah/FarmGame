@@ -5,11 +5,11 @@ const log = Logger.create('Well');
 /**
  * Well — a 2×3-tile structure placed on the farm chunk east of the house.
  *
- * Layout (tileX=24, tileY=53):
- *   (24,53) (25,53)  — top row: tiles 1256, 1257. Visual only, rendered ABOVE characters.
+ * Layout (tileX=24, tileY=38):
+ *   (24,38) (25,38)  — top row: tiles 1256, 1257. Visual only, rendered ABOVE characters.
  *                       These tiles do NOT block movement or tool actions.
- *   (24,54) (25,54)  — middle row: tiles 1320, 1321. Blocks movement + actions.
- *   (24,55) (25,55)  — bottom row: tiles 1384, 1385. Blocks movement + actions.
+ *   (24,39) (25,39)  — middle row: tiles 1320, 1321. Blocks movement + actions.
+ *   (24,40) (25,40)  — bottom row: tiles 1384, 1385. Blocks movement + actions.
  *
  * Rendering:
  *   renderBase() — middle + bottom rows, called in the depth-sorted entity pass.
@@ -20,9 +20,9 @@ export class Well {
         this.tilemap = tilemap;
         this.tileSize = tilemap.tileSize;  // 16
 
-        // Top-left corner of the well (top row)
+        // Top-left corner of the well (top row): x=24, y=38 (farmTop(34)+4)
         this.tileX = 24;
-        this.tileY = 53;
+        this.tileY = 38;
 
         // Tile IDs (from main tileset)
         this.topTiles = [1256, 1257];   // y = tileY     — above characters

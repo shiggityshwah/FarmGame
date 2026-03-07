@@ -21,7 +21,7 @@ import { CONFIG, getRandomPathTile } from './config.js';
 import { ForestGenerator } from './ForestGenerator.js';
 import { ChunkManager } from './ChunkManager.js';
 import { ChunkGeneratorRegistry } from './ChunkGeneratorRegistry.js';
-import { ForestChunkGenerator, DenseForestChunkGenerator } from './ForestChunkGenerator.js';
+import { ForestChunkGenerator, DenseForestChunkGenerator, SparseForestChunkGenerator } from './ForestChunkGenerator.js';
 import { JobQueueUI } from './JobQueueUI.js';
 import { IdleManager } from './IdleManager.js';
 import { TravelerManager } from './TravelerManager.js';
@@ -29,6 +29,10 @@ import { RoadsideStand } from './RoadsideStand.js';
 import { createHarvestEffect, updateEffects, renderEffects as renderFloatingEffects } from './EffectUtils.js';
 import { ReplenishZoneManager } from './ReplenishZoneManager.js';
 import { SaveManager } from './SaveManager.js';
+import { BuildingManager } from './BuildingManager.js';
+import { BUILDING_DEFS, VILLAGER_MILESTONES } from './BuildingRegistry.js';
+import { PathConnectivity } from './PathConnectivity.js';
+import { VillagerManager } from './VillagerManager.js';
 import { Logger } from './Logger.js';
 
 const log = Logger.create('Game');
@@ -152,6 +156,9 @@ export class Game {
         // Floating effects for seed drops (wild crop harvests)
         this._seedEffects = [];
 
+        // Physics-based seed drop effects from fully-depleted trees
+        this._treeSeedDropEffects = [];
+
         // Goblin hire state (UI shows goblin controls only after hiring)
         this.goblinHired = false;
 
@@ -171,6 +178,34 @@ export class Game {
 
         // Save/load manager
         this.saveManager = null;
+
+        // Phase 4a: Building placement + path system
+        this.buildingManager = null;
+        this.playerPlacedPaths = new Set();   // "tileX,tileY" keys for player-placed path tiles
+        this._buildPlacementMode = null;      // null | { type:'path' } | { type:'building', defId, zeroCost }
+        this._buildPlacementTileX = 0;
+        this._buildPlacementTileY = 0;
+        this._buildPlacementValid = false;
+        this._showPathDebug = false;
+        this._showBuildingDebug = false;
+
+        // Phase 4a: Milestone tracking
+        this.milestones = {
+            totalGoldEarned:        0,
+            totalCropsHarvested:    0,
+            totalCropsPlanted:      0,
+            totalPotionsCrafted:    0,
+            totalAnvilUpgrades:     0,
+            totalShrineUpgrades:    0,
+            totalChunksOwned:       1,  // Starts at 1 (farm chunk)
+            totalVillagersRecruited:0,
+            goblinEverHired:        false,
+        };
+        this._prevInventoryGold = 50;  // Track for totalGoldEarned delta
+
+        // Phase 4a: Villager + path connectivity (initialized in init())
+        this.pathConnectivity = null;
+        this.villagerManager = null;
 
         // Roadside stand and traveler service
         this.roadsideStand = null;
@@ -313,17 +348,21 @@ export class Game {
             this.chunkGeneratorRegistry = new ChunkGeneratorRegistry();
             this.chunkGeneratorRegistry.register(new ForestChunkGenerator(this.forestGenerator));
             this.chunkGeneratorRegistry.register(new DenseForestChunkGenerator(this.forestGenerator));
+            this.chunkGeneratorRegistry.register(new SparseForestChunkGenerator(this.forestGenerator));
             this.chunkManager.generatorRegistry = this.chunkGeneratorRegistry;
 
-            // Assign dense forest biome to all forest chunks north of the great path.
-            // These chunks are permanently locked (town expansion uses a different mechanic).
-            // The center col (store/home) is TOWN type; only the flanking cols are forest.
-            const { storeCol, storeRow, homeRow } = CONFIG.chunks;
+            // Assign biomes to all chunks north of the great path.
+            // Center col town chunk gets sparse_forest — lightly treed, player clears it.
+            // All other north chunks get dense_forest (permanently locked, no clearings).
+            const { homeCol, homeRow } = CONFIG.chunks;
             const northForestMap = {};
             for (let row = 0; row <= homeRow; row++) {
                 for (let col = 0; col < CONFIG.chunks.initialGridCols; col++) {
-                    if (col === storeCol && (row === storeRow || row === homeRow)) continue; // town chunks
-                    northForestMap[`${col},${row}`] = 'dense_forest';
+                    if (col === homeCol && row === homeRow) {
+                        northForestMap[`${col},${row}`] = 'sparse_forest'; // town chunk
+                    } else {
+                        northForestMap[`${col},${row}`] = 'dense_forest';  // flanking locked forest
+                    }
                 }
             }
             this.chunkGeneratorRegistry.setDesignerMap(northForestMap);
@@ -335,9 +374,9 @@ export class Game {
             const pathYMax = CONFIG.chunks.mainPathY + CONFIG.chunks.mainPathGap; // 49
 
             // Generate each initial forest chunk independently.
-            // Town store (col=1,row=1), town home (col=1,row=2), and farm (col=1,row=3) are skipped.
-            // North-of-great-path forest chunks use 'dense_forest' generator (noPocket, density=0.9).
-            // South-of-great-path forest chunks use standard forest generator with pocket radius=4.
+            // Farm (col=1,row=3) is skipped (it has its own separate setup below).
+            // Former town chunks (store/home col=1) are now type 'forest' and ARE generated here.
+            // North forest: dense (noPocket, density=0.9); former town: sparse (noPocket, density=0.3).
             for (const chunk of this.chunkManager.chunks.values()) {
                 if (chunk.type !== 'forest') continue;
                 const bounds = this.chunkManager.getChunkBounds(chunk.col, chunk.row);
@@ -464,6 +503,27 @@ export class Game {
                 }
             });
 
+            // Hover callback for building ghost preview
+            this.inputManager.setHoverCallback((worldX, worldY) => {
+                if (this._buildPlacementMode?.type === 'building') {
+                    const tileSize = this.tilemap.tileSize;
+                    this._buildPlacementTileX = Math.floor(worldX / tileSize);
+                    this._buildPlacementTileY = Math.floor(worldY / tileSize);
+                    this._buildPlacementValid = this._validateBuildingPlacement(
+                        this._buildPlacementMode.defId,
+                        this._buildPlacementTileX,
+                        this._buildPlacementTileY
+                    );
+                }
+            });
+
+            // Key callback for cancelling build placement with Escape
+            this.inputManager.setKeyCallback((key) => {
+                if (key === 'Escape' && this._buildPlacementMode) {
+                    this._cancelBuildPlacement();
+                }
+            });
+
             // Initialize new systems
             this.pathfinder = new Pathfinder(this.tilemap);
             this.pathfinder.setForestGenerator(this.forestGenerator);
@@ -471,6 +531,18 @@ export class Game {
             this.pathfinder.setOreManager(this.oreManager);
             if (this.roadsideStand) this.pathfinder.setRoadsideStand(this.roadsideStand);
             if (this.well) this.pathfinder.setWell(this.well);
+
+            // Building manager for player-placed buildings
+            this.buildingManager = new BuildingManager(this.tilemap);
+            this.buildingManager.onBuildingCompleted = (b) => this._onBuildingCompleted(b);
+            this.pathfinder.setBuildingManager(this.buildingManager);
+
+            // Path connectivity (BFS from building doors to great path)
+            this.pathConnectivity = new PathConnectivity(this.tilemap);
+            this.pathConnectivity.setPlayerPlacedPaths(this.playerPlacedPaths);
+
+            // Villager system
+            this.villagerManager = new VillagerManager(this);
             this.overlayManager = new TileOverlayManager(this.tilemap);
             this.overlayManager.setForestGenerator(this.forestGenerator);
             this.initPathEdgeOverlays();
@@ -496,6 +568,15 @@ export class Game {
             // Subscribe: reactivate paused zones when seeds are acquired
             this.inventory.onChange(() => this.replenishZoneManager.checkPausedZones());
 
+            // Subscribe: track gold earned for milestone system
+            this.inventory.onChange(() => {
+                const gold = this.inventory.getGold();
+                if (gold > this._prevInventoryGold) {
+                    this.milestones.totalGoldEarned += gold - this._prevInventoryGold;
+                }
+                this._prevInventoryGold = gold;
+            });
+
             // Spawn enemies from forest pockets
             await this.spawnForestPocketEnemies();
 
@@ -514,6 +595,7 @@ export class Game {
             this.travelerManager = new TravelerManager(this.tilemap);
             if (this.roadsideStand) this.travelerManager.setStand(this.roadsideStand);
             this.travelerManager.setCamera(this.camera);
+            this.travelerManager.setVillagerManager(this.villagerManager);
 
             // Connect flower manager to tile selector (for weed checking)
             this.tileSelector.setFlowerManager(this.flowerManager);
@@ -601,18 +683,10 @@ export class Game {
         await this.loadHumanSprites();
         log.debug(`Human placed at tile (${spawnPos.tileX}, ${spawnPos.tileY})`);
 
-        // Create Goblin NPC near the town home entrance
-        // Home is at y=30–39 (homeOffsetY=30, homeHeight=10); entrance center at (22, 39)
-        const goblinTileX = this.tilemap.townHomeOffsetX + Math.floor(this.tilemap.townHomeWidth / 2); // 22
-        const goblinTileY = this.tilemap.townHomeOffsetY + this.tilemap.townHomeHeight - 1; // 39
-        const tileSize = this.tilemap.tileSize;
-        this.goblinPosition = {
-            x: goblinTileX * tileSize + tileSize / 2,
-            y: goblinTileY * tileSize + tileSize / 2
-        };
-        occupiedBaseTiles.add(`${goblinTileX},${goblinTileY}`);
+        // Goblin is hidden until hired from debug menu — goblinPosition stays null.
+        // Load the sprite at an off-screen position so it's ready when hire is called.
         await this.loadGoblinSprite();
-        log.debug(`Goblin placed at tile (${goblinTileX}, ${goblinTileY})`);
+        log.debug('Goblin sprite loaded (hidden until hired)');
 
         // No initial skeleton enemy — enemies spawn from forest pockets only
     }
@@ -771,7 +845,9 @@ export class Game {
         const filenameFrameCount = this.getGoblinFilenameFrameCount(animation);
         const spritePath = `Characters/Goblin/PNG/spr_${animLower}_strip${filenameFrameCount}.png`;
 
-        const sprite = new SpriteAnimator(this.goblinPosition.x, this.goblinPosition.y, frameCount, 8, framesPerRow);
+        const spawnX = this.goblinPosition?.x ?? -1000;
+        const spawnY = this.goblinPosition?.y ?? -1000;
+        const sprite = new SpriteAnimator(spawnX, spawnY, frameCount, 8, framesPerRow);
         await sprite.load(spritePath);
 
         this.goblinSprite = sprite;
@@ -960,6 +1036,18 @@ export class Game {
         const tileX = Math.floor(worldX / this.tilemap.tileSize);
         const tileY = Math.floor(worldY / this.tilemap.tileSize);
 
+        // Building placement mode: confirm or cancel
+        if (this._buildPlacementMode?.type === 'building') {
+            if (this._buildPlacementValid) {
+                const { defId, zeroCost } = this._buildPlacementMode;
+                this._confirmBuildingPlacement(defId, tileX, tileY, zeroCost);
+            }
+            // Click always exits placement mode (even invalid — user can try again)
+            // Invalid click just cancels without placing
+            if (!this._buildPlacementValid) this._cancelBuildPlacement();
+            return;
+        }
+
         // Zone manage mode: clicking a tile opens the zone panel for that tile's zone
         if (this.toolbar?.zoneManageMode) {
             const zone = this.replenishZoneManager?.getZoneForTile(tileX, tileY);
@@ -969,6 +1057,15 @@ export class Game {
                 this.toolbar.exitZoneManageMode();
             }
             return;
+        }
+
+        // Check for placed building clicks (in pan mode, no active tool)
+        if (this.inputMode === 'pan' && this.buildingManager) {
+            const clickedBuilding = this.buildingManager.getBuildingAt(tileX, tileY);
+            if (clickedBuilding && clickedBuilding.state !== 'under_construction') {
+                this._openBuildingMenu(clickedBuilding);
+                return;
+            }
         }
 
         // Only handle harvest clicks in pan mode
@@ -983,6 +1080,7 @@ export class Game {
                 if (this.inventory) {
                     const bountyBonus = this.homeUpgrades?.shrineUpgrades?.bountifulHarvest ? 1 : 0;
                     this.inventory.addCropByIndex(harvested.index, 1 + bountyBonus);
+                    this.milestones.totalCropsHarvested++;
                     // Notify replenish zone manager so it can queue auto-replant
                     if (this.replenishZoneManager) {
                         this.replenishZoneManager.onHarvest(tileX, tileY);
@@ -1224,6 +1322,340 @@ export class Game {
         // renderGreatPath() in TilemapRenderer automatically spans the full map width,
         // so new columns are covered as soon as _updateMapBounds() expands mapWidth.
         // Pathfinder speed boost at y=46-47 is provided by getTileAt() returning tile 482.
+
+        this.milestones.totalChunksOwned++;
+    }
+
+    // Clear all forest/resource content from a purchased town chunk and reset tiles to grass
+    _clearChunkResources(col, row) {
+        const bounds = this.chunkManager.getChunkBounds(col, row);
+        const { x, y, width, height } = bounds;
+
+        // Clear forest trees (ForestGenerator)
+        if (this.forestGenerator) {
+            for (const tree of this.forestGenerator.trees) {
+                if (tree.baseX >= x && tree.baseX < x + width &&
+                    tree.baseY >= y && tree.baseY < y + height) {
+                    tree.isGone = true;
+                }
+            }
+            for (const ore of this.forestGenerator.pocketOreVeins) {
+                if (ore.tileX >= x && ore.tileX < x + width &&
+                    ore.tileY >= y && ore.tileY < y + height) {
+                    ore.isGone = true;
+                }
+            }
+            for (const crop of this.forestGenerator.pocketCrops) {
+                if (crop.tileX >= x && crop.tileX < x + width &&
+                    crop.tileY >= y && crop.tileY < y + height) {
+                    crop.isGone = true;
+                }
+            }
+        }
+
+        // Clear managed trees/ores (TreeManager, OreManager)
+        if (this.treeManager) {
+            for (const tree of this.treeManager.resources) {
+                if (tree.tileX >= x && tree.tileX < x + width &&
+                    tree.tileY >= y && tree.tileY < y + height) {
+                    tree.isGone = true;
+                }
+            }
+        }
+        if (this.oreManager) {
+            for (const ore of this.oreManager.resources) {
+                if (ore.tileX >= x && ore.tileX < x + width &&
+                    ore.tileY >= y && ore.tileY < y + height) {
+                    ore.isGone = true;
+                }
+            }
+        }
+
+        // Clear enemies
+        if (this.enemyManager) {
+            const ts = this.tilemap.tileSize;
+            for (const enemy of this.enemyManager.enemies) {
+                const ex = Math.floor(enemy.x / ts);
+                const ey = Math.floor(enemy.y / ts);
+                if (ex >= x && ex < x + width && ey >= y && ey < y + height) {
+                    enemy.isAlive = false;
+                    enemy.health = 0;
+                }
+            }
+        }
+
+        // Clear flowers and weeds
+        if (this.flowerManager) {
+            for (const f of this.flowerManager.flowers) {
+                if (f.tileX >= x && f.tileX < x + width &&
+                    f.tileY >= y && f.tileY < y + height) {
+                    f.isGone = true;
+                }
+            }
+            for (const w of this.flowerManager.weeds) {
+                if (w.tileX >= x && w.tileX < x + width &&
+                    w.tileY >= y && w.tileY < y + height) {
+                    w.isGone = true;
+                }
+            }
+        }
+
+        // Reset all tiles in the chunk to grass
+        const grass = CONFIG.tiles.grass;
+        for (let tx = x; tx < x + width; tx++) {
+            for (let ty = y; ty < y + height; ty++) {
+                this.tilemap.setTileAt(tx, ty, grass[0]);
+            }
+        }
+
+        log.info(`Cleared chunk resources at (${col},${row}): bounds (${x},${y}) ${width}×${height}`);
+    }
+
+    _renderPathDebug() {
+        if (!this.pathConnectivity) return;
+        const ctx = this.ctx;
+        const ts = this.tilemap.tileSize;
+        const bounds = this.camera.getVisibleBounds();
+        const tileXMin = Math.floor(bounds.left / ts);
+        const tileXMax = Math.ceil(bounds.right / ts);
+        const tileYMin = Math.floor(bounds.top / ts);
+        const tileYMax = Math.ceil(bounds.bottom / ts);
+        ctx.save();
+        for (let ty = tileYMin; ty <= tileYMax; ty++) {
+            for (let tx = tileXMin; tx <= tileXMax; tx++) {
+                if (!this.pathConnectivity.isPathTile(tx, ty)) continue;
+                const connected = this.pathConnectivity.isConnectedToGreatPath(tx, ty);
+                ctx.fillStyle = connected ? 'rgba(0,255,80,0.35)' : 'rgba(255,60,60,0.35)';
+                ctx.fillRect(tx * ts, ty * ts, ts, ts);
+            }
+        }
+        ctx.restore();
+    }
+
+    // Called when player places or removes a path tile
+    _onPathChanged() {
+        if (!this.pathConnectivity) return;
+        this.pathConnectivity.invalidate();
+        for (const b of this.buildingManager?.placedBuildings ?? []) {
+            if (b.state === 'under_construction') continue;
+            this._updateBuildingConnectivity(b);
+        }
+        this._updateNorthBridgeOverlays();
+    }
+
+    // Called when a building's construction is complete
+    _onBuildingCompleted(building) {
+        log.info(`Building completed: ${building.id} (${building.definitionId}) at (${building.tileX},${building.tileY})`);
+        this._updateBuildingConnectivity(building);
+        if (this.villagerManager) {
+            this.villagerManager.onHouseReady(building);
+        }
+    }
+
+    // Check whether a building's door is path-connected to the great path and update its state.
+    _updateBuildingConnectivity(building) {
+        if (!this.pathConnectivity) return;
+        const def = BUILDING_DEFS[building.definitionId];
+        if (!def) return;
+
+        // Check one tile south of the door (where the visitor would stand)
+        const doorX = building.tileX + def.doorOffset.x;
+        const doorY = building.tileY + def.doorOffset.y + 1;
+        const connected = this.pathConnectivity.isConnectedToGreatPath(doorX, doorY);
+        const wasConnected = building.pathConnected;
+        building.pathConnected = connected;
+
+        if (!wasConnected && connected && building.state === 'inactive') {
+            building.state = 'active_empty';
+            log.info(`Building ${building.id} is now active (path connected)`);
+            if (this.villagerManager) this.villagerManager.onHouseReady(building);
+        } else if (wasConnected && !connected &&
+                   (building.state === 'active_empty' || building.state === 'active_occupied')) {
+            building.state = 'inactive';
+            log.info(`Building ${building.id} went inactive (path disconnected)`);
+        }
+    }
+
+    // ===== Building menu (deconstruct) =====
+
+    _openBuildingMenu(building) {
+        this._closeBuildingMenu();
+        const def = BUILDING_DEFS[building.definitionId];
+        if (!def) return;
+
+        const stateLabel = {
+            inactive: 'Inactive (no path)',
+            active_empty: 'Active — Empty',
+            active_occupied: `Occupied by ${building.occupant ?? '?'}`
+        }[building.state] ?? building.state;
+
+        const panel = document.createElement('div');
+        panel.id = 'building-menu';
+        panel.style.cssText = `
+            position:fixed; top:50%; left:50%; transform:translate(-50%,-50%);
+            background:linear-gradient(180deg,#f5e6c8 0%,#e8d4a8 100%);
+            border:4px solid #8b7355; border-radius:12px; padding:16px 20px;
+            z-index:200; min-width:200px; box-shadow:0 8px 24px rgba(0,0,0,0.4);
+            font-family:inherit; color:#3a2a10;
+        `;
+        panel.innerHTML = `
+            <div style="font-size:15px;font-weight:bold;margin-bottom:6px;">${def.name}</div>
+            <div style="font-size:12px;color:#7a5c30;margin-bottom:12px;">${stateLabel}</div>
+            <button id="building-deconstruct-btn" style="
+                display:block;width:100%;padding:7px 12px;margin-bottom:6px;
+                background:linear-gradient(180deg,#e04040 0%,#b02020 100%);
+                border:2px solid #801010;border-radius:6px;cursor:pointer;
+                font-family:inherit;color:#fff;font-size:12px;font-weight:bold;">
+                Deconstruct
+            </button>
+            <button id="building-close-btn" style="
+                display:block;width:100%;padding:6px 12px;
+                background:linear-gradient(180deg,#c8b080 0%,#a89060 100%);
+                border:2px solid #806840;border-radius:6px;cursor:pointer;
+                font-family:inherit;color:#3a2a10;font-size:12px;">
+                Close
+            </button>
+        `;
+
+        document.body.appendChild(panel);
+        this._buildingMenuPanel = panel;
+        this._buildingMenuBuilding = building;
+
+        document.getElementById('building-deconstruct-btn').addEventListener('click', () => {
+            this._deconstructBuilding(building);
+        });
+        document.getElementById('building-close-btn').addEventListener('click', () => {
+            this._closeBuildingMenu();
+        });
+    }
+
+    _closeBuildingMenu() {
+        if (this._buildingMenuPanel) {
+            this._buildingMenuPanel.remove();
+            this._buildingMenuPanel = null;
+            this._buildingMenuBuilding = null;
+        }
+    }
+
+    _deconstructBuilding(building) {
+        const def = BUILDING_DEFS[building.definitionId];
+        if (!def) return;
+
+        // Refund materials
+        if (def.cost.wood)  this.inventory.add(RESOURCE_TYPES.WOOD, def.cost.wood);
+        if (def.cost.stone) this.inventory.add(RESOURCE_TYPES.ORE_STONE, def.cost.stone);
+        if (def.cost.gold)  this.inventory.addGold(def.cost.gold);
+
+        // Displace villager if occupied
+        if (building.state === 'active_occupied' && building.occupant && this.villagerManager) {
+            this.villagerManager.onHouseDeconstructed(building);
+        }
+
+        // Remove from building manager
+        this.buildingManager.deconstructBuilding(building.id);
+
+        // Invalidate path connectivity
+        this._onPathChanged();
+
+        this._closeBuildingMenu();
+        log.info(`Building deconstructed: ${building.id} (${def.name})`);
+    }
+
+    // ===== Build placement mode methods =====
+
+    enterBuildingPlacementMode(defId, zeroCost = false) {
+        this._buildPlacementMode = { type: 'building', defId, zeroCost };
+        this._buildPlacementValid = false;
+        this.inputManager.setPanningEnabled(false);
+        // Deselect any active tool
+        if (this.currentTool) {
+            this.tileSelector.deselectTool?.();
+            this.currentTool = null;
+            this.inputMode = 'pan';
+        }
+        document.body.style.cursor = 'crosshair';
+        log.info(`Entered building placement mode for: ${defId}`);
+    }
+
+    enterPathPlacementMode() {
+        this._buildPlacementMode = { type: 'path' };
+        const pathTool = { id: 'path', tileId: 482, animation: 'DIG', name: 'Path' };
+        this.onToolSelected(pathTool);
+        // Use the build tool cursor icon so the player knows build mode is active
+        const buildCursorUrl = this.toolbar?.cursorDataUrls?.get('build');
+        document.body.style.cursor = buildCursorUrl
+            ? `url(${buildCursorUrl}) 16 16, auto`
+            : 'crosshair';
+        log.info('Entered path placement mode');
+    }
+
+    _cancelBuildPlacement() {
+        this._buildPlacementMode = null;
+        this._buildPlacementValid = false;
+        this.inputManager.setPanningEnabled(true);
+        document.body.style.cursor = 'default';
+        log.info('Build placement cancelled');
+    }
+
+    _validateBuildingPlacement(defId, tileX, tileY) {
+        const def = BUILDING_DEFS[defId];
+        if (!def) return false;
+        for (let dy = 0; dy < def.footprint.height; dy++) {
+            for (let dx = 0; dx < def.footprint.width; dx++) {
+                const tx = tileX + dx;
+                const ty = tileY + dy;
+                // Must be in a town chunk
+                if (!this.chunkManager.isTownChunk(tx, ty)) return false;
+                // Must not be occupied by existing building
+                if (this.buildingManager.isObstacle(tx, ty)) return false;
+                // Must not have a tree
+                if (this.treeManager?.getTreeAt?.(tx, ty)) return false;
+                if (this.forestGenerator?.getTreeAt?.(tx, ty)) return false;
+                // Must not have an ore vein
+                if (this.oreManager?.getOreAt?.(tx, ty)) return false;
+                // Must not have the well
+                if (this.well?.isObstacle?.(tx, ty)) return false;
+                // Must not have a crop
+                if (this.cropManager?.getCropAt?.(tx, ty)) return false;
+            }
+        }
+        return true;
+    }
+
+    _deductBuildingCost(cost) {
+        // Check all costs first
+        if (cost.gold  && this.inventory.getGold() < cost.gold) {
+            this._showNotification?.('Not enough gold');
+            return false;
+        }
+        if (cost.wood  && !this.inventory.has(RESOURCE_TYPES.WOOD, cost.wood)) {
+            this._showNotification?.('Not enough wood');
+            return false;
+        }
+        if (cost.stone && !this.inventory.has(RESOURCE_TYPES.ORE_STONE, cost.stone)) {
+            this._showNotification?.('Not enough stone');
+            return false;
+        }
+        // Deduct
+        if (cost.gold)  this.inventory.spendGold(cost.gold);
+        if (cost.wood)  this.inventory.remove(RESOURCE_TYPES.WOOD, cost.wood);
+        if (cost.stone) this.inventory.remove(RESOURCE_TYPES.ORE_STONE, cost.stone);
+        return true;
+    }
+
+    async _confirmBuildingPlacement(defId, tileX, tileY, zeroCost) {
+        const def = BUILDING_DEFS[defId];
+        if (!zeroCost && !this._deductBuildingCost(def.cost)) return;
+        try {
+            const building = await this.buildingManager.placeBuilding(defId, tileX, tileY, 'under_construction');
+            if (this.jobManager) {
+                this.jobManager.addConstructJob(building);
+            }
+            log.info(`Placed building ${defId} at (${tileX},${tileY})`);
+        } catch (err) {
+            log.error('Failed to place building:', err);
+        }
+        this._cancelBuildPlacement();
     }
 
     // Tool selection handlers (called by Toolbar)
@@ -2062,22 +2494,20 @@ export class Game {
     placePathTilesInMap() {
         this.pathPositions = [];
         const map = this.tilemap;
-        const { storeCol, storeRow, mainPathY, mainPathGap, size: chunkSize } = CONFIG.chunks;
+        const { mainPathY, mainPathGap } = CONFIG.chunks;
 
         // All coordinates are absolute world tile positions (45×79 total: 3 cols × 5 rows + 4-tile path gap).
         //
-        // Store chunk: col=1, row=1 → x=15-29, y=15-29
-        // Home chunk:  col=1, row=2 → x=15-29, y=30-44
+        // Store chunk: col=1, row=1 → x=15-29, y=15-29 (now sparse forest — no pre-placed paths)
+        // Home chunk:  col=1, row=2 → x=15-29, y=30-44 (now sparse forest — player places paths)
         // Great path:  world y=45-48  (separate renderer — NOT set via setTileAt)
         // Farm chunk:  col=1, row=3 → x=15-29, world y=49-63
         //
-        // Path network:
+        // Path network (pre-placed):
         //   1. Great path (y=45-48): separate tilemap, handled by TilemapRenderer.renderGreatPath()
-        //   2. Home east-edge path: x=29, y=30–44 (full east column of home chunk)
-        //   3. Store bottom path: y=29, x=15–29 (bottom row of store chunk)
-        //   4. Home approach fork: y=40, x=homeEntranceX–29
-        //   5. House east-side path: x=22, y=49–57
-        //   6. House front E-W: y=57, x=16–22
+        //   2. House east-side path: x=22, y=49–57
+        //   3. House front E-W: y=57, x=16–22
+        // The dynamic north bridge (y=45) responds to player-placed paths at y=44.
 
         const placeRow = (y, x0, x1) => {
             for (let x = x0; x <= x1; x++) {
@@ -2092,36 +2522,12 @@ export class Game {
             }
         };
 
-        // Store chunk boundaries (col=1, row=1)
-        const storeChunkX = storeCol * chunkSize;        // 15
-        const storeChunkY = storeRow * chunkSize;        // 15
-        const storeChunkRight = storeChunkX + chunkSize; // 30 (exclusive)
-
-        // East edge of home chunk (same col as store): (col+1)*chunkSize - 1 = 29
-        const homeEastX = (storeCol + 1) * chunkSize - 1; // 29
-
         const farmTop = mainPathY + mainPathGap; // 49 (first farm tile row)
 
         // 1. Great path (y=45-48) is handled entirely by TilemapRenderer.renderGreatPath().
         //    No setTileAt() calls here.
 
-        // 2. Home east-edge path — full east column of home chunk (y=30 to y=44)
-        //    Connects store path above (y=29) to great path bridge below (y=45 N-grass).
-        placeCol(homeEastX, storeChunkY + chunkSize, mainPathY - 1); // y=30 to y=44
-
-        // 3. Store bottom path — bottom row of store chunk (y=29), full width
-        //    Connects east to home path at homeEastX and gives access to store entrance.
-        placeRow(storeChunkY + chunkSize - 1, storeChunkX, storeChunkRight - 1); // y=29, x=15–29
-
-        // 4. Home approach fork — at door row y=37, branches left to door entrance at x=20
-        //    Home doors (tile 206) are at world y=37, x=20 and x=23; approach runs along same row.
-        if (map.townHomeWidth > 0) {
-            const homeApproachY = map.townHomeOffsetY + 7; // 30+7=37
-            const homeEntranceX = map.townHomeOffsetX + 3; // 17+3=20
-            placeRow(homeApproachY, homeEntranceX, homeEastX); // y=37, x=20–29
-        }
-
-        // 5. House east-side path — from farm top (y=49) down to house front row (y=57)
+        // 2. House east-side path — from farm top (y=49) down to house front row (y=57)
         //    House at x=16–21; path at x=22 (one tile east of house)
         const houseEastX = map.newHouseOffsetX + map.newHouseWidth; // 16+6=22
         const houseFrontY = map.newHouseOffsetY + map.newHouseHeight - 1; // 52+5=57
@@ -2150,21 +2556,19 @@ export class Game {
             this.overlayManager.markTileAsPath(pos.x, pos.y);
         }
 
-        // Bridge the N-S paths into the great path strip:
-        //   Home east-edge path (x=29) enters from the NORTH → mark y=45 (N-grass row) as path
-        //   Farm house path    (x=22) enters from the SOUTH → mark y=48 (S-grass row) as path
-        // Only one grass row per column — marking both would cause edge overlays on the wrong side.
         if (this.tilemap.mapType === 'chunk') {
-            const { mainPathY, mainPathGap, homeCol, size: chunkSize } = CONFIG.chunks;
+            const { mainPathY, mainPathGap } = CONFIG.chunks;
             const map = this.tilemap;
-            const northBridgeX = (homeCol + 1) * chunkSize - 1;          // 29 (home east-edge column)
             const farmCrossX = map.newHouseOffsetX + map.newHouseWidth;   // 22 (farm house path column)
-            this.overlayManager.markTileAsPath(northBridgeX, mainPathY);                   // (29, 45)
-            this.overlayManager.markTileAsPath(farmCrossX, mainPathY + mainPathGap - 1);   // (22, 48)
+
+            // South bridge: farm house path (x=22) enters from south → mark y=48 (S-grass row)
+            this.overlayManager.markTileAsPath(farmCrossX, mainPathY + mainPathGap - 1); // (22, 48)
+
+            // North bridge: dynamic — any player path at y=44 creates a bridge at y=45.
+            // Set initial overlays based on current path tiles at y=44.
+            this._updateNorthBridgeOverlays();
 
             // Clean up any path edge overlays that spilled sideways onto the great path strip.
-            // markTileAsPath places 'E'/'W' overlays on horizontal neighbours inside the strip
-            // (e.g. (44,60), (46,60), (37,63), (39,63)), but renderGreatPath owns those rows visually.
             for (const [key] of this.overlayManager.overlays) {
                 const comma = key.indexOf(',');
                 const y = parseInt(key.slice(comma + 1), 10);
@@ -2174,6 +2578,44 @@ export class Game {
                 }
             }
         }
+    }
+
+    // Scan y=44 (home chunk bottom row) for player-placed path tiles and update
+    // bridge overlays at y=45 (great path N-grass row) accordingly.
+    _updateNorthBridgeOverlays() {
+        if (!this.overlayManager || this.tilemap.mapType !== 'chunk') return;
+        const { mainPathY } = CONFIG.chunks;
+        const bridgeY = mainPathY;      // 45 (N-grass row)
+        const scanY = mainPathY - 1;   // 44 (home chunk bottom)
+        for (let x = 0; x < this.tilemap.mapWidth; x++) {
+            const tile = this.tilemap.getTileAt(x, scanY);
+            if (CONFIG.tiles.path.includes(tile)) {
+                this.overlayManager.markTileAsPath(x, bridgeY);
+            } else {
+                this.overlayManager.removePathEdgeOverlays(x, bridgeY);
+            }
+        }
+    }
+
+    // Called when a tree is fully depleted. Spawns a physics-based seed icon that falls
+    // then homes in on the worker, awarding 1 seed to inventory on arrival.
+    _onTreeDepleted(tileX, tileY, seedKey, workerId) {
+        const resource = RESOURCE_TYPES[seedKey];
+        if (!resource) return;
+        const tileSize = this.tilemap.tileSize;
+        this._treeSeedDropEffects.push({
+            x: (tileX + 0.5) * tileSize,
+            y: (tileY - 1) * tileSize,
+            vx: (Math.random() - 0.5) * 60,
+            vy: 0,
+            resource,
+            workerId,
+            phase: 'falling',
+            timer: 0,
+            fallDuration: 400,
+            alpha: 1,
+            scale: 1 / 3
+        });
     }
 
     renderWorkQueueOverlay() {
@@ -2342,6 +2784,36 @@ export class Game {
         // Update floating seed drop effects
         updateEffects(this._seedEffects, deltaTime);
 
+        // Update physics-based tree seed drop effects
+        for (let i = this._treeSeedDropEffects.length - 1; i >= 0; i--) {
+            const e = this._treeSeedDropEffects[i];
+            e.timer += deltaTime;
+            if (e.phase === 'falling') {
+                e.vy += 200 * (deltaTime / 1000);
+                e.x += e.vx * (deltaTime / 1000);
+                e.y += e.vy * (deltaTime / 1000);
+                if (e.timer >= e.fallDuration) {
+                    e.phase = 'homing';
+                    e.timer = 0;
+                }
+            } else { // homing
+                const target = e.workerId === 'goblin' ? this.goblinPosition : this.humanPosition;
+                if (!target) { this._treeSeedDropEffects.splice(i, 1); continue; }
+                const dx = target.x - e.x;
+                const dy = target.y - e.y;
+                const dist = Math.sqrt(dx * dx + dy * dy);
+                if (dist < 12) {
+                    this.inventory.add(e.resource, 1);
+                    this._seedEffects.push(createHarvestEffect(target.x, target.y - 16, e.resource.tileId));
+                    this._treeSeedDropEffects.splice(i, 1);
+                } else {
+                    const speed = Math.min(dist * 5, 400) * (deltaTime / 1000);
+                    e.x += (dx / dist) * speed;
+                    e.y += (dy / dist) * speed;
+                }
+            }
+        }
+
         // Update other character animations (non-enemy NPCs)
         for (const character of this.characters) {
             character.update(deltaTime);
@@ -2398,6 +2870,15 @@ export class Game {
         // Render new house ground/floor layers AFTER all path/overlay rendering so they
         // appear on top of path tiles and path edge overlays
         this.tilemap.renderGroundLayers(this.ctx, this.camera);
+
+        // Render placed building ground/wall layers (above path overlays, below entities)
+        if (this.buildingManager) {
+            const pt = this.humanPosition ? {
+                x: Math.floor(this.humanPosition.x / this.tilemap.tileSize),
+                y: Math.floor(this.humanPosition.y / this.tilemap.tileSize),
+            } : null;
+            this.buildingManager.render(this.ctx, this.camera, 'ground', pt);
+        }
 
         // Render tile selection highlight
         if (this.tileSelector) {
@@ -2622,6 +3103,9 @@ export class Game {
                     break;
                 case 'traveler':
                     item.entity.render(this.ctx, this.camera);
+                    if (item.entity.isMilestone && item.entity.comboItems?.length) {
+                        this._renderComboDisplay(item.entity);
+                    }
                     break;
                 case 'stand':
                     item.entity.renderBase(this.ctx);
@@ -2645,6 +3129,16 @@ export class Game {
 
         // Render upper layers (Buildings Upper) - above characters
         this.tilemap.renderUpperLayers(this.ctx, this.camera);
+
+        // Render placed building upper/roof layers (above characters)
+        if (this.buildingManager) {
+            const pt = this.humanPosition ? {
+                x: Math.floor(this.humanPosition.x / this.tilemap.tileSize),
+                y: Math.floor(this.humanPosition.y / this.tilemap.tileSize),
+            } : null;
+            this.buildingManager.render(this.ctx, this.camera, 'upper', pt);
+            this.buildingManager.render(this.ctx, this.camera, 'roof', pt);
+        }
 
         // Render roadside stand banner (y=63, above all characters)
         if (this.roadsideStand) {
@@ -2691,6 +3185,27 @@ export class Game {
                 id => this.tilemap.getTilesetSourceRect(id), this.tilemap.tileSize);
         }
 
+        // Render physics-based tree seed drop effects (1/3-scale seed icons)
+        if (this._treeSeedDropEffects.length > 0) {
+            const tileSize = this.tilemap.tileSize;
+            this.ctx.save();
+            this.ctx.imageSmoothingEnabled = false;
+            for (const e of this._treeSeedDropEffects) {
+                const sz = tileSize * e.scale; // 1/3 size
+                const src = this.tilemap.getTilesetSourceRect(e.resource.tileId);
+                if (!src) continue;
+                const sx = this.camera.worldToScreenX(e.x);
+                const sy = this.camera.worldToScreenY(e.y);
+                this.ctx.globalAlpha = e.alpha;
+                this.ctx.drawImage(
+                    this.tilemap.tilesetImage,
+                    src.x, src.y, src.width, src.height,
+                    sx - sz / 2, sy - sz / 2, sz, sz
+                );
+            }
+            this.ctx.restore();
+        }
+
         // Render player health bar if damaged (on top of sprites)
         if (this.playerHealth < this.playerMaxHealth) {
             this.renderPlayerHealthBar();
@@ -2699,6 +3214,27 @@ export class Game {
         // Render goblin health bar if damaged
         if (this.goblinHealth < this.goblinMaxHealth) {
             this.renderGoblinHealthBar();
+        }
+
+        // Building placement ghost preview
+        if (this._buildPlacementMode?.type === 'building' && this.buildingManager) {
+            const def = BUILDING_DEFS[this._buildPlacementMode.defId];
+            if (def?.hasTilemap) {
+                this.buildingManager.renderGhost(
+                    this.ctx, this.camera,
+                    this._buildPlacementMode.defId,
+                    this._buildPlacementTileX, this._buildPlacementTileY,
+                    this._buildPlacementValid
+                );
+            }
+        }
+
+        // Debug overlays (path connectivity, building states)
+        if (this._showBuildingDebug && this.buildingManager) {
+            this.buildingManager.renderDebugOverlay(this.ctx, this.camera);
+        }
+        if (this._showPathDebug) {
+            this._renderPathDebug();
         }
 
         // Reset transformation for UI (if needed later)
@@ -2810,6 +3346,12 @@ export class Game {
 
     // Called by Traveler when it stops at the stand
     _onTravelerAtStand(traveler) {
+        // Milestone travelers: check if their full combo is stocked, then buy all at once
+        if (traveler.isMilestone && traveler.comboItems?.length) {
+            this._handleMilestoneTravelerAtStand(traveler);
+            return;
+        }
+
         if (!traveler.wantedPurchases?.length) {
             log.debug(`Traveler leaving stand immediately: no wantedPurchases`);
             traveler.resumeWalking();
@@ -2823,6 +3365,130 @@ export class Game {
             return;
         }
         this._beginServingTraveler(traveler);
+    }
+
+    _handleMilestoneTravelerAtStand(traveler) {
+        const stand = this.roadsideStand;
+        if (!stand) { traveler.resumeWalking(); return; }
+
+        // combo items use RESOURCE_TYPES key names (e.g. 'CROP_RADISH');
+        // resolve to the lowercase resource.id used by stand slots (e.g. 'crop_radish')
+        const combo = traveler.comboItems;
+        const resolvedCombo = combo.map(item => ({
+            resourceId: RESOURCE_TYPES[item.id]?.id ?? item.id,
+            count: item.count
+        }));
+
+        // Check if all combo items are available at the stand in required counts
+        const canBuy = resolvedCombo.every(item => {
+            const count = stand.getCountOfResource?.(item.resourceId) ?? 0;
+            return count >= item.count;
+        });
+
+        if (!canBuy) {
+            log.debug(`Milestone traveler ${traveler.villagerType}: combo not fully stocked, leaving`);
+            traveler.resumeWalking();
+            return;
+        }
+
+        // Buy the entire combo
+        let totalGold = 0;
+        for (const item of resolvedCombo) {
+            const removed = stand.removeResourceCount?.(item.resourceId, item.count);
+            if (removed) totalGold += removed;
+        }
+        if (totalGold > 0) this.inventory.addGold(totalGold);
+
+        log.info(`Milestone traveler ${traveler.villagerType} bought combo (+${totalGold}g), recruiting`);
+
+        // Recruit the villager into the target house
+        if (traveler.targetHouse && this.villagerManager) {
+            this.villagerManager.onVillagerRecruited(traveler.villagerType, traveler.targetHouse);
+        }
+
+        // Stand UI refresh
+        if (this.uiManager) this.uiManager.refreshStandMenuIfOpen();
+
+        // Traveler departs
+        traveler.resumeWalking();
+    }
+
+    /**
+     * Render floating combo icons above a milestone traveler.
+     * Drawn in world space (camera transform already active) so the display
+     * tracks the traveler exactly at all zoom levels and DPR values.
+     * Each icon: 32×32 screen-px tileset tile, count badge bottom-center, ✓/✗ top-right.
+     */
+    _renderComboDisplay(traveler) {
+        const combo = traveler.comboItems;  // [{ id: 'CROP_RADISH', count: N }]
+        if (!combo?.length) return;
+
+        const ctx = this.ctx;
+        const z = this.camera.zoom;
+        const tilesetImage = this.tilemap.tilesetImage;
+        const stand = this.roadsideStand;
+        const tileSize = this.tilemap.tileSize;  // 16 world px
+
+        // All sizes are in world units (divide screen-px by zoom so they appear
+        // at a fixed screen size regardless of zoom level).
+        const iconSize = 32 / z;
+        const iconGap  = 4  / z;
+        const pad      = 2  / z;
+        const totalW   = combo.length * iconSize + (combo.length - 1) * iconGap;
+
+        // Place icons above the traveler's head.
+        // Sprite is centered at traveler.y; head is ~1 tile above center.
+        const rowY   = traveler.y - tileSize - iconSize - (6 / z);
+        const startX = traveler.x - totalW / 2;
+
+        ctx.save();
+
+        for (let i = 0; i < combo.length; i++) {
+            const item = combo[i];
+            const resource = RESOURCE_TYPES[item.id];
+            if (!resource) continue;
+
+            const ix = startX + i * (iconSize + iconGap);
+            const iy = rowY;
+
+            // Draw semi-transparent dark background
+            ctx.fillStyle = 'rgba(0,0,0,0.55)';
+            ctx.fillRect(ix - pad, iy - pad, iconSize + 2 * pad, iconSize + 2 * pad);
+
+            // Draw tileset icon
+            if (tilesetImage) {
+                const src = this.tilemap.getTilesetSourceRect(resource.tileId);
+                if (src) {
+                    ctx.drawImage(tilesetImage, src.x, src.y, src.width, src.height, ix, iy, iconSize, iconSize);
+                }
+            }
+
+            // Count badge (bottom-center, only if > 1)
+            if (item.count > 1) {
+                ctx.font = `bold ${9 / z}px sans-serif`;
+                ctx.textAlign = 'center';
+                ctx.fillStyle = '#000';
+                ctx.fillText(item.count, ix + iconSize / 2 + 1 / z, iy + iconSize - 1 / z);
+                ctx.fillStyle = '#fff';
+                ctx.fillText(item.count, ix + iconSize / 2, iy + iconSize - 2 / z);
+            }
+
+            // Check/X overlay (top-right corner)
+            const resolvedId = resource.id;
+            const stocked = stand ? (stand.getCountOfResource?.(resolvedId) ?? 0) : 0;
+            const satisfied = stocked >= item.count;
+
+            ctx.font = `bold ${11 / z}px sans-serif`;
+            ctx.textAlign = 'left';
+            // Shadow
+            ctx.fillStyle = '#000';
+            ctx.fillText(satisfied ? '✓' : '✗', ix + iconSize - 9 / z, iy + 12 / z);
+            // Color
+            ctx.fillStyle = satisfied ? '#44ff44' : '#ff4444';
+            ctx.fillText(satisfied ? '✓' : '✗', ix + iconSize - 10 / z, iy + 11 / z);
+        }
+
+        ctx.restore();
     }
 
     // Begin a new stand service session for the given traveler.
@@ -3133,15 +3799,19 @@ export class Game {
             // Cauldron — potions added to inventory
             case 'minor_health_potion':
                 this.inventory.add(RESOURCE_TYPES.MINOR_HEALTH_POTION, 1);
+                this.milestones.totalPotionsCrafted++;
                 break;
             case 'stamina_tonic':
                 this.inventory.add(RESOURCE_TYPES.STAMINA_TONIC, 1);
+                this.milestones.totalPotionsCrafted++;
                 break;
             case 'growth_elixir':
                 this.inventory.add(RESOURCE_TYPES.GROWTH_ELIXIR, 1);
+                this.milestones.totalPotionsCrafted++;
                 break;
             case 'vitality_brew':
                 this.inventory.add(RESOURCE_TYPES.VITALITY_BREW, 1);
+                this.milestones.totalPotionsCrafted++;
                 break;
 
             // Anvil — tool speed upgrades (same logic as old instant crafting)
@@ -3153,26 +3823,32 @@ export class Game {
                              : 'pickaxe';
                 this.toolAnimationMultipliers[toolId] = (this.toolAnimationMultipliers[toolId] || 1) * 2;
                 this.homeUpgrades.purchasedToolUpgrades.add(recipeId);
+                this.milestones.totalAnvilUpgrades++;
                 break;
             }
             case 'vitality_boost':
                 this.playerMaxHealth = Math.round(this.playerMaxHealth * 1.5);
                 this.playerHealth = Math.min(this.playerHealth, this.playerMaxHealth);
                 this.homeUpgrades.purchasedToolUpgrades.add('vitality_boost');
+                this.milestones.totalAnvilUpgrades++;
                 break;
 
             // Shrine — permanent bonuses
             case 'fertile_soil_1':
                 this.homeUpgrades.shrineUpgrades.fertileSoilLevel = 1;
+                this.milestones.totalShrineUpgrades++;
                 break;
             case 'fertile_soil_2':
                 this.homeUpgrades.shrineUpgrades.fertileSoilLevel = 2;
+                this.milestones.totalShrineUpgrades++;
                 break;
             case 'bountiful_harvest':
                 this.homeUpgrades.shrineUpgrades.bountifulHarvest = true;
+                this.milestones.totalShrineUpgrades++;
                 break;
             case 'roadside_replenishment':
                 this.homeUpgrades.shrineUpgrades.roadsideReplenishment = true;
+                this.milestones.totalShrineUpgrades++;
                 if (this.uiManager) this.uiManager.refreshStandMenuIfOpen();
                 break;
 
@@ -3198,11 +3874,26 @@ export class Game {
             </div>
             <div class="debug-btn-row">
                 <button class="debug-cheat-btn" id="cheat-seeds">+10 Each Seed</button>
+                <button class="debug-cheat-btn" id="cheat-crops">+10 Each Crop</button>
+            </div>
+            <div class="debug-btn-row">
                 <button class="debug-cheat-btn" id="cheat-hire-goblin">Hire Goblin</button>
                 <button class="debug-cheat-btn" id="cheat-fire-goblin" style="display:none">Fire Goblin</button>
             </div>
             <div class="debug-btn-row">
                 <button class="debug-cheat-btn" id="cheat-unlock-replenishment">Unlock Replenishment</button>
+            </div>
+            <div class="debug-btn-row">
+                <button class="debug-cheat-btn" id="cheat-add-resources">Add All Resources</button>
+                <button class="debug-cheat-btn" id="cheat-buy-town-chunk">Buy Town Chunk</button>
+            </div>
+            <div class="debug-btn-row">
+                <button class="debug-cheat-btn" id="cheat-spawn-milestone-traveler">Spawn Milestone Traveler</button>
+                <button class="debug-cheat-btn" id="cheat-place-test-building">Place Test Building</button>
+            </div>
+            <div class="debug-btn-row">
+                <button class="debug-cheat-btn" id="cheat-toggle-path-debug">Toggle Path Debug</button>
+                <button class="debug-cheat-btn" id="cheat-toggle-building-debug">Toggle Building Debug</button>
             </div>
         `;
         menu.appendChild(cheatSection);
@@ -3214,6 +3905,14 @@ export class Game {
         document.getElementById('cheat-seeds').addEventListener('click', () => {
             for (const key of Object.keys(RESOURCE_TYPES)) {
                 if (RESOURCE_TYPES[key].category === 'seed') {
+                    this.inventory.add(RESOURCE_TYPES[key], 10);
+                }
+            }
+        });
+
+        document.getElementById('cheat-crops').addEventListener('click', () => {
+            for (const key of Object.keys(RESOURCE_TYPES)) {
+                if (RESOURCE_TYPES[key].category === 'crop' && RESOURCE_TYPES[key].id !== 'crop_weed') {
                     this.inventory.add(RESOURCE_TYPES[key], 10);
                 }
             }
@@ -3234,6 +3933,69 @@ export class Game {
             this.homeUpgrades.shrineUpgrades.roadsideReplenishment = true;
             if (this.uiManager) this.uiManager.refreshStandMenuIfOpen();
             log.info('Replenishment unlocked via debug cheat');
+        });
+
+        document.getElementById('cheat-add-resources').addEventListener('click', () => {
+            this.inventory.addGold(10000);
+            this.inventory.add(RESOURCE_TYPES.WOOD, 100);
+            this.inventory.add(RESOURCE_TYPES.ORE_STONE, 100);
+            this.inventory.add(RESOURCE_TYPES.ORE_IRON, 100);
+            this.inventory.add(RESOURCE_TYPES.ORE_COAL, 100);
+            this.inventory.add(RESOURCE_TYPES.ORE_GOLD, 100);
+            this.inventory.add(RESOURCE_TYPES.ORE_MITHRIL, 100);
+            log.info('Added all resources via debug cheat');
+        });
+
+        document.getElementById('cheat-buy-town-chunk').addEventListener('click', () => {
+            if (!this.chunkManager) return;
+            for (const chunk of this.chunkManager.chunks.values()) {
+                if (chunk.state === 'purchasable' && chunk.isTownPlot) {
+                    this.chunkManager.purchaseChunk(chunk.col, chunk.row, true);
+                    log.info(`Debug: purchased town chunk (${chunk.col},${chunk.row})`);
+                    return;
+                }
+            }
+            log.info('No purchasable town chunks available');
+        });
+
+        document.getElementById('cheat-spawn-milestone-traveler').addEventListener('click', () => {
+            if (!this.travelerManager) return;
+            // Use eligible milestones first; fall back to first milestone in the list for debug
+            const eligibleIds = this.villagerManager?.getEligibleMilestoneIds() ?? [];
+            const milestoneId = eligibleIds[0] ?? VILLAGER_MILESTONES[0]?.id;
+            if (!milestoneId) { log.info('No milestone definitions found'); return; }
+            const readyBuildings = this.buildingManager?.placedBuildings.filter(b => b.state === 'active_empty') ?? [];
+            if (readyBuildings.length === 0) {
+                this._showNotification?.('No active_empty building — build & connect a house first');
+                log.info('No active_empty building available for milestone traveler');
+                return;
+            }
+            this.travelerManager._spawnMilestoneTraveler(milestoneId, readyBuildings[0]);
+        });
+
+        document.getElementById('cheat-place-test-building').addEventListener('click', async () => {
+            if (!this.buildingManager) return;
+            const def = BUILDING_DEFS['small_house'];
+            if (!def) return;
+            // Place at top-left of home chunk (col=1, row=2, world x=15, world y=30)
+            const { homeCol, homeRow, size: chunkSize } = CONFIG.chunks;
+            const tileX = homeCol * chunkSize; // 15
+            const tileY = homeRow * chunkSize; // 30
+            try {
+                const building = await this.buildingManager.placeBuilding('small_house', tileX, tileY, 'active_empty');
+                building.pathConnected = true;
+                log.info(`Debug: placed small_house at (${tileX},${tileY})`);
+            } catch (e) { log.error('Failed to place test building:', e); }
+        });
+
+        document.getElementById('cheat-toggle-path-debug').addEventListener('click', () => {
+            this._showPathDebug = !this._showPathDebug;
+            log.info(`Path debug: ${this._showPathDebug}`);
+        });
+
+        document.getElementById('cheat-toggle-building-debug').addEventListener('click', () => {
+            this._showBuildingDebug = !this._showBuildingDebug;
+            log.info(`Building debug: ${this._showBuildingDebug}`);
         });
 
         // ── Save / Load section ───────────────────────────────────────────────
@@ -3331,9 +4093,23 @@ export class Game {
     hireGoblin() {
         if (this.goblinHired) return;
         this.goblinHired = true;
+        this.milestones.goblinEverHired = true;
+
+        // Spawn goblin on the great path (tile 22, 31 — first path tile in new layout)
+        if (!this.goblinPosition) {
+            const tileSize = this.tilemap.tileSize;
+            this.goblinPosition = {
+                x: 22 * tileSize + tileSize / 2,
+                y: 31 * tileSize + tileSize / 2
+            };
+            if (this.goblinSprite) {
+                this.goblinSprite.setPosition(this.goblinPosition.x, this.goblinPosition.y);
+            }
+        }
+
         if (this.toolbar) this.toolbar.setGoblinHired(true);
         if (this.jobQueueUI) this.jobQueueUI.setGoblinHired(true);
-        log.info('Goblin hired!');
+        log.info('Goblin hired! Spawned at (22, 31)');
     }
 
     // Remove goblin from job system and hide all goblin UI.

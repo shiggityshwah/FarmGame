@@ -82,6 +82,7 @@ export class ForestTree {
         this.baseX = baseX;
         this.baseY = baseY;
         this.isLit = isLit; // Whether THIS tree's crown is glowing/lit
+        this.initiallyLit = isLit; // Preserved after first chop (isLit is cleared)
 
         // Neighbor flags - set by ForestGenerator after all trees are placed
         this.hasTopLeft = false;
@@ -1086,6 +1087,11 @@ export class ForestGenerator {
         // No longer lit after first chop
         tree.isLit = false;
 
+        // Attach initiallyLit to depleted result so callers can weight seed drops
+        if (result.depleted) {
+            result.wasInitiallyLit = tree.initiallyLit;
+        }
+
         // Create chopping effect
         if (result.woodYielded) {
             this.createChoppingEffect(tree, result.woodYielded);
@@ -1608,6 +1614,32 @@ export class ForestGenerator {
         // Must be outside main tilemap
         return tileX < 0 || tileX >= this.tilemap.mapWidth ||
                tileY < 0 || tileY >= this.tilemap.mapHeight;
+    }
+
+    /**
+     * Pick a random seed type to drop when a tree is fully depleted.
+     * Seeds are ordered cheapest → most expensive.
+     * Non-lit trees favour cheap seeds (exponential decay).
+     * Initially-lit trees favour mid-tier seeds (shifted distribution).
+     * @param {boolean} wasInitiallyLit
+     * @returns {string} RESOURCE_TYPES key (e.g. 'SEED_CARROT')
+     */
+    pickSeedType(wasInitiallyLit) {
+        const seeds = [
+            'SEED_CARROT', 'SEED_RADISH', 'SEED_PARSNIP', 'SEED_POTATO',
+            'SEED_BEETROOT', 'SEED_CABBAGE', 'SEED_CAULIFLOWER',
+            'SEED_SUNFLOWER', 'SEED_WHEAT', 'SEED_PUMPKIN'
+        ];
+        const weights = wasInitiallyLit
+            ? [3, 4, 5, 6, 6, 5, 4, 3, 2, 1]       // lit: peak at mid-tier
+            : [12, 9, 7, 5, 4, 3, 2, 1.5, 1, 0.5];  // non-lit: exponential decay
+        const total = weights.reduce((s, w) => s + w, 0);
+        let r = Math.random() * total;
+        for (let i = 0; i < seeds.length; i++) {
+            r -= weights[i];
+            if (r <= 0) return seeds[i];
+        }
+        return seeds[0];
     }
 
     /**

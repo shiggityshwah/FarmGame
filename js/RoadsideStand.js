@@ -9,7 +9,7 @@ export class RoadsideStand {
         this.tilemap = tilemap;
         this.tileSize = tilemap.tileSize;   // 16
         this.tileX = 23;                    // world tile X of left edge (east of house path at x=22)
-        this.tileY = 49;                    // world tile Y of base row (farm chunk north edge = mainPathY+mainPathGap)
+        this.tileY = 34;                    // world tile Y of base row (farm chunk north edge = mainPathY+mainPathGap)
         this.width = 4;                     // tiles wide
 
         // Tile IDs for base row (ground level) and banner row (above characters)
@@ -83,6 +83,28 @@ export class RoadsideStand {
 
     clearSlot(i) {
         this.slots[i] = { resource: null, autoReplenish: false };
+    }
+
+    /** Count how many slots have the given resource type ID. */
+    getCountOfResource(resourceId) {
+        return this.slots.filter(s => s.resource?.id === resourceId).length;
+    }
+
+    /**
+     * Remove up to `count` slots of the given resource type.
+     * Returns the total gold value of removed items (sum of sell_price per removed slot).
+     */
+    removeResourceCount(resourceId, count) {
+        let removed = 0;
+        let goldValue = 0;
+        for (let i = 0; i < this.slots.length && removed < count; i++) {
+            if (this.slots[i].resource?.id === resourceId) {
+                goldValue += this.slots[i].resource.sell_price || 0;
+                this.clearSlot(i);
+                removed++;
+            }
+        }
+        return goldValue;
     }
 
     // --- Geometry helpers ---

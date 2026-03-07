@@ -2,6 +2,7 @@ import { CONFIG } from './config.js';
 import { Logger } from './Logger.js';
 import { Traveler } from './Traveler.js';
 import { RESOURCE_TYPES } from './Inventory.js';
+import { VILLAGER_MILESTONES } from './BuildingRegistry.js';
 
 const log = Logger.create('TravelerManager');
 
@@ -13,6 +14,9 @@ export class TravelerManager {
         this.spawnInterval = this._randomInterval();
         this.stand = null;   // RoadsideStand reference, set via setStand()
         this.camera = null;  // Camera reference, set via setCamera()
+        this.villagerManager = null;
+        this.regularTravelersSinceMilestone = 0;
+        this._pendingEmptyHouse = null;  // building waiting for a villager
     }
 
     setStand(stand) {
@@ -21,6 +25,16 @@ export class TravelerManager {
 
     setCamera(camera) {
         this.camera = camera;
+    }
+
+    setVillagerManager(vm) {
+        this.villagerManager = vm;
+    }
+
+    /** Called by VillagerManager when a building is ready for a villager. */
+    onEmptyHouseAvailable(building) {
+        this._pendingEmptyHouse = building;
+        log.info(`Empty house available for milestone traveler: ${building.id}`);
     }
 
     _randomInterval() {
@@ -58,6 +72,38 @@ export class TravelerManager {
         this.travelers.push(traveler);
 
         log.debug(`Spawned traveler dir=${direction} hair=${hairStyle} x=${Math.round(spawnX)} despawnX=${Math.round(despawnX)} visitStand=${traveler.visitStand}`);
+    }
+
+    async _spawnMilestoneTraveler(villagerMilestoneId, house) {
+        const milestone = VILLAGER_MILESTONES.find(m => m.id === villagerMilestoneId);
+        if (!milestone) return;
+
+        const { leftPx, rightPx } = this._getWorldBounds();
+        const margin = CONFIG.traveler.despawnMargin;
+        const { hairStyles, pathCenterY } = CONFIG.traveler;
+        const direction = Math.random() < 0.5 ? 'east' : 'west';
+        const spawnX   = direction === 'east' ? leftPx  - margin : rightPx + margin;
+        const despawnX = direction === 'east' ? rightPx + margin : leftPx  - margin;
+        const hairStyle = hairStyles[Math.floor(Math.random() * hairStyles.length)];
+
+        const traveler = new Traveler(spawnX, pathCenterY, direction, hairStyle, this.stand);
+        traveler.despawnX = despawnX;
+        traveler.isMilestone = true;
+        traveler.villagerType = villagerMilestoneId;
+        traveler.villagerName = milestone.name;
+        traveler.targetHouse = house;
+        traveler.comboItems = milestone.combo;  // [{ id, count }]
+        traveler.visitStand = !!this.stand;
+
+        if (this.stand) {
+            traveler.standStopWorldX = this.stand.getSlotWorldX?.(0) ?? 0;
+            traveler.standStopWorldY = (this.stand.tileY - 1) * this.tilemap.tileSize + this.tilemap.tileSize / 2;
+        }
+
+        await traveler.load();
+        this.travelers.push(traveler);
+
+        log.info(`Spawned milestone traveler: ${villagerMilestoneId} (${milestone.name})`);
     }
 
     // Generate randomized likes, hates, and gold for the traveler; evaluate stand visit
@@ -175,7 +221,19 @@ export class TravelerManager {
         if (this.spawnTimer >= this.spawnInterval) {
             this.spawnTimer = 0;
             this.spawnInterval = this._randomInterval();
-            this._spawnTraveler();
+
+            const eligibleIds = this.villagerManager?.getEligibleMilestoneIds() ?? [];
+            const maxRegular = CONFIG.villagers?.maxRegularTravelersBeforeMilestone ?? 5;
+
+            if (this._pendingEmptyHouse && eligibleIds.length > 0
+                && this.regularTravelersSinceMilestone >= maxRegular) {
+                this._spawnMilestoneTraveler(eligibleIds[0], this._pendingEmptyHouse);
+                this.regularTravelersSinceMilestone = 0;
+                this._pendingEmptyHouse = null;
+            } else {
+                this._spawnTraveler();
+                this.regularTravelersSinceMilestone++;
+            }
         }
 
         for (const traveler of this.travelers) {

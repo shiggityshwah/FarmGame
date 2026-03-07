@@ -139,6 +139,7 @@ export class Pathfinder {
         this.oreManager = null;
         this.roadsideStand = null;
         this.well = null;
+        this.buildingManager = null;
     }
 
     /**
@@ -166,6 +167,11 @@ export class Pathfinder {
     /** Set the well so its solid rows block pathfinding */
     setWell(well) {
         this.well = well;
+    }
+
+    /** Set the building manager so completed building footprints block pathfinding */
+    setBuildingManager(buildingManager) {
+        this.buildingManager = buildingManager;
     }
 
     findPath(startX, startY, endX, endY) {
@@ -312,6 +318,11 @@ export class Pathfinder {
 
             // Check well solid rows (middle + bottom, top row is walkable)
             if (this.well && this.well.isObstacle(x, y)) {
+                return false;
+            }
+
+            // Check completed placed buildings
+            if (this.buildingManager && this.buildingManager.isObstacle(x, y)) {
                 return false;
             }
 

@@ -825,9 +825,8 @@ export class TilemapRenderer {
         };
 
         // Bridge columns where paths enter/exit the great path strip:
-        //   northBridgeX (y=45 N-grass): home chunk east-edge path enters from north at x=29
-        //   farmCrossX   (y=48 S-grass): farm house east-side path enters from south at x=22
-        const northBridgeX = (CONFIG.chunks.homeCol + 1) * this.CHUNK_SIZE - 1; // (1+1)*15-1 = 29
+        //   N-grass row (y=45, rowOffset=0): dynamic — any player path at y=44 creates a bridge
+        //   S-grass row (y=48, rowOffset=3): hardcoded at farm house east path x=22
         const farmCrossX = this.newHouseOffsetX + this.newHouseWidth; // 16+6 = 22
 
         for (let row = startRow; row <= endRow; row++) {
@@ -835,11 +834,11 @@ export class TilemapRenderer {
             for (let col = startCol; col <= endCol; col++) {
                 const worldX = col * tileSize;
                 const worldY = row * tileSize;
-                // Center rows are always path; outer grass rows become path only at their entry column:
-                //   rowOffset=0 (y=45): home east-edge path (x=29) enters from north
-                //   rowOffset=3 (y=48): farm house path    (x=22) enters from south
-                const isBridge = (rowOffset === 0 && col === northBridgeX)
-                               || (rowOffset === 3 && col === farmCrossX);
+                // N-grass row (y=45): bridge wherever a path tile exists at y=44 (home chunk bottom)
+                // S-grass row (y=48): bridge at farm house east-side path x=22
+                const isBridgeNorth = rowOffset === 0 &&
+                    CONFIG.tiles.path.includes(this.getTileAt(col, mainPathY - 1));
+                const isBridge = isBridgeNorth || (rowOffset === 3 && col === farmCrossX);
                 if (rowOffset === 1 || rowOffset === 2 || isBridge) {
                     drawTile(getPathTile(col), worldX, worldY);
                 } else {
@@ -1054,55 +1053,39 @@ export class TilemapRenderer {
             this.tilesetImage = await this.loadImage(tilesetPath);
             this.tilesPerRow = Math.floor(this.tilesetImage.width / this.paddedTileSize);
 
-            // Load TMX files (store + house + home for town building)
-            const [storeTmxResponse, houseTmxResponse, homeTmxResponse] = await Promise.all([
-                fetch('Tileset/store.tmx'),
-                fetch('Tileset/house.tmx'),
-                fetch('Tileset/home.tmx')
-            ]);
-            const storeData = this.parseTmx(await storeTmxResponse.text());
+            // Load TMX files (house.tmx only — store and home are now player-built sparse forest)
+            const houseTmxResponse = await fetch('Tileset/house.tmx');
             const houseData = this.parseTmx(await houseTmxResponse.text());
-            const homeData  = this.parseTmx(await homeTmxResponse.text());
 
-            // --- Map dimensions: 3×5 chunks + 4-tile great path gap = 45×79 tiles ---
-            const { initialGridCols, initialGridRows, storeCol, storeRow, homeCol, homeRow, farmCol, farmRow, mainPathGap } = CONFIG.chunks;
+            // --- Map dimensions: 3×4 chunks + 4-tile great path gap = 45×64 tiles ---
+            const { initialGridCols, initialGridRows, homeCol, homeRow, farmCol, farmRow, mainPathGap } = CONFIG.chunks;
             this.mapStartX = 0;                                               // left edge (tile units); may go negative on left-expansion
             this.mapStartY = 0;                                               // top edge (tile units); may go negative on north-expansion
             this.mapWidth  = initialGridCols * this.CHUNK_SIZE;               // 3 × 15 = 45
-            this.mapHeight = initialGridRows * this.CHUNK_SIZE + mainPathGap;  // 5 × 15 + 4 = 79
+            this.mapHeight = initialGridRows * this.CHUNK_SIZE + mainPathGap;  // 4 × 15 + 4 = 64
 
-            // --- Store placement in store chunk (col=1, row=1, x=15-29, y=15-29) ---
-            // Store is 10×10, placed slightly right of center with path along bottom of chunk.
-            // Left margin = 3, right margin = 2; store bottom at y=28, path row at y=29.
-            this.storeWidth  = storeData.width;   // 10
-            this.storeHeight = storeData.height;  // 10
-            this.storeOffsetX = storeCol * this.CHUNK_SIZE + 3;  // 15 + 3 = 18
-            this.storeOffsetY = storeRow * this.CHUNK_SIZE + 6;  // 15 + 6 = 21 (door row 8 = world y=29 = store bottom path)
+            // --- Town chunk is sparse forest (no TMX rendering) ---
+            // townHomeWidth/townHomeHeight remain 0 so isCustomTilemapTile() won't protect it.
+            this.townHomeOffsetX = homeCol * this.CHUNK_SIZE + 2; // 17 (reference only)
+            this.townHomeOffsetY = homeRow * this.CHUNK_SIZE;     // 15 (reference only)
 
-            // --- New house (house.tmx) in farm chunk (col=1, row=3, world x=15-29, world y=49-63) ---
+            // --- New house (house.tmx) in farm chunk (col=1, row=2, world x=15-29, world y=34-48) ---
             this.newHouseWidth  = houseData.width;  // 6
             this.newHouseHeight = houseData.height; // 6
             this.newHouseOffsetX = farmCol * this.CHUNK_SIZE + 1;              // 15 + 1 = 16
-            this.newHouseOffsetY = farmRow * this.CHUNK_SIZE + mainPathGap + 3; // 45 + 4 + 3 = 52
+            this.newHouseOffsetY = farmRow * this.CHUNK_SIZE + mainPathGap + 3; // 30 + 4 + 3 = 37
 
-            // --- Town home (home.tmx) in home chunk (col=1, row=2, x=15-29, y=30-44) ---
-            // Home is 10×10, centered in the 15-wide chunk, placed at top of chunk.
-            // Home center = 17+5=22, chunk center = 15+7.5≈22. Path runs along east edge x=29.
-            this.townHomeWidth  = homeData.width;   // 10
-            this.townHomeHeight = homeData.height;  // 10
-            this.townHomeOffsetX = homeCol * this.CHUNK_SIZE + 2; // 15 + 2 = 17
-            this.townHomeOffsetY = homeRow * this.CHUNK_SIZE;     // 30
-
-            // Alias so legacy code using houseOffsetY + houseHeight still works
+            // Alias for legacy code that uses houseOffset*/houseWidth/houseHeight
             this.houseOffsetX = this.newHouseOffsetX;
             this.houseOffsetY = this.newHouseOffsetY;
             this.houseWidth   = this.newHouseWidth;
             this.houseHeight  = this.newHouseHeight;
 
+            // No aliases needed for store/home — they stay 0 (sparse forest, no TMX).
+
             // --- Sparse tile storage: allocate ALL 3×5 chunks initially ---
             // This replaces the old 50,400-tile pre-allocation with 3,375 tiles (15 chunks).
             const commonGrassTiles = [66, 129, 130, 131, 192, 193, 194, 195, 197, 199, 257, 258];
-            const storeGroundLayer = storeData.tileLayers.find(l => l.name === 'Ground');
             const cs = this.CHUNK_SIZE; // 15
 
             this.chunkTiles = new Map();
@@ -1125,68 +1108,12 @@ export class TilemapRenderer {
                 }
             }
 
-            // Composite store ground layer into the town chunk via setTileAt
-            if (storeGroundLayer) {
-                for (let ly = 0; ly < this.storeHeight; ly++) {
-                    for (let lx = 0; lx < this.storeWidth; lx++) {
-                        const tile = storeGroundLayer.data[ly][lx];
-                        if (tile >= 0) {
-                            this.setTileAt(this.storeOffsetX + lx, this.storeOffsetY + ly, tile);
-                        }
-                    }
-                }
-            }
-
-            // Composite town home ground layer into the town chunk via setTileAt
-            const homeGroundLayer = homeData.tileLayers.find(l => l.name === 'Ground');
-            if (homeGroundLayer) {
-                for (let ly = 0; ly < this.townHomeHeight; ly++) {
-                    for (let lx = 0; lx < this.townHomeWidth; lx++) {
-                        const tile = homeGroundLayer.data[ly][lx];
-                        if (tile >= 0) {
-                            this.setTileAt(this.townHomeOffsetX + lx, this.townHomeOffsetY + ly, tile);
-                        }
-                    }
-                }
-            }
-
-            // --- Collect door threshold positions (TMX tile 206 = parsed 205, 0-indexed) ---
-            // These positions get path tiles placed underneath them in placePathTilesInMap().
-            // Store Ground layer: tile 206 composited to chunk, will be overwritten with path tile.
-            // Home Decor layer: tile 206 renders above chunk via this.layers, path tile goes in chunk.
+            // Store and home no longer have TMX tiles composited — they are sparse forest.
+            // Door positions from store/home are not needed (those paths are player-placed).
             this.doorTilePositions = [];
-            const doorMarkerId = 205; // 0-indexed (TMX firstgid=1, so TMX 206 → parsed 205)
-            if (storeGroundLayer) {
-                for (let ly = 0; ly < this.storeHeight; ly++) {
-                    for (let lx = 0; lx < this.storeWidth; lx++) {
-                        if (storeGroundLayer.data[ly][lx] === doorMarkerId) {
-                            this.doorTilePositions.push({ x: this.storeOffsetX + lx, y: this.storeOffsetY + ly });
-                        }
-                    }
-                }
-            }
-            const homeDecorLayer = homeData.tileLayers.find(l => l.name === 'Decor');
-            if (homeDecorLayer) {
-                for (let ly = 0; ly < this.townHomeHeight; ly++) {
-                    for (let lx = 0; lx < this.townHomeWidth; lx++) {
-                        if (homeDecorLayer.data[ly][lx] === doorMarkerId) {
-                            this.doorTilePositions.push({ x: this.townHomeOffsetX + lx, y: this.townHomeOffsetY + ly });
-                        }
-                    }
-                }
-            }
 
-            // --- Layers below character: store + town home Decor + Buildings (Base/Detail) ---
+            // --- Layers below character: store + town home are sparse forest, no TMX layers ---
             this.layers = [];
-            const addLayersFromTmx = (tmxData, offsetX, offsetY) => {
-                const names = ['Decor', 'Buildings (Base)', 'Buildings (Detail)'];
-                for (const name of names) {
-                    const layer = tmxData.tileLayers.find(l => l.name === name);
-                    if (layer) this.layers.push({ data: layer.data, offsetX, offsetY });
-                }
-            };
-            addLayersFromTmx(storeData, this.storeOffsetX, this.storeOffsetY);
-            addLayersFromTmx(homeData, this.townHomeOffsetX, this.townHomeOffsetY);
 
             // --- New house ground/floor layers (rendered AFTER path overlays) ---
             this.groundLayers = [];
@@ -1201,14 +1128,8 @@ export class TilemapRenderer {
                 }
             }
 
-            // --- Layers above character: store + town home upper, house roof ---
+            // --- Layers above character: store + town home have no TMX upper layers ---
             this.upperLayers = [];
-            const addUpperLayersFromTmx = (tmxData, offsetX, offsetY) => {
-                const layer = tmxData.tileLayers.find(l => l.name === 'Buildings (Upper)');
-                if (layer) this.upperLayers.push({ data: layer.data, offsetX, offsetY });
-            };
-            addUpperLayersFromTmx(storeData, this.storeOffsetX, this.storeOffsetY);
-            addUpperLayersFromTmx(homeData, this.townHomeOffsetX, this.townHomeOffsetY);
 
             this.roofLayers = [];
             for (const name of ['Roof', 'Roof Detail']) {
@@ -1223,23 +1144,8 @@ export class TilemapRenderer {
             }
 
             // --- Collision rectangles ---
+            // Store and home have no TMX collision (they are now sparse forest).
             this.collisionRects = [];
-
-            for (const rect of storeData.collisionRects) {
-                this.collisionRects.push({
-                    x: rect.x + this.storeOffsetX * this.tileSize,
-                    y: rect.y + this.storeOffsetY * this.tileSize,
-                    width: rect.width, height: rect.height
-                });
-            }
-
-            for (const rect of homeData.collisionRects) {
-                this.collisionRects.push({
-                    x: rect.x + this.townHomeOffsetX * this.tileSize,
-                    y: rect.y + this.townHomeOffsetY * this.tileSize,
-                    width: rect.width, height: rect.height
-                });
-            }
 
             // New house: tile-based collision from Wall layer
             const houseWallLayer = houseData.tileLayers.find(l => l.name === 'Wall');
@@ -1258,23 +1164,8 @@ export class TilemapRenderer {
             }
 
             // --- Interactables ---
+            // Store and home have no TMX interactables (they are now sparse forest).
             this.interactables = [];
-            for (const interactable of storeData.interactables) {
-                this.interactables.push({
-                    x: interactable.x + this.storeOffsetX * this.tileSize,
-                    y: interactable.y + this.storeOffsetY * this.tileSize,
-                    width: interactable.width, height: interactable.height,
-                    action: interactable.action
-                });
-            }
-            for (const interactable of homeData.interactables) {
-                this.interactables.push({
-                    x: interactable.x + this.townHomeOffsetX * this.tileSize,
-                    y: interactable.y + this.townHomeOffsetY * this.tileSize,
-                    width: interactable.width, height: interactable.height,
-                    action: interactable.action
-                });
-            }
             for (const interactable of houseData.interactables) {
                 this.interactables.push({
                     x: interactable.x + this.newHouseOffsetX * this.tileSize,
@@ -1287,9 +1178,8 @@ export class TilemapRenderer {
             this.loaded = true;
             // mapType was already set at the start of this function
             log.debug(`Chunk map generated: ${this.mapWidth}×${this.mapHeight} tiles`);
-            log.debug(`Store: ${this.storeWidth}×${this.storeHeight} at (${this.storeOffsetX},${this.storeOffsetY})`);
-            log.debug(`Town home: ${this.townHomeWidth}×${this.townHomeHeight} at (${this.townHomeOffsetX},${this.townHomeOffsetY})`);
             log.debug(`New house: ${this.newHouseWidth}×${this.newHouseHeight} at (${this.newHouseOffsetX},${this.newHouseOffsetY})`);
+            log.debug(`Town ref: (${this.townHomeOffsetX},${this.townHomeOffsetY}) — sparse forest, no TMX`);
         } catch (error) {
             log.error('Failed to generate chunk map:', error);
             throw error;

@@ -807,39 +807,54 @@ export class UIManager {
         `;
 
         if (activeTab === 'buy') {
-            html += `<div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px;">`;
+            // Seed buying requires an active Trading Post connected to the great path
+            const hasTradingPost = this.game?.buildingManager?.placedBuildings
+                .some(b => b.definitionId === 'trading_post' &&
+                           (b.state === 'active_empty' || b.state === 'active_occupied'));
 
-            for (const seed of seeds) {
-                const canAfford = currentGold >= seed.price;
-                const owned = inventory.getCount(seed);
-
+            if (!hasTradingPost) {
                 html += `
-                    <div style="background: linear-gradient(180deg, #fff 0%, #e8e0d0 100%); border: 2px solid ${canAfford ? '#4a7c59' : '#a89070'}; border-radius: 8px; padding: 10px; text-align: center;">
-                        <div style="width: 32px; height: 32px; margin: 0 auto 6px auto; display: flex; align-items: center; justify-content: center;">
-                            <div style="width: 16px; height: 16px; image-rendering: pixelated; background-image: url('Tileset/spr_tileset_sunnysideworld_16px.png'); background-position: ${this.getTilePosition(seed.tileId)}; background-size: 1024px 1024px; transform: scale(2);"></div>
-                        </div>
-                        <div style="font-size: 11px; color: #5a4a38; font-weight: bold; margin-bottom: 4px;">${seed.name}</div>
-                        <div style="font-size: 10px; color: #7a6a5a; margin-bottom: 6px;">Owned: ${owned}</div>
-                        <div style="display: flex; align-items: center; justify-content: center; gap: 4px; margin-bottom: 8px;">
-                            <div style="width: 12px; height: 12px; image-rendering: pixelated; background-image: url('Tileset/spr_tileset_sunnysideworld_16px.png'); background-position: ${this.getTilePosition(RESOURCE_TYPES.GOLD.tileId)}; background-size: 1024px 1024px;"></div>
-                            <span style="font-size: 12px; color: ${canAfford ? '#2d4d1f' : '#c9403a'}; font-weight: bold;">${seed.price}</span>
-                        </div>
-                        <button class="buy-seed-btn" data-seed-id="${seed.id}" style="
-                            padding: 4px 12px;
-                            background: ${canAfford ? 'linear-gradient(180deg, #5a8f3e 0%, #3d6b2a 100%)' : 'linear-gradient(180deg, #888 0%, #666 100%)'};
-                            border: 2px solid ${canAfford ? '#2d4d1f' : '#444'};
-                            border-radius: 4px;
-                            color: white;
-                            font-weight: bold;
-                            font-size: 11px;
-                            cursor: ${canAfford ? 'pointer' : 'not-allowed'};
-                            ${canAfford ? '' : 'opacity: 0.6;'}
-                        ">Buy</button>
+                    <div style="text-align: center; padding: 30px 16px; color: #7a6a5a;">
+                        <div style="font-size: 28px; margin-bottom: 12px;">🏪</div>
+                        <div style="font-weight: bold; color: #5a4a38; margin-bottom: 8px; font-size: 14px;">Trading Post Required</div>
+                        <div style="font-size: 12px; line-height: 1.5;">Build and connect a Trading Post to the great path to unlock seed purchasing.</div>
                     </div>
                 `;
-            }
+            } else {
+                html += `<div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px;">`;
 
-            html += `</div>`;
+                for (const seed of seeds) {
+                    const canAfford = currentGold >= seed.price;
+                    const owned = inventory.getCount(seed);
+
+                    html += `
+                        <div style="background: linear-gradient(180deg, #fff 0%, #e8e0d0 100%); border: 2px solid ${canAfford ? '#4a7c59' : '#a89070'}; border-radius: 8px; padding: 10px; text-align: center;">
+                            <div style="width: 32px; height: 32px; margin: 0 auto 6px auto; display: flex; align-items: center; justify-content: center;">
+                                <div style="width: 16px; height: 16px; image-rendering: pixelated; background-image: url('Tileset/spr_tileset_sunnysideworld_16px.png'); background-position: ${this.getTilePosition(seed.tileId)}; background-size: 1024px 1024px; transform: scale(2);"></div>
+                            </div>
+                            <div style="font-size: 11px; color: #5a4a38; font-weight: bold; margin-bottom: 4px;">${seed.name}</div>
+                            <div style="font-size: 10px; color: #7a6a5a; margin-bottom: 6px;">Owned: ${owned}</div>
+                            <div style="display: flex; align-items: center; justify-content: center; gap: 4px; margin-bottom: 8px;">
+                                <div style="width: 12px; height: 12px; image-rendering: pixelated; background-image: url('Tileset/spr_tileset_sunnysideworld_16px.png'); background-position: ${this.getTilePosition(RESOURCE_TYPES.GOLD.tileId)}; background-size: 1024px 1024px;"></div>
+                                <span style="font-size: 12px; color: ${canAfford ? '#2d4d1f' : '#c9403a'}; font-weight: bold;">${seed.price}</span>
+                            </div>
+                            <button class="buy-seed-btn" data-seed-id="${seed.id}" style="
+                                padding: 4px 12px;
+                                background: ${canAfford ? 'linear-gradient(180deg, #5a8f3e 0%, #3d6b2a 100%)' : 'linear-gradient(180deg, #888 0%, #666 100%)'};
+                                border: 2px solid ${canAfford ? '#2d4d1f' : '#444'};
+                                border-radius: 4px;
+                                color: white;
+                                font-weight: bold;
+                                font-size: 11px;
+                                cursor: ${canAfford ? 'pointer' : 'not-allowed'};
+                                ${canAfford ? '' : 'opacity: 0.6;'}
+                            ">Buy</button>
+                        </div>
+                    `;
+                }
+
+                html += `</div>`;
+            }
         } else {
             // Sell tab — store pays 50% of full value
             if (sellableItems.length === 0) {

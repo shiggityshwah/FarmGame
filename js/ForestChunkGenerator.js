@@ -66,11 +66,12 @@ export class ForestChunkGenerator extends ChunkContentGenerator {
      * @param {ChunkContentGenerator|null} neighborGen
      */
     generateSeam(direction, bounds, neighborGen) {
-        if (direction === 'S' && neighborGen?.type === 'forest') {
+        const isForestNeighbor = neighborGen?.type === 'forest' || neighborGen?.type === 'dense_forest';
+        if (direction === 'S' && isForestNeighbor) {
             this.forestGenerator.generateNSSeamTrees(
                 bounds.x, bounds.y, bounds.width, bounds.height
             );
-        } else if (direction === 'E' && neighborGen?.type === 'forest') {
+        } else if (direction === 'E' && isForestNeighbor) {
             this.forestGenerator.generateEWSeamTrees(
                 bounds.x, bounds.y, bounds.width, bounds.height
             );
@@ -106,5 +107,27 @@ export class DenseForestChunkGenerator extends ForestChunkGenerator {
             { ...options, noPocket: true, density: 0.9 }
         );
         log.debug(`Generated dense forest content for chunk (${col},${row})`);
+    }
+}
+
+/**
+ * SparseForestChunkGenerator — lightly treed biome for former town chunks.
+ *
+ * Home (row 2) and store (row 1) chunks start as sparse forest that the player
+ * clears to build their town. Low density and no resource pockets so the area
+ * feels open and accessible from the start.
+ */
+export class SparseForestChunkGenerator extends ForestChunkGenerator {
+    get type() { return 'sparse_forest'; }
+
+    /**
+     * Generate sparse forest content: no pocket, low density (0.3).
+     */
+    generateContent(col, row, bounds, options = {}) {
+        this.forestGenerator.generateForChunk(
+            bounds.x, bounds.y, bounds.width, bounds.height,
+            { ...options, noPocket: true, density: 0.3 }
+        );
+        log.debug(`Generated sparse forest content for chunk (${col},${row})`);
     }
 }

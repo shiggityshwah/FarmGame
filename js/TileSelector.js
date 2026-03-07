@@ -42,6 +42,10 @@ const ACCEPTABLE_TILES = {
         requiresTree: true,
         // Multi-tile object - must select base tiles
         isMultiTile: true
+    },
+    // Path tool works on grass or hoed-ground tiles in owned or town chunks
+    path: {
+        validTileIds: new Set([...CONFIG.tiles.grass, ...CONFIG.tiles.hoedGround])
     }
 };
 
@@ -202,10 +206,13 @@ export class TileSelector {
         return multiTileInfo.baseTiles.some(bt => bt.x === tileX && bt.y === tileY);
     }
 
-    /** Returns true if every tile in the array is in a player-owned chunk. */
+    /** Returns true if every tile in the array is in an accessible (owned or town) chunk. */
     _allTilesOwned(tiles) {
         if (!this.chunkManager) return true;
-        return tiles.every(t => this.chunkManager.isPlayerOwned(t.x, t.y));
+        return tiles.every(t =>
+            this.chunkManager.isPlayerOwned(t.x, t.y) ||
+            this.chunkManager.isTownChunk(t.x, t.y)
+        );
     }
 
     /** Returns a choppable tree from either treeManager or forestGenerator, or null. */
@@ -267,6 +274,26 @@ export class TileSelector {
             for (let y = minY; y <= maxY; y++) {
                 for (let x = minX; x <= maxX; x++) {
                     this.selectedTiles.push({ x, y, tileId: this.tilemap.getTileAt(x, y), valid: true });
+                }
+            }
+            return;
+        }
+
+        // Path tool: compute a 1-tile-wide L-shape from start to end
+        // (vertical segment first, then horizontal segment at end row)
+        if (this.currentTool && this.currentTool.id === 'path') {
+            const addTile = (x, y) => {
+                const tileId = this.tilemap.getTileAt(x, y);
+                this.selectedTiles.push({ x, y, tileId, valid: this.isAcceptableTile(x, y, tileId) });
+            };
+            const stepY = this.endTileY >= this.startTileY ? 1 : -1;
+            for (let y = this.startTileY; y !== this.endTileY + stepY; y += stepY) {
+                addTile(this.startTileX, y);
+            }
+            if (this.endTileX !== this.startTileX) {
+                const stepX = this.endTileX > this.startTileX ? 1 : -1;
+                for (let x = this.startTileX + stepX; x !== this.endTileX + stepX; x += stepX) {
+                    addTile(x, this.endTileY);
                 }
             }
             return;
@@ -407,6 +434,10 @@ export class TileSelector {
                     // Town chunk: shovel only allowed on weeds
                     const isWeed = this.flowerManager && this.flowerManager.getWeedAt(tileX, tileY) != null;
                     if (!isWeed) return false;
+                } else if (this.currentTool.id === 'path' && this.chunkManager.isTownChunk(tileX, tileY)) {
+                    // Town chunk: path tool allowed on non-owned town chunks
+                } else if ((this.currentTool.id === 'axe' || this.currentTool.id === 'pickaxe') && this.chunkManager.isTownChunk(tileX, tileY)) {
+                    // Town chunk: allow gathering tools so player can clear purchased town chunks
                 } else {
                     return false;
                 }
@@ -505,8 +536,9 @@ export class TileSelector {
             if (!inMainFarmableArea && !inForestGrass && !inOwnedChunk) {
                 return false;
             }
-            // Can't hoe the house/courtyard area (x=15–26, y=49–57)
-            if (tileX >= 15 && tileX <= 26 && tileY >= 49 && tileY <= 57) return false;
+            // Can't hoe the house/courtyard area (x=15–26, y=34–42)
+            // farmTop=34 (mainPathY+mainPathGap), houseBottom=42 (newHouseOffsetY+newHouseHeight-1)
+            if (tileX >= 15 && tileX <= 26 && tileY >= 34 && tileY <= 42) return false;
             // Can't hoe where there's a weed
             if (this.flowerManager && this.flowerManager.getWeedAt(tileX, tileY)) {
                 return false;

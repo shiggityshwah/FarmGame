@@ -66,65 +66,68 @@ Open `index.html` directly in a web browser. No build step required. Refresh bro
 
 ### Tool & Job Systems (js/)
 
-- **Toolbar.js** - Bottom toolbar with tool icons extracted from tileset at 400% scale. Handles tool selection and cursor changes. Seed submenu shows owned-count badges (`.seed-count-badge`) and dims/disables buttons when count is 0 (`.seed-unavailable`). Goblin and All queue-selector buttons are hidden by default; call `setGoblinHired(hired)` to reveal them. `refreshSeedSubmenu()` is called on inventory change. Watering can button shows water level badge (`.water-level-badge`) displaying `cur/max`; `refreshWaterDisplay()` updates it after each use or refill. Phase 3: seed submenu includes "⟳ Auto-Replant" toggle (`replenishMode` flag) and "⬚ Manage Zones" button (`zoneManageMode` flag). `_enterZoneManageMode()` deactivates any active tool (including plant button in open-submenu state) and shows `#zone-expand-indicator`. `exitZoneManageMode()` cleans up.
+- **Toolbar.js** - Bottom toolbar with tool icons extracted from tileset at 400% scale. Handles tool selection and cursor changes. Seed submenu shows owned-count badges (`.seed-count-badge`) and dims/disables buttons when count is 0 (`.seed-unavailable`). Goblin and All queue-selector buttons are hidden by default; call `setGoblinHired(hired)` to reveal them. `refreshSeedSubmenu()` is called on inventory change. Watering can button shows water level badge (`.water-level-badge`) displaying `cur/max`; `refreshWaterDisplay()` updates it after each use or refill. Phase 3: seed submenu includes "⟳ Auto-Replant" toggle (`replenishMode` flag) and "⬚ Manage Zones" button (`zoneManageMode` flag). `_enterZoneManageMode()` deactivates any active tool (including plant button in open-submenu state) and shows `#zone-expand-indicator`. `exitZoneManageMode()` cleans up. Phase 4a: BUILD tool (tileId 3045, HAMMERING animation) added to toolbar with a build submenu; `createBuildSubmenu()` shows a "Paths" section (Stone Path, 1 stone/tile) and a "Houses" section (small_house, any villager-unlocked specials). `refreshBuildSubmenu()` updates special-building availability based on `villagerManager.getUnlockedSpecialBuildings()`.
 - **TileSelector.js** - Click/drag tile selection with rectangle highlight. Validates tiles against tool acceptability rules and resource occupancy. Chunk ownership gate: non-owned forest chunks → sword + shovel-on-weed only; owned → all tools. Per-drag `_acceptabilityCache` Map (key `"x,y"`) avoids redundant checks; cleared on drag start and tool change. `_getChoppableTreeAt()` checks both treeManager and forestGenerator. Phase 3: `zoneExpansionMode` flag and `zoneExpansionTargetId` — when true, `startSelection()` bypasses tool check, `updateSelectedTiles()` marks all tiles valid (no tool validation), `endSelection()` returns all selected tiles. Zone expansion drag calls `replenishZoneManager.expandZone()` instead of creating a job.
 - **JobManager.js** - Multi-queue job system. Queues: `all` (shared), `human`, `goblin`. Each worker tracks current job independently. Supports `isIdleJob` flag for idle-sourced jobs. Methods: `addJob()`, `addIdleJob()`, `cancelJob()`, `getAllJobsByQueue()`. `_buildJob(tool, tiles, targetQueue)` creates a plain job object — used internally by `addJob()`, `addIdleJob()`, and `fireGoblin()` to avoid code duplication. `assignJobToWorker()` guards: skips goblin if `!game.goblinHired`. Plant jobs guard seed availability: `isTileJobAlreadyDone` skips a tile if no seed in inventory and calls `replenishZoneManager.pauseZonesForCrop()` so missed tiles are retried on restock; `applyPlantPhase1` cancels all plant jobs for that worker if seeds run out mid-job and calls `replenishZoneManager.pauseZonesForCrop()`. Idle harvest notifies `replenishZoneManager.onHarvest()` so zone auto-replant triggers for idle-harvested tiles. Watering can auto-refill: `_autoQueueWellFill(workerId)` saves remaining tiles to `pendingWateringResume`, aborts the watering job, inserts a `fill_well` job at the front of the worker's private queue; after fill completes, `applyToolEffect('fill_well')` restores and re-queues the saved watering tiles. Phase 3: `addJobToQueue(tool, tiles, queueName)` — public method that routes directly to a named queue. 'craft' job type: `job.craftingRecipeId`, `job.craftingCycles`, `job.craftingCyclesCompleted`, `job.refundItems` (for cancel refund). `applyToolEffect('craft')` increments cycles; on completion calls `game.applyCraftingEffect(recipeId)`. `cancelJob()` refunds ingredients if `job.refundItems` is set.
 - **Pathfinder.js** - A* pathfinding with MinHeap for O(n log n) performance. Path tiles have 1.5x speed boost (lower cost). Finds paths avoiding obstacles. Returns null if no path found. `setWell(well)` registers the well as an obstacle (checks `well.isObstacle(x,y)` in `isWalkable()`).
 - **TileOverlayManager.js** - Manages sprite overlays on tiles (holes from digging, path edge sprites)
 - **IdleManager.js** - Autonomous idle activity system for the human character. State machine: `inactive → waiting (3-5s) → active`. Evaluates harvest, water, fill_well, flower-pick, and weed-clear tasks using actual A* path lengths (not just Euclidean distance). `fill_well` activity (weight 30): only evaluates when `game.wateringCanWater === 0` and a well exists; pathfinds to well service tile. After cancelling an idle job, immediately calls `jobManager.tryAssignJobs()` so queued player jobs don't stall. All distance/backoff constants from `CONFIG.idle` (maxEuclideanDistance: 20, maxPathLength: 35, pathCheckCandidates: 3, backoffMax: 15000). Backs off exponentially on failure. Returns home when nothing to do. All activities filter to owned chunks; weed-clearing also allows town chunk. Uses game facade methods (`game.findPath()`, `game.isTileWalkable()`, `game.isTileOwned()`) instead of accessing subsystems directly.
 
-### Chunk World Layout (initial 3×5 grid = 45 wide × 79 tall)
+### Building & Villager Systems (js/) — Phase 4a
+
+- **BuildingRegistry.js** - Static configuration for all player-buildable structures and villager milestones. `BUILDING_DEFS` maps string keys to building definitions with fields: `id`, `name`, `category` (`'house'|'special'`), `tilemapPrefix` (CSV path prefix), `footprint` (`{width,height}`), `layers` (array of `{csvSuffix, renderPass}`; renderPass ∈ `'ground'|'upper'|'roof'`), `cost` (`{wood,stone,gold,ore_iron,...}`), `constructionCycles`, `doorOffset` (`{x,y}` local tile), `unlockedBy` (villager id or null), `unique`, `hasTilemap`, `debugOnly`. Current buildings: `small_house` (5×5, hasTilemap:true, tilemapPrefix:'Tileset/house1'), `debug_home` (10×10, debugOnly), plus 14 special buildings (pub, workshop, apothecary, cafe, shrine_temple, forge, trading_post, bakery, dock, goblin_den, theater, laboratory, stable, jewelry_shop, town_hall — all hasTilemap:true, tilemapPrefix:'Tileset/home', footprint 10×10). `VILLAGER_MILESTONES` array — each milestone: `{id, name, trigger(milestones)→bool, combo:[{id,count}]}`. 15 milestones from innkeeper to mayor, each tied to a BUILDING_DEFS `unlockedBy`. `buildingCostToRefundItems(cost)` converts cost object to `[{resource, amount}]` refund items for JobManager cancel-refund.
+- **BuildingManager.js** - Manages all player-placed buildings. `placedBuildings` array; `_layerCache` Map caches CSV layer data per defId. `loadDefinitionLayers(defId)` fetches CSV files async (safe no-op for hasTilemap:false). `placeBuilding(defId, tileX, tileY, state='under_construction')` returns building object. Building states: `under_construction` (passable, rendered at 0.3 alpha) → `inactive` (path-connected required) → `active_empty` → `active_occupied`. `completeBuildingById(id)` → sets state to `'inactive'`, fires `onBuildingCompleted(building)` callback. `deconstructBuilding(id)` removes and returns building. `getBuildingAt(tileX, tileY)` checks footprint. `getFootprintTiles(building)` returns all `{x,y}` tiles in footprint. `isObstacle(tileX, tileY)` — under_construction buildings are passable; completed ones block. `isPlayerInsideBuilding(playerTileX, playerTileY)` — returns matching building or null (used for roof-hiding). `render(ctx, camera, pass, playerTile)` renders all buildings for a pass; `renderGhost(ctx, camera, defId, tileX, tileY, valid)` shows 50% alpha placement preview with green/red tint. `renderDebugOverlay(ctx, camera)` draws colored state overlays. `setTileset(image)` sets the tileset image.
+- **PathConnectivity.js** - BFS utility to determine if a tile is connected to the great path strip (y = mainPathY … mainPathY+mainPathGap-1). `playerPlacedPaths` Set (`"tileX,tileY"`) tracks player-placed path tiles for pickaxe-removability (not used for BFS — BFS detects path tiles via tilemap tileId). `isPathTile(x, y)` — true for great path rows and tilemap tiles matching CONFIG.tiles.path IDs. `isConnectedToGreatPath(x, y)` — cached BFS result (returns false if start is not a path tile). `invalidate()` clears cache — call after any path tile change. BFS explores 4-directional neighbors; terminates true when any visited tile is on the great path strip.
+- **VillagerManager.js** - Manages recruited villagers and displacement. `villagers` array `[{id, type, houseId}]`. `displacedQueue` FIFO of villager type strings awaiting new houses. `getEligibleMilestoneIds()` — checks `game.milestones` against each VILLAGER_MILESTONE trigger, excludes already-recruited types. `onHouseReady(building)` — if displaced villager waiting, assigns immediately; else pushes to `_readyHouses` and notifies `game.travelerManager.onEmptyHouseAvailable(building)`. `onVillagerRecruited(villagerType, building)` — adds villager, sets building to `active_occupied`, increments `game.milestones.totalVillagersRecruited`, calls `toolbar.refreshBuildSubmenu()`. `onHouseDeconstructed(building)` — pushes occupant to displaced queue, removes from villagers. `getVillagerCount()`, `hasVillagerType(type)`. `getUnlockedSpecialBuildings()` — returns defIds of hasTilemap:true special buildings whose `unlockedBy` matches a recruited villager.
+- **ForestGenerator.js (updated)** - `ForestTree.initiallyLit` field: preserved after first chop (isLit is cleared). `chopTree()` attaches `result.wasInitiallyLit` when tree is depleted. `pickSeedType(wasInitiallyLit)` — weighted random seed key from 10 seed types; non-lit trees favour cheap seeds (exponential decay weights), initially-lit trees favour mid-tier seeds (shifted bell distribution). Called by `JobManager.chopTree()` on depletion to select the dropped seed.
+- **TravelerManager.js (updated)** - Now supports milestone travelers. `villagerManager` reference (set via `setVillagerManager(vm)`). `regularTravelersSinceMilestone` counter. `_pendingEmptyHouse` set by `onEmptyHouseAvailable(building)`. On spawn tick: if pendingEmptyHouse + eligible milestones + counter ≥ `CONFIG.villagers.maxRegularTravelersBeforeMilestone` → spawns milestone traveler (`_spawnMilestoneTraveler(villagerMilestoneId, house)`). Milestone traveler: `isMilestone:true`, `villagerType`, `villagerName`, `targetHouse`, `comboItems:[{id,count}]` — combo items are required at the stand; visiting triggers recruitment on completion.
+
+### Chunk World Layout (initial 3×4 grid = 45 wide × 64 tall)
 
 ```
 Row 0:  [dense forest] [dense forest] [dense forest]  worldY = 0–14
-Row 1:  [dense forest] [town-store]   [dense forest]  worldY = 15–29
-Row 2:  [dense forest] [town-home]    [dense forest]  worldY = 30–44
-         ---- great path y=45–48 (4 tiles, full map width) ----
-Row 3:  [forest+res]   [farm+stand]   [forest+res]    worldY = 49–63
-Row 4:  [forest+res]   [forest+res]   [forest+res]    worldY = 64–78
+Row 1:  [dense forest] [TOWN chunk]   [dense forest]  worldY = 15–29  (sparse forest, TOWN state)
+         ---- great path y=30–33 (4 tiles, full map width) ----
+Row 2:  [forest+res]   [farm+stand]   [forest+res]    worldY = 34–48
+Row 3:  [forest+res]   [forest+res]   [forest+res]    worldY = 49–63
 ```
 
 - **Chunk size**: 15×15 tiles (`CONFIG.chunks.size = 15`)
-- **Store chunk**: col=1, row=1 → world x=15–29, y=15–29 (TOWN state)
-- **Home chunk**: col=1, row=2 → world x=15–29, y=30–44 (TOWN state)
-- **Farm chunk**: col=1, row=3 → world x=15–29, y=49–63 (OWNED; shifted 4 tiles by `mainPathGap`)
-- **North forest chunks** (rows 0–2): permanently LOCKED, dense forest (no clearings, density 0.9), no purchase signs ever shown
-- **South forest chunks** (rows 3+): LOCKED until adjacent to OWNED, then PURCHASABLE; forest with resource clearings (pocket radius 3)
-- **Great path strip**: world y=45–48 — SEPARATE tilemap, NOT chunk tiles (virtual in `getTileAt`)
-  - y=45: N-grass + `'S'` edge overlay; y=46–47: path tiles (speed boost); y=48: S-grass + `'N'` edge overlay
+- **Town chunk**: col=1, row=1 → world x=15–29, y=15–29 (TOWN state; sparse forest, no TMX home)
+- **Farm chunk**: col=1, row=2 → world x=15–29, y=34–48 (OWNED; shifted 4 tiles by `mainPathGap`)
+- **North forest chunks** (rows 0–1, flanking cols): permanently LOCKED, dense forest (no clearings, density 0.9), no purchase signs ever shown
+- **South forest chunks** (rows 2+): LOCKED until adjacent to OWNED, then PURCHASABLE; forest with resource clearings (pocket radius 3)
+- **Great path strip**: world y=30–33 — SEPARATE tilemap, NOT chunk tiles (virtual in `getTileAt`)
+  - y=30: N-grass + `'S'` edge overlay; y=31–32: path tiles (speed boost); y=33: S-grass + `'N'` edge overlay
   - Rendered by `tilemap.renderGreatPath()` after `tilemap.render()`
-  - North bridge at x=29 (home east-edge path); south bridge at x=22 (farm house path)
-- **Store** (10×10): world (18, 21) — in store chunk (`storeOffsetX=18, storeOffsetY=21`)
-- **Town home** (home.tmx, 10×10): world (17, 30) — in home chunk (`townHomeOffsetX=17, townHomeOffsetY=30`)
-- **New house** (house.tmx, 6×6): world (16, 52) — in farm chunk (`newHouseOffsetX=16, newHouseOffsetY=52`)
-- **Player spawn**: world tile (17, 55) in farm chunk
-- **Goblin NPC**: world (22, 39) — in front of home entrance
-- **Chimney smoke**: world tile (18, 53)
+  - North bridge: DYNAMIC — scans y=29 for path tiles to create bridge column(s); south bridge at x=22 (farm house path)
+- **New house** (house.tmx, 6×6): world (16, 37) — in farm chunk (`newHouseOffsetX=16, newHouseOffsetY=37`)
+- **Player spawn**: world tile (17, 40) in farm chunk
+- **Goblin NPC**: world (22, 31) — on great path (y=31 first path tile); hidden until hired
+- **Chimney smoke**: world tile (18, 38)
 
-### Farm Chunk Zones (within col=1 row=3)
+### Farm Chunk Zones (within col=1 row=2)
 
-- **House footprint**: x=16–21, y=52–57
-- **Farm grass** (flowers/crops): y=58–63, x=15–29 (`grassStartY = newHouseOffsetY + newHouseHeight = 58`)
-- **No south forest** — the new farm chunk has no trees (removed in 15×15 redesign)
-- **Roadside stand**: tileX=23, tileY=49 (north edge of farm; banner at y=48 overlaps great path S-grass)
+- **House footprint**: x=16–21, y=37–42
+- **Farm grass** (flowers/crops): y=43–48, x=15–29 (`grassStartY = newHouseOffsetY + newHouseHeight = 43`)
+- **No south forest** — the farm chunk has no trees
+- **Roadside stand**: tileX=23, tileY=34 (north edge of farm = mainPathY+mainPathGap)
+- **Well**: tileX=24, tileY=38 (farmTop(34)+4, east of house)
 
 ### New House (house.tmx)
 
-- 6×6 tile footprint placed at world tile (16, 52)
+- 6×6 tile footprint placed at world tile (16, 37)
 - Layers: `Ground`, `Ground Detail`, `Wall`, `Wall Detail` (rendered above path overlays via `renderGroundLayers()`), `Roof`, `Roof Detail` (rendered above character, hidden when player inside)
-- Roof hidden when player tile is within x:16–21, y:52–57 (`isPlayerInsideNewHouse`)
-- Door at local tile (1,4) → world (17, 56); path endpoint = y=57 (under house tilemap bottom row)
-- Chimney smoke SpriteAnimator at world tile (18, 53): `chimneysmoke_02_strip30.png`, 30 frames @ 12fps. Only shown when player is outside
+- Roof hidden when player tile is within x:16–21, y:37–42 (`isPlayerInsideNewHouse`)
+- Door at local tile (1,4) → world (17, 41); path endpoint = y=42 (under house tilemap bottom row)
+- Chimney smoke SpriteAnimator at world tile (18, 38): `chimneysmoke_02_strip30.png`, 30 frames @ 12fps. Only shown when player is outside
 
 ### Path Routing (chunk world)
 
 - Path tile IDs: `[482, 490, 491, 554, 555]`. Speed multiplier: 1.5x
-- **Great path** (y=45–48): SEPARATE tilemap via `renderGreatPath()` — no `setTileAt` calls
-- **Home east-edge path**: x=29, y=30–44 (full east column of home chunk)
-- **Store bottom path**: y=29, x=15–29 (bottom row of store chunk; storeOffsetY=21 so door row 8 = world y=29)
-- **Home approach fork**: y=37, x=20–29 (runs along door row; home doors (tile 206) at y=37, x=20 and x=23)
-- **House east-side path**: x=22, y=49–57 (east of house, farm top to house front)
-- **House front E-W**: y=57, x=16–22
+- **Great path** (y=30–33): SEPARATE tilemap via `renderGreatPath()` — no `setTileAt` calls
+- **House east-side path**: x=22, y=34–42 (east of house, from farm top to house front)
+- **House front E-W**: y=42, x=16–22
 
 ### Game.js Combat Properties
 
@@ -140,7 +143,7 @@ displayedGold: 0          // animates toward targetGold (count-up display)
 targetGold: 0             // actual gold from inventory.getGold()
 _seedEffects: []          // floating effects for wild crop seed drops
 // Phase 2 additions:
-well: Well                // Well instance (tileX=24, tileY=53)
+well: Well                // Well instance (tileX=24, tileY=38)
 wateringCanWater: CONFIG.watering.canMaxCapacity      wateringCanMaxWater: CONFIG.watering.canMaxCapacity
 goblinWaterCanWater: CONFIG.watering.canMaxCapacity   goblinWaterCanMaxWater: CONFIG.watering.canMaxCapacity
 humanPixelTarget: null    humanIsSliding: false        // sub-tile slide
@@ -165,12 +168,25 @@ standService: { state, workerId, slotIndex, traveler, waitTimer }
 // _beginServingTraveler(traveler) / _dequeueNextTraveler() — stand queue management
 // Harvest hook: calls replenishZoneManager.onHarvest(tileX, tileY) after crop harvest
 // Bountiful harvest: inventory.addCropByIndex(idx, 1 + (bountifulHarvest ? 1 : 0))
+// Phase 4a additions:
+buildingManager: BuildingManager    // manages placed buildings (under_construction/inactive/active_empty/active_occupied)
+playerPlacedPaths: Set              // "tileX,tileY" keys for player-placed path tiles (pickaxe-removable)
+pathConnectivity: PathConnectivity  // BFS checker: isConnectedToGreatPath(x, y)
+villagerManager: VillagerManager    // villager recruitment, displacement, milestone eligibility
+milestones: {                       // all milestone counters (updated as player progresses)
+  totalGoldEarned: 0,
+  totalCropsHarvested: 0, totalCropsPlanted: 0,
+  totalPotionsCrafted: 0, totalAnvilUpgrades: 0, totalShrineUpgrades: 0,
+  totalChunksOwned: 1, totalVillagersRecruited: 0, goblinEverHired: false
+}
+_buildPlacementMode: null | { type:'path' } | { type:'building', defId, zeroCost }
+// _showPathDebug / _showBuildingDebug toggle debug overlays
 ```
 
 ### Rendering Order
 1. Canvas clear
-2. `tilemap.render()` — base chunk tiles + store/home layers (Ground, Decor, Buildings Base/Detail); SKIPS y=45–48
-3. `tilemap.renderGreatPath()` — great path strip at y=45–48 (OVER chunk tiles)
+2. `tilemap.render()` — base chunk tiles + store/home layers (Ground, Decor, Buildings Base/Detail); SKIPS y=30–33
+3. `tilemap.renderGreatPath()` — great path strip at y=30–33 (OVER chunk tiles)
 4. `chunkManager.render()` — ownership borders (OWNED chunks against non-OWNED neighbors)
 5. `overlayManager.renderEdgeOverlays()` — path edge sprites
 6. Forest tree backgrounds (shadows/trunks; render OVER great path)
@@ -233,15 +249,15 @@ import { CONFIG, getRandomDirtTile, getRandomPathTile } from './config.js';
 
 **CONFIG.chunks** - Chunk world constants:
 - `size: 15` — tiles per chunk side
-- `initialGridCols: 3`, `initialGridRows: 5` — initial sparse grid (3×5 = 15 chunks, 3,375 tiles)
-- `storeCol: 1`, `storeRow: 1` — store chunk position (world x=15–29, y=15–29)
-- `homeCol: 1`, `homeRow: 2` — home chunk position (world x=15–29, y=30–44)
-- `farmCol: 1`, `farmRow: 3` — farm chunk position (world x=15–29, y=49–63)
-- `pathBoundaryRow: 2` — last chunk row north of great path (= homeRow); used in worldY gap formula
-- `mainPathY: 45` — world Y of great path top row
-- `mainPathGap: 4` — world tile rows reserved for great path between home and farm chunks
+- `initialGridCols: 3`, `initialGridRows: 4` — initial sparse grid (3×4 = 12 chunks, 2,700 tiles)
+- `homeCol: 1`, `homeRow: 1` — town chunk position (world x=15–29, y=15–29; single starting TOWN chunk)
+- `farmCol: 1`, `farmRow: 2` — farm chunk position (world x=15–29, y=34–48)
+- `pathBoundaryRow: 1` — last chunk row north of great path (= homeRow); used in worldY gap formula
+- `mainPathY: 30` — world Y of great path top row (y=30 N-grass, y=31–32 path, y=33 S-grass)
+- `mainPathGap: 4` — world tile rows reserved for great path between town and farm chunks
 - Gap formula: `worldY(row) = row * 15 + (row > pathBoundaryRow ? mainPathGap : 0)`
 - `purchasePrices: [100, 500, 2000, 10000, 50000]` — gold costs by Manhattan distance index (dist-1) from farm chunk
+- No `storeCol`/`storeRow` — single town chunk (no separate store chunk)
 
 **CONFIG.watering** - `canMaxCapacity: 20` — starting capacity for human and goblin cans
 
@@ -252,6 +268,10 @@ import { CONFIG, getRandomDirtTile, getRandomPathTile } from './config.js';
 **CONFIG.idle** - `maxEuclideanDistance: 20`, `maxPathLength: 35`, `pathCheckCandidates: 3`, `backoffMax: 15000` (all used by IdleManager)
 
 **CONFIG.stand.traveler** - `queuePatience: 15000` — ms a queued traveler will wait before giving up
+
+**CONFIG.villagers** - `maxRegularTravelersBeforeMilestone: 5` — regular travelers spawned before a milestone traveler can spawn
+
+**CONFIG.build** - `pathCostPerTile: 1` — stone cost per path tile placed by the player
 
 **CONFIG.debug** - logLevel, showFps, showPathfinding, developmentMode (true = debug menu always shown)
 
@@ -284,7 +304,7 @@ Animation filenames have inconsistencies the code handles:
 
 **Available tools** (Toolbar.js TOOLS constant):
 - Watering Can (2858), Axe (2922), Hoe (2986), Sword (3050)
-- Shovel (3114), Fishing Rod (3178), Pickaxe (3113), Plant (2857)
+- Shovel (3114), Fishing Rod (3178), Pickaxe (3113), Plant (2857), Build (3045)
 
 **Implemented tool actions**:
 - **Hoe**: Changes grass/dirt tiles to hoed ground (tile ID 67). Uses AXE animation
@@ -293,7 +313,9 @@ Animation filenames have inconsistencies the code handles:
 - **Pickaxe**: Mines ore veins. Each hit yields 1 ore. Uses AXE animation
 - **Sword**: Attacks enemies. Uses ATTACK animation. Damage based on playerDamage stat
 - **Watering Can**: Waters crops in `needs_water` state. Deducts from `wateringCanWater` (human) or `goblinWaterCanWater` (goblin). Auto-refills at well when empty. Uses WATERING animation
-- **fill_well** (internal): Worker walks to well service tile (23, 54), plays DOING animation once, refills the can to max. Not selectable from toolbar — created automatically by `_autoQueueWellFill()`
+- **fill_well** (internal): Worker walks to well service tile, plays DOING animation once, refills the can to max. Not selectable from toolbar — created automatically by `_autoQueueWellFill()`
+- **Build (path)**: Player selects "Stone Path" from build submenu, drags over tiles → places path tile IDs via `setTileAt`, deducts 1 stone per tile (`CONFIG.build.pathCostPerTile`), adds to `game.playerPlacedPaths`, invalidates PathConnectivity cache. Uses HAMMERING animation.
+- **Build (building)**: Player selects a building from build submenu → enters ghost placement mode (`_buildPlacementMode = {type:'building', defId}`). Ghost renders via `buildingManager.renderGhost()`. On click: checks cost + ownership + no overlap → calls `buildingManager.placeBuilding()` → queues HAMMERING job cycles → on completion calls `buildingManager.completeBuildingById()` → checks PathConnectivity → if connected sets `active_empty` and calls `villagerManager.onHouseReady()`.
 
 **Character behavior**: Character walks to an adjacent tile, faces the work tile, then performs the tool animation. Sprite flips horizontally when facing left.
 
@@ -336,6 +358,10 @@ The `IdleManager` gives the human character autonomous behavior when no player j
 
 **New idle activity**: Add weight entry to ACTIVITY_WEIGHTS in IdleManager.js, add case to `_evaluateActivity()` and `_createJobForEvaluation()`
 
+**New building type**: Add entry to `BUILDING_DEFS` in BuildingRegistry.js with all required fields. If `hasTilemap:true`, create matching CSV layer files under `Tileset/`. Add building CSV handling to `BuildingManager.loadDefinitionLayers()` if layers differ from standard format. For villager-unlocked specials, set `unlockedBy` to a VILLAGER_MILESTONES id.
+
+**New villager milestone**: Add entry to `VILLAGER_MILESTONES` in BuildingRegistry.js with `id`, `name`, `trigger(milestones)→bool`, and `combo`. Add a matching BUILDING_DEFS entry with `unlockedBy` = the milestone id. Ensure `game.milestones` tracks any new counter the trigger reads.
+
 ## Important Implementation Notes
 
 ### Error Handling
@@ -363,7 +389,7 @@ The `IdleManager` gives the human character autonomous behavior when no player j
 - **TOWN** chunks (store + home): walk-through + weed-clearing only (no farming or resource gathering)
 - **PURCHASABLE** chunks: displayed with "?" sign; click to purchase
 - **LOCKED** chunks: walk-through only, shown as forest; must be adjacent to OWNED to become PURCHASABLE
-- **North forest chunks** (rows 0–2): permanently LOCKED regardless of adjacency — `_updatePurchasableChunks()` only promotes chunks where `row >= farmRow` (3). No purchase signs ever rendered for these.
+- **North forest chunks** (rows 0–1, flanking cols): permanently LOCKED regardless of adjacency — `_updatePurchasableChunks()` only promotes chunks where `row >= farmRow` (2). No purchase signs ever rendered for these.
 - Purchasing a chunk allocates all 8 neighbor chunks (if they don't exist) and fires `onChunkPurchased`
 
 ### Logging
@@ -381,3 +407,5 @@ Tests live in `tests/`. Run by opening `tests/index.html` in a browser (uses a l
 - **tests/Phase2Farming.test.js** - Unit tests for `Well` obstacle detection, `CROP_TYPES` watering state machine (single + multi-water), wild crops starting in `'growing'` state, and `ForestGenerator` distance-based ore/crop selection.
 - **tests/Phase3Integration.test.js** - Integration tests for new inventory resource types (flower colors, potions), recipe data structures (CAULDRON/ANVIL/SHRINE), CropManager growth-speed multiplier, JobManager craft job creation/cancel-refund, and IdleManager `fill_well` activity evaluation.
 - **tests/ReplenishZoneManager.test.js** - Unit tests for `ReplenishZoneManager`: zone creation, tile eviction, `onHarvest()` queuing, `pauseZonesForCrop()`, `checkPausedZones()` reactivation, `expandZone()`, `changeSeed()`, `deleteZone()`. All dependencies mocked.
+- **tests/Phase4a.test.js** - Unit tests for Phase 4a systems: `BUILDING_DEFS` structure/layer renderPass values, `VILLAGER_MILESTONES` structure/trigger functions/uniqueness, `buildingCostToRefundItems()` resource mapping, `BuildingManager` placement/state-transitions/obstacle-checking/footprint/deconstruct, `PathConnectivity` isPathTile/BFS/caching/invalidation, `VillagerManager` milestone eligibility/recruitment/displacement/onHouseReady displaced-queue logic, `CONFIG.villagers` and `CONFIG.build` additions.
+- **tests/Phase4b.test.js** - Unit tests for Phase 4b additions: `ForestGenerator.pickSeedType()` weighted distribution (lit vs non-lit), `TravelerManager` milestone state initialization/`setVillagerManager`/`onEmptyHouseAvailable`, `JobManager.addConstructJob()` job properties/queue management, `CONFIG.chunks` 3×4 world layout constants (mainPathY:30, farmRow:2, homeRow:1).
