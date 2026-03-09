@@ -96,6 +96,9 @@ export class ChunkManager {
 
         // Reference to game inventory for gold checks (set from Game.js)
         this.inventory = null;
+
+        // Reference to main Game instance (set from Game.js) — used for villager-gated town expansion
+        this.game = null;
     }
 
     // ─── Initialization ─────────────────────────────────────────────────────────
@@ -198,9 +201,20 @@ export class ChunkManager {
         return result;
     }
 
+    /**
+     * Returns the number of housed villagers required to claim the next town chunk.
+     * Sequence: 1, 3, 6, 9, 12 … (n=0→1, n≥1→n*increment)
+     */
+    _townChunkThreshold(n) {
+        const { townExpansionBase, townExpansionIncrement } = CONFIG.villagers;
+        return n === 0 ? townExpansionBase : n * townExpansionIncrement;
+    }
+
     _updatePurchasableChunks() {
         const { farmRow } = CONFIG.chunks;
         const dirs = [{ dc: 0, dr: -1 }, { dc: 0, dr: 1 }, { dc: -1, dr: 0 }, { dc: 1, dr: 0 }];
+
+        // Farm expansion: OWNED chunks promote LOCKED neighbors at or below farm rows
         for (const chunk of this.chunks.values()) {
             if (chunk.state !== CHUNK_STATES.OWNED) continue;
             for (const { dc, dr } of dirs) {
@@ -209,6 +223,19 @@ export class ChunkManager {
                 // South forest chunks (row >= farmRow) become purchasable.
                 // Dense-forest flanking chunks at north rows stay permanently locked.
                 if (neighbor.row >= farmRow) {
+                    neighbor.state = CHUNK_STATES.PURCHASABLE;
+                }
+            }
+        }
+
+        // Town expansion: TOWN chunks promote LOCKED neighbors in any direction except into farm territory
+        for (const chunk of this.chunks.values()) {
+            if (chunk.state !== CHUNK_STATES.TOWN) continue;
+            for (const { dc, dr } of dirs) {
+                const neighbor = this.getChunkAt(chunk.col + dc, chunk.row + dr);
+                if (!neighbor || neighbor.state !== CHUNK_STATES.LOCKED) continue;
+                if (neighbor.row < farmRow) {
+                    neighbor.isTownPlot = true;
                     neighbor.state = CHUNK_STATES.PURCHASABLE;
                 }
             }
@@ -228,11 +255,11 @@ export class ChunkManager {
             // Falls back to FOREST when no registry is wired.
             let type = this.generatorRegistry?.resolveType(col, row) ?? CHUNK_TYPES.FOREST;
 
-            // Chunks at or north of the town row that aren't the town chunk itself
-            // are permanently locked dense forest with no pockets.
+            // Chunks at row 0 use sparse forest (purchasable as town plots).
+            // Only chunks strictly north of row 0 (if ever allocated) stay dense.
             const { homeRow, homeCol } = CONFIG.chunks;
             const isTownPos = (col === homeCol && row === homeRow);
-            if (row <= homeRow && !isTownPos) {
+            if (row < 0 && !isTownPos) {
                 type = 'dense_forest';
             }
 
@@ -377,14 +404,29 @@ export class ChunkManager {
             return false;
         }
 
-        // Check and deduct gold (skipped if free=true for debug purposes)
-        if (!free && this.inventory) {
-            const price = this.getChunkPrice(col, row);
-            if (!this.inventory.spendGold(price)) {
-                log.info(`Cannot afford chunk (${col},${row}): need ${price}g, have ${this.inventory.getGold()}g`);
-                return false;
+        if (chunk.isTownPlot) {
+            // Town plots are claimed with villager milestones, not gold
+            if (!free) {
+                const villagerCount = this.game?.milestones?.totalVillagersRecruited ?? 0;
+                const unlocked = this.game?.townChunksUnlocked ?? 0;
+                const threshold = this._townChunkThreshold(unlocked);
+                if (villagerCount < threshold) {
+                    log.info(`Cannot claim town chunk (${col},${row}): need ${threshold} housed villagers, have ${villagerCount}`);
+                    return false;
+                }
+                if (this.game) this.game.townChunksUnlocked++;
+                log.info(`Claimed town chunk (${col},${row}) — townChunksUnlocked=${this.game.townChunksUnlocked}`);
             }
-            log.info(`Purchased chunk (${col},${row}) for ${price}g`);
+        } else {
+            // Forest chunks cost gold (skipped if free=true for debug purposes)
+            if (!free && this.inventory) {
+                const price = this.getChunkPrice(col, row);
+                if (!this.inventory.spendGold(price)) {
+                    log.info(`Cannot afford chunk (${col},${row}): need ${price}g, have ${this.inventory.getGold()}g`);
+                    return false;
+                }
+                log.info(`Purchased chunk (${col},${row}) for ${price}g`);
+            }
         }
 
         // Town plots get TOWN state; regular forest purchases get OWNED state
@@ -550,51 +592,78 @@ export class ChunkManager {
             // Skip if not visible
             if (wx < bounds.left || wx > bounds.right || wy < bounds.top || wy > bounds.bottom) continue;
 
-            const price = this.getChunkPrice(chunk.col, chunk.row);
-            const canAfford = playerGold >= price;
             const isTownPlot = !!chunk.isTownPlot;
 
             const r = 20 / zoom;
             ctx.save();
-            ctx.beginPath();
-            ctx.arc(wx, wy, r, 0, Math.PI * 2);
+
             if (isTownPlot) {
-                ctx.fillStyle = canAfford ? 'rgba(80, 160, 255, 0.85)' : 'rgba(180, 80, 80, 0.85)';
+                // Town plots: villager-gated, not gold-gated
+                const unlocked = this.game?.townChunksUnlocked ?? 0;
+                const threshold = this._townChunkThreshold(unlocked);
+                const current = this.game?.milestones?.totalVillagersRecruited ?? 0;
+                const canClaim = current >= threshold;
+
+                ctx.beginPath();
+                ctx.arc(wx, wy, r, 0, Math.PI * 2);
+                ctx.fillStyle = canClaim ? 'rgba(50, 200, 80, 0.9)' : 'rgba(80, 160, 255, 0.85)';
                 ctx.fill();
-                ctx.strokeStyle = canAfford ? 'rgba(30, 90, 200, 0.9)' : 'rgba(120, 30, 30, 0.9)';
+                ctx.strokeStyle = canClaim ? 'rgba(20, 140, 40, 0.9)' : 'rgba(30, 90, 200, 0.9)';
+                ctx.lineWidth = 2 / zoom;
+                ctx.setLineDash([]);
+                ctx.stroke();
+
+                // "?" icon
+                ctx.fillStyle = '#00163a';
+                ctx.font = `bold ${Math.round(18 / zoom)}px sans-serif`;
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                ctx.fillText('?', wx, wy);
+
+                // Progress / "Claim!" label below circle
+                const progressLabel = canClaim ? 'Claim!' : `${current}/${threshold} Villagers`;
+                ctx.font = `bold ${Math.round(9 / zoom)}px sans-serif`;
+                ctx.fillStyle = canClaim ? '#ccffcc' : '#aaddff';
+                ctx.strokeStyle = 'rgba(0,0,0,0.8)';
+                ctx.lineWidth = 3 / zoom;
+                ctx.strokeText(progressLabel, wx, wy + r + 8 / zoom);
+                ctx.fillText(progressLabel, wx, wy + r + 8 / zoom);
+
+                // "Town Plot" label above the circle
+                ctx.font = `bold ${Math.round(9 / zoom)}px sans-serif`;
+                ctx.fillStyle = canClaim ? '#ccffcc' : '#aaddff';
+                ctx.strokeText('Town Plot', wx, wy - r - 6 / zoom);
+                ctx.fillText('Town Plot', wx, wy - r - 6 / zoom);
             } else {
+                // Forest chunks: gold-gated
+                const price = this.getChunkPrice(chunk.col, chunk.row);
+                const canAfford = playerGold >= price;
+
+                ctx.beginPath();
+                ctx.arc(wx, wy, r, 0, Math.PI * 2);
                 ctx.fillStyle = canAfford ? 'rgba(255, 200, 50, 0.85)' : 'rgba(180, 80, 80, 0.85)';
                 ctx.fill();
                 ctx.strokeStyle = canAfford ? 'rgba(180, 130, 10, 0.9)' : 'rgba(120, 30, 30, 0.9)';
-            }
-            ctx.lineWidth = 2 / zoom;
-            ctx.setLineDash([]);
-            ctx.stroke();
+                ctx.lineWidth = 2 / zoom;
+                ctx.setLineDash([]);
+                ctx.stroke();
 
-            ctx.fillStyle = isTownPlot ? '#00163a' : '#3a2000';
-            ctx.font = `bold ${Math.round(18 / zoom)}px sans-serif`;
-            ctx.textAlign = 'center';
-            ctx.textBaseline = 'middle';
-            ctx.fillText('?', wx, wy);
+                ctx.fillStyle = '#3a2000';
+                ctx.font = `bold ${Math.round(18 / zoom)}px sans-serif`;
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                ctx.fillText('?', wx, wy);
 
-            // Price label below the circle
-            const priceText = price >= 1000 ? `${(price / 1000).toFixed(price % 1000 === 0 ? 0 : 1)}k` : `${price}`;
-            ctx.font = `bold ${Math.round(10 / zoom)}px sans-serif`;
-            ctx.fillStyle = canAfford ? (isTownPlot ? '#aaddff' : '#ffd700') : '#ff8888';
-            ctx.strokeStyle = 'rgba(0,0,0,0.8)';
-            ctx.lineWidth = 3 / zoom;
-            ctx.strokeText(`${priceText}g`, wx, wy + r + 8 / zoom);
-            ctx.fillText(`${priceText}g`, wx, wy + r + 8 / zoom);
-
-            // "Town Plot" label above the circle for town expansion chunks
-            if (isTownPlot) {
-                ctx.font = `bold ${Math.round(9 / zoom)}px sans-serif`;
-                ctx.fillStyle = canAfford ? '#aaddff' : '#ff8888';
+                // Price label below the circle
+                const priceText = price >= 1000 ? `${(price / 1000).toFixed(price % 1000 === 0 ? 0 : 1)}k` : `${price}`;
+                ctx.font = `bold ${Math.round(10 / zoom)}px sans-serif`;
+                ctx.fillStyle = canAfford ? '#ffd700' : '#ff8888';
                 ctx.strokeStyle = 'rgba(0,0,0,0.8)';
                 ctx.lineWidth = 3 / zoom;
-                ctx.strokeText('Town Plot', wx, wy - r - 6 / zoom);
-                ctx.fillText('Town Plot', wx, wy - r - 6 / zoom);
+                ctx.strokeText(`${priceText}g`, wx, wy + r + 8 / zoom);
+                ctx.fillText(`${priceText}g`, wx, wy + r + 8 / zoom);
             }
+
             ctx.restore();
         }
     }

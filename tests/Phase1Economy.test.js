@@ -192,33 +192,33 @@ describe('ChunkManager.getChunkPrice — Phase 1', () => {
         cm = new ChunkManager(makeMockTilemap());
     });
 
-    // farmCol=1, farmRow=3 — dist = |col-1| + |row-3|
+    // farmCol=1, farmRow=2 — dist = |col-1| + |row-2|
     it('distance-1 neighbours cost 100g', () => {
-        expect(cm.getChunkPrice(1, 4)).toBe(100); // |0| + |1| = 1
-        expect(cm.getChunkPrice(0, 3)).toBe(100); // |1| + |0| = 1
-        expect(cm.getChunkPrice(2, 3)).toBe(100); // |1| + |0| = 1
+        expect(cm.getChunkPrice(1, 3)).toBe(100); // |0| + |1| = 1
+        expect(cm.getChunkPrice(0, 2)).toBe(100); // |1| + |0| = 1
+        expect(cm.getChunkPrice(2, 2)).toBe(100); // |1| + |0| = 1
     });
 
     it('distance-2 chunks cost 500g', () => {
-        expect(cm.getChunkPrice(1, 5)).toBe(500); // |0| + |2| = 2
-        expect(cm.getChunkPrice(0, 4)).toBe(500); // |1| + |1| = 2
-        expect(cm.getChunkPrice(3, 3)).toBe(500); // |2| + |0| = 2
+        expect(cm.getChunkPrice(1, 4)).toBe(500); // |0| + |2| = 2
+        expect(cm.getChunkPrice(0, 3)).toBe(500); // |1| + |1| = 2
+        expect(cm.getChunkPrice(3, 2)).toBe(500); // |2| + |0| = 2
     });
 
     it('distance-3 chunks cost 2000g', () => {
-        expect(cm.getChunkPrice(1, 6)).toBe(2000); // dist 3
-        expect(cm.getChunkPrice(4, 3)).toBe(2000); // dist 3
+        expect(cm.getChunkPrice(1, 5)).toBe(2000); // dist 3
+        expect(cm.getChunkPrice(4, 2)).toBe(2000); // dist 3
     });
 
     it('distance-4 chunks cost 10000g', () => {
-        expect(cm.getChunkPrice(5, 3)).toBe(10000); // dist 4
-        expect(cm.getChunkPrice(1, 7)).toBe(10000); // dist 4
+        expect(cm.getChunkPrice(5, 2)).toBe(10000); // dist 4
+        expect(cm.getChunkPrice(1, 6)).toBe(10000); // dist 4
     });
 
     it('distance-5+ chunks cap at 50000g', () => {
-        expect(cm.getChunkPrice(6, 3)).toBe(50000);  // dist 5
-        expect(cm.getChunkPrice(10, 3)).toBe(50000); // dist 9
-        expect(cm.getChunkPrice(1, 99)).toBe(50000); // dist 96
+        expect(cm.getChunkPrice(6, 2)).toBe(50000);  // dist 5
+        expect(cm.getChunkPrice(10, 2)).toBe(50000); // dist 9
+        expect(cm.getChunkPrice(1, 99)).toBe(50000); // dist 97
     });
 });
 
@@ -236,7 +236,8 @@ describe('ChunkManager.purchaseChunk — Phase 1', () => {
     });
 
     it('adjacent-to-farm chunks should be PURCHASABLE after initialize()', () => {
-        for (const [col, row] of [[0, 3], [2, 3], [1, 4]]) {
+        // farmRow=2: adjacent south=(1,3), left=(0,2), right=(2,2)
+        for (const [col, row] of [[0, 2], [2, 2], [1, 3]]) {
             const chunk = cm.getChunkAt(col, row);
             expect(chunk).not.toBeNull();
             expect(chunk.state).toBe(CHUNK_STATES.PURCHASABLE);
@@ -261,33 +262,34 @@ describe('ChunkManager.purchaseChunk — Phase 1', () => {
 
     it('should deduct the exact chunk price from inventory on purchase', () => {
         const goldBefore = inventory.getGold();
-        const price = cm.getChunkPrice(1, 4);
-        cm.purchaseChunk(1, 4);
+        const price = cm.getChunkPrice(1, 3); // dist-1 from farmRow=2, costs 100g
+        cm.purchaseChunk(1, 3);
         expect(inventory.getGold()).toBe(goldBefore - price);
     });
 
     it('should set the purchased chunk state to OWNED', () => {
-        cm.purchaseChunk(1, 4);
-        const chunk = cm.getChunkAt(1, 4);
+        cm.purchaseChunk(1, 3);
+        const chunk = cm.getChunkAt(1, 3);
         expect(chunk).not.toBeNull();
         expect(chunk.state).toBe(CHUNK_STATES.OWNED);
     });
 
     it('should return false if the same chunk is purchased twice', () => {
-        cm.purchaseChunk(1, 4);
-        expect(cm.purchaseChunk(1, 4)).toBe(false);
+        cm.purchaseChunk(1, 3);
+        expect(cm.purchaseChunk(1, 3)).toBe(false);
     });
 
     it('should not deduct gold when purchase fails (already owned)', () => {
-        cm.purchaseChunk(1, 4);
+        cm.purchaseChunk(1, 3);
         const goldAfterFirst = inventory.getGold();
-        cm.purchaseChunk(1, 4); // should fail
+        cm.purchaseChunk(1, 3); // should fail
         expect(inventory.getGold()).toBe(goldAfterFirst);
     });
 
     it('north forest chunks (row < farmRow) should remain LOCKED after initialize()', () => {
-        // Rows 0-2 (dense forest) are permanently locked — no purchase signs ever shown
-        for (const [col, row] of [[0, 0], [0, 1], [0, 2], [2, 0], [2, 1], [2, 2]]) {
+        // Rows 0-1 flanking cols are permanently locked — no purchase signs ever shown
+        // (row 2 flanking cols become PURCHASABLE since they are adjacent to the farm)
+        for (const [col, row] of [[0, 0], [0, 1], [2, 0], [2, 1]]) {
             const chunk = cm.getChunkAt(col, row);
             if (chunk) {
                 expect(chunk.state).not.toBe(CHUNK_STATES.PURCHASABLE);

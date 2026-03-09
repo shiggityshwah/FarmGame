@@ -12,8 +12,10 @@ export class FlowerManager {
         this.weedClickEffects = []; // Leaf splash effects when clicking weeds
 
         // Spawning configuration
-        // Average 1 flower/weed per 5 seconds for every 50 tiles in the grass area
-        this.spawnRatePerTile = 1 / (5000 * 50); // flowers/weeds per ms per tile
+        // Fixed global spawn interval — one spawn attempt every N ms at full rate.
+        // Does NOT scale with tile count; density is regulated by getEffectiveMaxCount()
+        // and getSpawnProbabilityMultiplier() instead.
+        this.baseSpawnInterval = 15000; // ms between spawns at full rate (empty map)
         this.spawnTimer = 0;
         this.maxFlowers = CONFIG.flowers.maxCount;
 
@@ -214,18 +216,18 @@ export class FlowerManager {
         return { farmLeft: 0, farmRight: this.tilemap.mapWidth, grassStartY, farmBottom: this.tilemap.mapHeight };
     }
 
-    // Returns spawn area rects for all valid spawn zones (farm chunk grass + owned chunks)
+    // Returns spawn area rects for all valid spawn zones (farm chunk grass + owned + town chunks)
     _getSpawnAreas() {
         const areas = [];
         const { farmLeft, farmRight, grassStartY, farmBottom } = this._getFarmBounds();
         areas.push({ left: farmLeft, right: farmRight, top: grassStartY, bottom: farmBottom });
 
         if (this.tilemap.mapType === 'chunk' && this.chunkManager) {
-            // Include all OWNED chunks except the farm chunk (it already has explicit bounds above)
             const { farmCol, farmRow } = CONFIG.chunks;
             for (const [, chunk] of this.chunkManager.chunks) {
-                if (chunk.state !== 'owned') continue;
+                // Skip the farm chunk — already added with grass-only bounds above
                 if (chunk.col === farmCol && chunk.row === farmRow) continue;
+                // Include all chunks regardless of state; isValidSpawnTile handles per-tile checks
                 const bounds = this.chunkManager.getChunkBounds(chunk.col, chunk.row);
                 areas.push({ left: bounds.x, right: bounds.x + bounds.width, top: bounds.y, bottom: bounds.y + bounds.height });
             }
@@ -234,9 +236,15 @@ export class FlowerManager {
         return areas;
     }
 
+    // Get the effective max flower+weed count, scaling with available grass tiles.
+    // Targets ~1 plant per 5 grass tiles so density stays consistent across map sizes.
+    getEffectiveMaxCount() {
+        return Math.max(10, Math.ceil(this.getGrassTileCount() / 5));
+    }
+
     // Spawn a flower at a random valid location (main tilemap or forest)
     spawnRandomFlower() {
-        if (this.flowers.length + this.weeds.length >= this.maxFlowers) {
+        if (this.flowers.length + this.weeds.length >= this.getEffectiveMaxCount()) {
             return null;
         }
 
@@ -291,7 +299,7 @@ export class FlowerManager {
 
     // Spawn a weed at a random valid location (main tilemap or forest)
     spawnRandomWeed() {
-        if (this.flowers.length + this.weeds.length >= this.maxFlowers) {
+        if (this.flowers.length + this.weeds.length >= this.getEffectiveMaxCount()) {
             return null;
         }
 
@@ -412,23 +420,18 @@ export class FlowerManager {
 
         // Only attempt spawning if there are grass tiles available
         if (grassTileCount > 0) {
-            // Get spawn probability multiplier based on current flower coverage
-            // This makes flowers spawn faster when there are fewer, slower as map fills up
+            // Get spawn probability multiplier based on current flower coverage.
+            // Returns 1.0 when empty, approaches 0 as coverage fills up.
             const spawnMultiplier = this.getSpawnProbabilityMultiplier();
 
-            // Apply multiplier to spawn rate
-            const adjustedSpawnRate = this.spawnRatePerTile * spawnMultiplier;
-            const spawnChancePerMs = adjustedSpawnRate * grassTileCount;
-
-            // Skip spawning if multiplier is effectively zero
-            if (spawnChancePerMs <= 0) {
+            // Fixed interval, scaled by coverage multiplier (slows down as map fills).
+            // Not scaled by tile count — density is controlled by getEffectiveMaxCount().
+            if (spawnMultiplier <= 0) {
                 this.spawnTimer = 0;
             } else {
-                // Accumulate time and potentially spawn flowers
                 this.spawnTimer += deltaTime;
 
-                // Average spawn time in ms
-                const avgSpawnTime = 1 / spawnChancePerMs;
+                const avgSpawnTime = this.baseSpawnInterval / spawnMultiplier;
 
                 // Use probabilistic spawning based on elapsed time
             // Flowers spawn at 25% of original rate, weeds at 75% of original rate

@@ -2,7 +2,7 @@ import { CONFIG } from './config.js';
 import { Logger } from './Logger.js';
 import { Traveler } from './Traveler.js';
 import { RESOURCE_TYPES } from './Inventory.js';
-import { VILLAGER_MILESTONES } from './BuildingRegistry.js';
+import { VILLAGER_MILESTONES, BUILDING_DEFS } from './BuildingRegistry.js';
 
 const log = Logger.create('TravelerManager');
 
@@ -239,8 +239,18 @@ export class TravelerManager {
         for (const traveler of this.travelers) {
             traveler.update(deltaTime);
 
+            // Debug villager: detect arrival at house door (isDespawned set by walkToHouse phase 1)
+            if (traveler.isDebugVillager && traveler.isDespawned && traveler._debugTargetBuilding) {
+                const house = traveler._debugTargetBuilding;
+                traveler._debugTargetBuilding = null;  // prevent double-fire
+                if (this.villagerManager && house.state === 'active_empty') {
+                    this.villagerManager.onVillagerRecruited('debug_villager', house);
+                }
+            }
+
             // Despawn when the traveler has crossed past its predetermined despawn X
-            if (traveler.despawnX !== null && !traveler.isStopped && !traveler._returningToPath) {
+            // (skip check for travelers walking to their house — they despawn at the door)
+            if (traveler.despawnX !== null && !traveler.isStopped && !traveler._returningToPath && !traveler._goingToHouse) {
                 const past = traveler.direction === 'east'
                     ? traveler.x > traveler.despawnX
                     : traveler.x < traveler.despawnX;
@@ -252,6 +262,53 @@ export class TravelerManager {
         }
 
         this.travelers = this.travelers.filter(t => !t.isDespawned);
+    }
+
+    /**
+     * Spawn a debug villager entity on the great path that walks to the target house
+     * following the player-placed path tiles.
+     * When the entity reaches the door, it claims the house and increments villager count.
+     *
+     * @param {object} building         Building object (active_empty, pathConnected)
+     * @param {PathConnectivity|null}   pathConnectivity  Used to trace the path route
+     */
+    async spawnDebugVillager(building, pathConnectivity = null) {
+        const { leftPx, rightPx } = this._getWorldBounds();
+        const margin = CONFIG.traveler.despawnMargin;
+        const { hairStyles, pathCenterY } = CONFIG.traveler;
+        const direction = Math.random() < 0.5 ? 'east' : 'west';
+        const spawnX = direction === 'east' ? leftPx - margin : rightPx + margin;
+        const hairStyle = hairStyles[Math.floor(Math.random() * hairStyles.length)];
+
+        const traveler = new Traveler(spawnX, pathCenterY, direction, hairStyle, null);
+        traveler.despawnX = null;         // don't despawn at world edge
+        traveler.visitStand = false;
+        traveler.isDebugVillager = true;
+        traveler._debugTargetBuilding = building;
+
+        const tileSize = this.tilemap.tileSize;
+        const def = BUILDING_DEFS[building.definitionId];
+        const doorOffsetX = def?.doorOffset?.x ?? 2;
+        const doorOffsetY = def?.doorOffset?.y ?? 4;
+        const doorX     = building.tileX + doorOffsetX;
+        const doorPathY = building.tileY + doorOffsetY + 1; // path tile one south of door
+        const doorY     = building.tileY + doorOffsetY;
+
+        let waypoints = pathConnectivity?.getWaypointsToGreatPath(doorX, doorPathY, tileSize) ?? null;
+        if (waypoints) {
+            waypoints.push({ x: doorX * tileSize + tileSize / 2, y: doorY * tileSize + tileSize / 2 });
+        } else {
+            // Fallback: straight walk to door
+            waypoints = [
+                { x: doorX * tileSize + tileSize / 2, y: pathCenterY },
+                { x: doorX * tileSize + tileSize / 2, y: doorY * tileSize + tileSize / 2 },
+            ];
+        }
+
+        await traveler.load();
+        traveler.walkToHouse(waypoints);
+        this.travelers.push(traveler);
+        log.info(`Debug villager spawned, heading to building ${building.id} at door (${doorX}, ${doorY})`);
     }
 
     getTravelers() {

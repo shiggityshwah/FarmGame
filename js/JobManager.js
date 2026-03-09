@@ -583,14 +583,20 @@ export class JobManager {
             }
             await this.setWorkerAnimation(workerId, 'IDLE', true);
         } else if (tool.id === 'pickaxe') {
-            const shouldContinue = this.mineOre(workX, workY);
-            if (shouldContinue) {
-                // One mine swing done, ore remains — interrupt for stand if pending
-                if (this._checkInterruptForStand(workerId, false)) return;
-                this.setWorkerAnimation(workerId, tool.animation, false, () => {
-                    this.onAnimationCompleteForWorker(workerId);
-                }, speedMultiplier);
-                return;
+            // Check for player-placed path tile first (single swing, no repeat)
+            if (this.game.playerPlacedPaths?.has(`${workX},${workY}`)) {
+                this.removePath(workX, workY);
+                // Fall through to normal tile completion
+            } else {
+                const shouldContinue = this.mineOre(workX, workY);
+                if (shouldContinue) {
+                    // One mine swing done, ore remains — interrupt for stand if pending
+                    if (this._checkInterruptForStand(workerId, false)) return;
+                    this.setWorkerAnimation(workerId, tool.animation, false, () => {
+                        this.onAnimationCompleteForWorker(workerId);
+                    }, speedMultiplier);
+                    return;
+                }
             }
         } else if (tool.id === 'axe') {
             const shouldContinue = this.chopTree(workX, workY, workerId);
@@ -836,6 +842,8 @@ export class JobManager {
                 if (ore && ore.canBeMined()) return false;
                 const forestOre = this.game.forestGenerator?.getPocketOreAt(tileX, tileY);
                 if (forestOre && forestOre.canBeMined()) return false;
+                // Also check if it's still a player-placed path (not yet removed)
+                if (this.game.playerPlacedPaths?.has(`${tileX},${tileY}`)) return false;
                 return true;
             }
             case 'plant': {
@@ -1249,6 +1257,32 @@ export class JobManager {
 
         log.debug(`No mineable ore at (${tileX}, ${tileY})`);
         return false;
+    }
+
+    // Remove a player-placed path tile, restore grass, refund stone, update overlays.
+    removePath(tileX, tileY) {
+        const key = `${tileX},${tileY}`;
+        if (!this.game.playerPlacedPaths?.has(key)) return;
+
+        // Remove tracking
+        this.game.playerPlacedPaths.delete(key);
+
+        // Restore a grass tile
+        const grassTileId = CONFIG.tiles.grass[0];
+        this.game.tilemap.setTileAt(tileX, tileY, grassTileId);
+
+        // Unmark from overlay manager's path set and recalculate neighbor overlays
+        this.game.overlayManager?.unmarkPathTile(tileX, tileY);
+
+        // Refund stone
+        if (this.game.inventory) {
+            this.game.inventory.add(RESOURCE_TYPES.ORE_STONE, CONFIG.build.pathCostPerTile);
+        }
+
+        // Invalidate path connectivity, update building states and north bridge overlays
+        this.game._onPathChanged?.();
+
+        log.info(`Path removed at (${tileX}, ${tileY}), refunded ${CONFIG.build.pathCostPerTile} stone`);
     }
 
     // Chop a tree at the specified tile (regular tree or forest tree)

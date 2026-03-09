@@ -61,6 +61,7 @@ export class TileSelector {
         this.flowerManager = null;
         this.forestGenerator = null;
         this.chunkManager = null;
+        this.game = null;
 
         // Selection state
         this.isSelecting = false;
@@ -113,6 +114,10 @@ export class TileSelector {
 
     setChunkManager(chunkManager) {
         this.chunkManager = chunkManager;
+    }
+
+    setGame(game) {
+        this.game = game;
     }
 
     setTool(tool) {
@@ -195,6 +200,15 @@ export class TileSelector {
                 if (!this._allTilesOwned(baseTiles)) return null;
                 return { object: forestTree, type: 'forestTree', baseTiles };
             }
+        }
+
+        // Check for player-placed path tile (pickaxe removal — single tile)
+        if (toolRules.requiresOre && this.game?.playerPlacedPaths?.has(`${tileX},${tileY}`)) {
+            return {
+                object: { tileX, tileY },
+                type: 'removePath',
+                baseTiles: [{ x: tileX, y: tileY }]
+            };
         }
 
         return null;
@@ -489,7 +503,7 @@ export class TileSelector {
             return true;
         }
 
-        // Special handling for pickaxe - requires mineable ore vein at tile
+        // Special handling for pickaxe - requires mineable ore vein OR player-placed path tile
         if (toolRules.requiresOre) {
             // Check main tilemap ore
             if (this.oreManager) {
@@ -501,6 +515,8 @@ export class TileSelector {
                 const forestOre = this.forestGenerator.getPocketOreAt(tileX, tileY);
                 if (forestOre && forestOre.canBeMined()) return true;
             }
+            // Check player-placed path tiles (pickaxe can remove them to recover stone)
+            if (this.game?.playerPlacedPaths?.has(`${tileX},${tileY}`)) return true;
             return false;
         }
 
@@ -536,9 +552,9 @@ export class TileSelector {
             if (!inMainFarmableArea && !inForestGrass && !inOwnedChunk) {
                 return false;
             }
-            // Can't hoe the house/courtyard area (x=15–26, y=34–42)
-            // farmTop=34 (mainPathY+mainPathGap), houseBottom=42 (newHouseOffsetY+newHouseHeight-1)
-            if (tileX >= 15 && tileX <= 26 && tileY >= 34 && tileY <= 42) return false;
+            // Can't hoe the house/well/shed base area (x=15–29, y=34–42)
+            // farmTop=34 (mainPathY+mainPathGap), path row y=42 — player can only hoe at y≥43
+            if (tileX >= 15 && tileX <= 29 && tileY >= 34 && tileY <= 42) return false;
             // Can't hoe where there's a weed
             if (this.flowerManager && this.flowerManager.getWeedAt(tileX, tileY)) {
                 return false;

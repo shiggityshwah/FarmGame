@@ -46,6 +46,14 @@ export class TilemapRenderer {
         this.newHouseWidth = 0;
         this.newHouseHeight = 0;
 
+        // Shed (shed1.tmx) — 5×4 farm storage building, directly right of well
+        this.shedOffsetX = 25;  // x=25–29 (right of well at x=23–24)
+        this.shedOffsetY = 38;  // y=38–41 (bottom row at y=41, directly above y=42 path)
+        this.shedWidth   = 5;
+        this.shedHeight  = 4;
+        this.shedGroundLayers = [];   // Ground + Wall layers (rendered below characters)
+        this.shedRoofLayers   = [];   // Roof + Roof Detail layers (rendered above characters)
+
         // Town home (home.tmx) - 10x10 building in bottom-right of town chunk
         this.townHomeOffsetX = 0;
         this.townHomeOffsetY = 0;
@@ -867,9 +875,10 @@ export class TilemapRenderer {
         }
     }
 
-    // Render new house ground/floor layers (called AFTER path edge overlays so they appear on top)
+    // Render new house ground/floor layers and shed ground/wall layers
+    // (called AFTER path edge overlays so they appear on top)
     renderGroundLayers(ctx, camera) {
-        if (!this.loaded || this.groundLayers.length === 0) return;
+        if (!this.loaded) return;
 
         const bounds = camera.getVisibleBounds();
         const startCol = Math.max(0, Math.floor(bounds.left / this.tileSize));
@@ -881,11 +890,14 @@ export class TilemapRenderer {
         for (const layer of this.groundLayers) {
             this.renderLayer(ctx, layer, startCol, endCol, startRow, endRow, overlap);
         }
+        for (const layer of this.shedGroundLayers) {
+            this.renderLayer(ctx, layer, startCol, endCol, startRow, endRow, overlap);
+        }
     }
 
-    // Render new house roof layers (above characters, call only when player is outside)
-    renderRoofLayers(ctx, camera) {
-        if (!this.loaded || this.roofLayers.length === 0) return;
+    // Render house (house.tmx) roof layers only. Hidden when home upgrade menu is open.
+    renderHouseRoofLayers(ctx, camera) {
+        if (!this.loaded) return;
 
         const bounds = camera.getVisibleBounds();
         const startCol = Math.max(0, Math.floor(bounds.left / this.tileSize));
@@ -899,6 +911,22 @@ export class TilemapRenderer {
         }
     }
 
+    // Render shed (shed1.tmx) roof layers only. Hidden when storage menu is open.
+    renderShedRoofLayers(ctx, camera) {
+        if (!this.loaded) return;
+
+        const bounds = camera.getVisibleBounds();
+        const startCol = Math.max(0, Math.floor(bounds.left / this.tileSize));
+        const endCol = Math.min(this.mapWidth - 1, Math.ceil(bounds.right / this.tileSize));
+        const startRow = Math.max(0, Math.floor(bounds.top / this.tileSize));
+        const endRow = Math.min(this.mapHeight - 1, Math.ceil(bounds.bottom / this.tileSize));
+
+        const overlap = 0.5;
+        for (const layer of this.shedRoofLayers) {
+            this.renderLayer(ctx, layer, startCol, endCol, startRow, endRow, overlap);
+        }
+    }
+
     // Returns true when the player's world position is inside the new house footprint
     isPlayerInsideNewHouse(worldX, worldY) {
         const tileX = Math.floor(worldX / this.tileSize);
@@ -907,13 +935,18 @@ export class TilemapRenderer {
                tileY >= this.newHouseOffsetY && tileY < this.newHouseOffsetY + this.newHouseHeight;
     }
 
-    // Returns true if the tile is occupied by a custom tilemap (e.g. house.tmx, home.tmx, store.tmx)
+    // Returns true if the tile is occupied by a custom tilemap (e.g. house.tmx, shed1.tmx, store.tmx)
     isCustomTilemapTile(tileX, tileY) {
         if (this.newHouseWidth > 0 && this.newHouseHeight > 0) {
             if (tileX >= this.newHouseOffsetX && tileX < this.newHouseOffsetX + this.newHouseWidth &&
                 tileY >= this.newHouseOffsetY && tileY < this.newHouseOffsetY + this.newHouseHeight) {
                 return true;
             }
+        }
+        // Shed footprint: x=25–29, y=38–41
+        if (tileX >= this.shedOffsetX && tileX < this.shedOffsetX + this.shedWidth &&
+            tileY >= this.shedOffsetY && tileY < this.shedOffsetY + this.shedHeight) {
+            return true;
         }
         if (this.townHomeWidth > 0 && this.townHomeHeight > 0) {
             if (tileX >= this.townHomeOffsetX && tileX < this.townHomeOffsetX + this.townHomeWidth &&
@@ -1053,9 +1086,13 @@ export class TilemapRenderer {
             this.tilesetImage = await this.loadImage(tilesetPath);
             this.tilesPerRow = Math.floor(this.tilesetImage.width / this.paddedTileSize);
 
-            // Load TMX files (house.tmx only — store and home are now player-built sparse forest)
-            const houseTmxResponse = await fetch('Tileset/house.tmx');
-            const houseData = this.parseTmx(await houseTmxResponse.text());
+            // Load TMX files — house.tmx for player home, shed1.tmx for farm storage
+            const [houseResp, shedResp] = await Promise.all([
+                fetch('Tileset/house.tmx'),
+                fetch('Tileset/shed1.tmx')
+            ]);
+            const houseData = this.parseTmx(await houseResp.text());
+            const shedData  = this.parseTmx(await shedResp.text());
 
             // --- Map dimensions: 3×4 chunks + 4-tile great path gap = 45×64 tiles ---
             const { initialGridCols, initialGridRows, homeCol, homeRow, farmCol, farmRow, mainPathGap } = CONFIG.chunks;
@@ -1143,6 +1180,32 @@ export class TilemapRenderer {
                 }
             }
 
+            // --- Shed ground layers (Ground + Wall, rendered below characters) ---
+            this.shedGroundLayers = [];
+            for (const name of ['Ground', 'Wall']) {
+                const layer = shedData.tileLayers.find(l => l.name === name);
+                if (layer) {
+                    this.shedGroundLayers.push({
+                        data: layer.data,
+                        offsetX: this.shedOffsetX,
+                        offsetY: this.shedOffsetY
+                    });
+                }
+            }
+
+            // --- Shed roof layers (Roof + Roof Detail, always above characters, not hidden) ---
+            this.shedRoofLayers = [];
+            for (const name of ['Roof', 'Roof Detail']) {
+                const layer = shedData.tileLayers.find(l => l.name === name);
+                if (layer) {
+                    this.shedRoofLayers.push({
+                        data: layer.data,
+                        offsetX: this.shedOffsetX,
+                        offsetY: this.shedOffsetY
+                    });
+                }
+            }
+
             // --- Collision rectangles ---
             // Store and home have no TMX collision (they are now sparse forest).
             this.collisionRects = [];
@@ -1163,6 +1226,23 @@ export class TilemapRenderer {
                 }
             }
 
+            // --- Shed collision: Wall layer tiles (> 0 = non-empty) ---
+            // Shed perimeter walls block movement; interior rows 0+2 have open centers.
+            const shedWallLayer = shedData.tileLayers.find(l => l.name === 'Wall');
+            if (shedWallLayer) {
+                for (let localY = 0; localY < this.shedHeight; localY++) {
+                    for (let localX = 0; localX < this.shedWidth; localX++) {
+                        if (shedWallLayer.data[localY][localX] > 0) {
+                            this.collisionRects.push({
+                                x: (this.shedOffsetX + localX) * this.tileSize,
+                                y: (this.shedOffsetY + localY) * this.tileSize,
+                                width: this.tileSize, height: this.tileSize
+                            });
+                        }
+                    }
+                }
+            }
+
             // --- Interactables ---
             // Store and home have no TMX interactables (they are now sparse forest).
             this.interactables = [];
@@ -1171,6 +1251,17 @@ export class TilemapRenderer {
                     x: interactable.x + this.newHouseOffsetX * this.tileSize,
                     y: interactable.y + this.newHouseOffsetY * this.tileSize,
                     width: interactable.width, height: interactable.height,
+                    action: interactable.action
+                });
+            }
+
+            // Shed interactable (openStorage — handler already exists in Game.js)
+            for (const interactable of shedData.interactables) {
+                this.interactables.push({
+                    x:      interactable.x + this.shedOffsetX * this.tileSize,
+                    y:      interactable.y + this.shedOffsetY * this.tileSize,
+                    width:  interactable.width,
+                    height: interactable.height,
                     action: interactable.action
                 });
             }

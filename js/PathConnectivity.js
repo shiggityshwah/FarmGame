@@ -51,6 +51,62 @@ export class PathConnectivity {
         return result;
     }
 
+    /**
+     * BFS from startTile to the great path, returning world-pixel waypoints ordered
+     * great-path → startTile (i.e., the walk-in direction for an arriving villager).
+     * Appends the actual door tile as the last waypoint if provided.
+     * Returns null if startTile is not a path tile or no connection exists.
+     *
+     * @param {number} startTileX  Tile just south (or adjacent) to the building door
+     * @param {number} startTileY
+     * @param {number} tileSize    World pixels per tile
+     * @returns {{x:number,y:number}[]|null}
+     */
+    getWaypointsToGreatPath(startTileX, startTileY, tileSize) {
+        if (!this.isPathTile(startTileX, startTileY)) return null;
+
+        const { mainPathY, mainPathGap } = CONFIG.chunks;
+        const parent = new Map();   // key → [parentX, parentY] | null for start
+        const startKey = `${startTileX},${startTileY}`;
+        parent.set(startKey, null);
+        const queue = [[startTileX, startTileY]];
+        const dirs = [[0, -1], [0, 1], [-1, 0], [1, 0]];
+        let goalTile = null;
+
+        while (queue.length > 0) {
+            const [x, y] = queue.shift();
+            if (y >= mainPathY && y < mainPathY + mainPathGap) {
+                goalTile = [x, y];
+                break;
+            }
+            for (const [dx, dy] of dirs) {
+                const nx = x + dx, ny = y + dy;
+                const nk = `${nx},${ny}`;
+                if (!parent.has(nk) && this.isPathTile(nx, ny)) {
+                    parent.set(nk, [x, y]);
+                    queue.push([nx, ny]);
+                }
+            }
+        }
+
+        if (!goalTile) return null;
+
+        // Reconstruct path: goalTile (great path) → startTile (door area)
+        // Because BFS started at startTile, parent[goalKey] points toward startTile,
+        // so following parents from goal back to start gives us the walk-in order.
+        const tilePath = [];
+        let cur = goalTile;
+        while (cur) {
+            tilePath.push(cur);
+            cur = parent.get(`${cur[0]},${cur[1]}`);
+        }
+
+        return tilePath.map(([tx, ty]) => ({
+            x: tx * tileSize + tileSize / 2,
+            y: ty * tileSize + tileSize / 2,
+        }));
+    }
+
     _bfs(startX, startY) {
         const { mainPathY, mainPathGap } = CONFIG.chunks;
 

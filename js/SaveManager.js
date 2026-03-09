@@ -128,12 +128,15 @@ export class SaveManager {
             // Phase 4a
             buildings: (g.buildingManager?.placedBuildings ?? []).map(b => ({
                 id: b.id, definitionId: b.definitionId, tileX: b.tileX, tileY: b.tileY,
-                state: b.state, occupant: b.occupant ?? null, pathConnected: b.pathConnected
+                state: b.state, occupant: b.occupant ?? null, pathConnected: b.pathConnected,
+                chimneyTileId: b.chimneyTileId ?? null
             })),
             playerPlacedPaths: [...(g.playerPlacedPaths ?? [])],
             milestones: { ...(g.milestones ?? {}) },
+            townChunksUnlocked: g.townChunksUnlocked ?? 0,
             villagers: (g.villagerManager?.villagers ?? []).map(v => ({ ...v })),
             displacedQueue: [...(g.villagerManager?.displacedQueue ?? [])],
+            goblinHouseId: g.goblinHouseBuilding?.id ?? null,
         };
     }
 
@@ -353,7 +356,9 @@ export class SaveManager {
         await this._restoreBuildings(data.buildings ?? []);
         this._restorePlayerPlacedPaths(data.playerPlacedPaths ?? []);
         this._restoreMilestones(data.milestones ?? {});
+        this.game.townChunksUnlocked = data.townChunksUnlocked ?? 0;
         this._restoreVillagers(data.villagers ?? [], data.displacedQueue ?? []);
+        this._restoreGoblinHouse(data.goblinHouseId ?? null);
 
         log.info('Save data applied successfully');
     }
@@ -624,6 +629,11 @@ export class SaveManager {
                 );
                 building.occupant = b.occupant ?? null;
                 building.pathConnected = b.pathConnected ?? false;
+                if (b.chimneyTileId != null) building.chimneyTileId = b.chimneyTileId;
+                // Restart chimney smoke for occupied buildings
+                if (building.state === 'active_occupied') {
+                    g.buildingManager.onBuildingOccupied(building);
+                }
             } catch (err) {
                 log.warn(`Failed to restore building ${b.id} (${b.definitionId}):`, err);
             }
@@ -660,6 +670,17 @@ export class SaveManager {
         g.villagerManager.displacedQueue = [...savedDisplacedQueue];
         // Refresh toolbar special buildings section
         if (g.toolbar?.refreshBuildSubmenu) g.toolbar.refreshBuildSubmenu();
+    }
+
+    _restoreGoblinHouse(goblinHouseId) {
+        const g = this.game;
+        if (!goblinHouseId || !g.buildingManager) return;
+        const building = g.buildingManager.placedBuildings.find(b => b.id === goblinHouseId);
+        if (building) {
+            g.goblinHouseBuilding = building;
+            g._goblinNeedsHouse = false;
+            log.info(`Restored goblin house: ${goblinHouseId}`);
+        }
     }
 
     // ─── Download / Clipboard ─────────────────────────────────────────────────

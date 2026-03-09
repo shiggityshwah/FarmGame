@@ -1027,6 +1027,106 @@ export class UIManager {
         }
     }
 
+    // Open the well menu inside the standard game-menu-container overlay
+    openWellMenu(game) {
+        this.activeMenu = 'well';
+        this._renderWellMenu(game);
+        this.menuContainer.style.display = 'flex';
+    }
+
+    // Re-render the well menu water status if it's currently open
+    refreshWellMenuIfOpen(game) {
+        if (this.activeMenu !== 'well') return;
+        this._renderWellMenu(game);
+    }
+
+    _renderWellMenu(game) {
+        const humanFull  = game.wateringCanWater >= game.wateringCanMaxWater;
+        const goblinFull = game.goblinWaterCanWater >= game.goblinWaterCanMaxWater;
+        const goblinHired = game.goblinHired;
+
+        const btnStyle = `
+            display:block; width:100%; padding:9px 12px; margin-bottom:8px;
+            background:linear-gradient(180deg,#c8b080 0%,#a89060 100%);
+            border:2px solid #806840; border-radius:6px; cursor:pointer;
+            font-family:inherit; font-size:13px; font-weight:bold; color:#3a2a10;
+        `;
+        const disabledStyle = `opacity:0.5; cursor:default;`;
+
+        let html = `
+            <div style="background:linear-gradient(180deg,#8b7355 0%,#6b5a45 100%);color:#f5e6c8;padding:12px 16px;text-align:center;border-bottom:3px solid #5a4a38;">
+                <span style="font-size:18px;font-weight:bold;text-shadow:1px 1px 2px rgba(0,0,0,0.5);">Well</span>
+                <button id="close-menu-btn" style="float:right;background:#c9403a;border:2px solid #8b2a25;border-radius:4px;color:white;font-weight:bold;cursor:pointer;padding:2px 8px;">X</button>
+            </div>
+            <div style="padding:16px;">
+                <p style="text-align:center;color:#5a4a38;font-size:13px;margin:0 0 14px 0;">
+                    Human: ${game.wateringCanWater}/${game.wateringCanMaxWater}
+                    ${goblinHired ? `&nbsp;&nbsp;|&nbsp;&nbsp;Goblin: ${game.goblinWaterCanWater}/${game.goblinWaterCanMaxWater}` : ''}
+                </p>
+                <button id="well-fill-human-btn" style="${btnStyle}${humanFull ? disabledStyle : ''}" ${humanFull ? 'disabled' : ''}>
+                    Fill Human's Can
+                </button>
+                ${goblinHired ? `
+                <button id="well-fill-goblin-btn" style="${btnStyle}${goblinFull ? disabledStyle : ''}" ${goblinFull ? 'disabled' : ''}>
+                    Fill Goblin's Can
+                </button>
+                ` : ''}
+            </div>
+        `;
+
+        this.menuPanel.innerHTML = html;
+        document.getElementById('close-menu-btn')?.addEventListener('click', () => this.closeMenu());
+        document.getElementById('well-fill-human-btn')?.addEventListener('click', () => {
+            if (game._queueFillWellJob) game._queueFillWellJob('human');
+            this.closeMenu();
+        });
+        document.getElementById('well-fill-goblin-btn')?.addEventListener('click', () => {
+            if (game._queueFillWellJob) game._queueFillWellJob('goblin');
+            this.closeMenu();
+        });
+    }
+
+    // Open the building info/deconstruct menu inside the standard game-menu-container overlay
+    openBuildingMenu(building, def, onDeconstruct) {
+        this.activeMenu = 'building';
+        this._activeBuildingDeconstruct = onDeconstruct;
+
+        const stateLabel = {
+            inactive:       'Inactive (not path-connected)',
+            active_empty:   'Active — Awaiting Resident',
+            active_occupied: `Occupied by ${building.occupant ?? '?'}`
+        }[building.state] ?? building.state;
+
+        const btnBase = `display:block;width:100%;padding:9px 12px;margin-bottom:8px;
+            border-radius:6px;cursor:pointer;font-family:inherit;font-size:13px;font-weight:bold;`;
+
+        let html = `
+            <div style="background:linear-gradient(180deg,#8b7355 0%,#6b5a45 100%);color:#f5e6c8;padding:12px 16px;text-align:center;border-bottom:3px solid #5a4a38;">
+                <span style="font-size:18px;font-weight:bold;text-shadow:1px 1px 2px rgba(0,0,0,0.5);">${def.name}</span>
+                <button id="close-menu-btn" style="float:right;background:#c9403a;border:2px solid #8b2a25;border-radius:4px;color:white;font-weight:bold;cursor:pointer;padding:2px 8px;">X</button>
+            </div>
+            <div style="padding:16px;">
+                <p style="text-align:center;color:#7a5c30;font-size:12px;margin:0 0 14px 0;">${stateLabel}</p>
+                <button id="building-deconstruct-btn" style="${btnBase}background:linear-gradient(180deg,#e04040 0%,#b02020 100%);border:2px solid #801010;color:#fff;">
+                    Deconstruct
+                </button>
+                <button id="close-menu-btn2" style="${btnBase}background:linear-gradient(180deg,#c8b080 0%,#a89060 100%);border:2px solid #806840;color:#3a2a10;">
+                    Close
+                </button>
+            </div>
+        `;
+
+        this.menuPanel.innerHTML = html;
+        document.getElementById('close-menu-btn')?.addEventListener('click', () => this.closeMenu());
+        document.getElementById('close-menu-btn2')?.addEventListener('click', () => this.closeMenu());
+        document.getElementById('building-deconstruct-btn')?.addEventListener('click', () => {
+            this.closeMenu();
+            if (this._activeBuildingDeconstruct) this._activeBuildingDeconstruct();
+        });
+
+        this.menuContainer.style.display = 'flex';
+    }
+
     renderStandMenu(stand, keepSubmenu = false) {
         if (!keepSubmenu) this._closeStandSlotSubmenu();
 

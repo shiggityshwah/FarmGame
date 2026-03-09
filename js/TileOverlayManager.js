@@ -452,6 +452,25 @@ export class TileOverlayManager {
         }
     }
 
+    // Unmark a path tile (e.g. after player removes it with pickaxe).
+    // Removes from pathTiles set, then recalculates edge overlays on all 4 neighbors.
+    unmarkPathTile(tileX, tileY) {
+        this.pathTiles.delete(`${tileX},${tileY}`);
+        // The removed tile itself was a path tile — it had no edge overlays on itself.
+        // Update neighbors: each neighbor that was pointing toward this tile must be recalculated.
+        const neighbors = [
+            { x: tileX,     y: tileY - 1 },
+            { x: tileX + 1, y: tileY     },
+            { x: tileX,     y: tileY + 1 },
+            { x: tileX - 1, y: tileY     }
+        ];
+        for (const n of neighbors) {
+            if (!this.isPathTile(n.x, n.y)) {
+                this.recalculatePathEdgeOverlay(n.x, n.y);
+            }
+        }
+    }
+
     // Remove all path edge overlays from a tile
     removePathEdgeOverlays(tileX, tileY) {
         const key = `${tileX},${tileY}`;

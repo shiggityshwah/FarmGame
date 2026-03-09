@@ -12,6 +12,7 @@
 
 import { Logger } from './Logger.js';
 import { BUILDING_DEFS } from './BuildingRegistry.js';
+import { SpriteAnimator } from './SpriteAnimator.js';
 
 const log = Logger.create('BuildingManager');
 
@@ -36,6 +37,17 @@ export class BuildingManager {
          */
         this.onBuildingCompleted = null;
 
+        this._tilesetImage = null;
+
+        // Chimney smoke per occupied small_house
+        // Map<buildingId, { animator: SpriteAnimator, pauseTimer: number }>
+        this._chimneySmokers = new Map();
+    }
+
+    /** Set the tileset image used for rendering buildings. */
+    setTileset(image) {
+        this._tilesetImage = image;
+        this.tilemap.tilesetImage = image;
     }
 
     // ─── CSV Loading ─────────────────────────────────────────────────────────────
@@ -93,6 +105,8 @@ export class BuildingManager {
             state,           // 'under_construction' | 'inactive' | 'active_empty' | 'active_occupied'
             occupant: null,  // villager type string when occupied
             pathConnected: false,
+            // Random chimney tile for small_house (347 or 349); null for other buildings
+            chimneyTileId: defId === 'small_house' ? (Math.random() < 0.5 ? 347 : 349) : null,
         };
 
         this.placedBuildings.push(building);
@@ -201,22 +215,17 @@ export class BuildingManager {
      * @param {CanvasRenderingContext2D} ctx
      * @param {Camera} camera
      * @param {'ground'|'upper'|'roof'} pass
-     * @param {{tileX, tileY}} playerTile  Current player tile (for roof-hiding)
+     * @param {string|null} menuBuildingId  ID of building whose menu is open (its roof is hidden)
      */
-    render(ctx, camera, pass, playerTile = null) {
+    render(ctx, camera, pass, menuBuildingId = null) {
         if (!this.tilemap.tilesetImage) return;
 
         for (const building of this.placedBuildings) {
             const def = BUILDING_DEFS[building.definitionId];
             if (!def || !def.hasTilemap) continue;
 
-            // Hide roof when player is inside this building
-            if (pass === 'roof' && playerTile) {
-                if (playerTile.x >= building.tileX && playerTile.x < building.tileX + def.footprint.width &&
-                    playerTile.y >= building.tileY && playerTile.y < building.tileY + def.footprint.height) {
-                    continue;
-                }
-            }
+            // Hide roof only when that building's menu is open
+            if (pass === 'roof' && menuBuildingId && building.id === menuBuildingId) continue;
 
             const alpha = building.state === 'under_construction' ? 0.3 : 1.0;
             this._renderBuilding(ctx, camera, building, def, pass, alpha);
@@ -304,6 +313,104 @@ export class BuildingManager {
         ctx.restore();
     }
 
+    // ─── Building color recoloring ────────────────────────────────────────────────
+
+    /**
+     * Returns true if tileId falls within the blue building color rectangle on the tileset.
+     * The tileset is 64 tiles wide (16px each, 1024px total).
+     * Blue rectangle: rows 9–15, cols 15–34 (tile IDs 591–994).
+     */
+    _isInBlueRange(tileId) {
+        const row = Math.floor(tileId / 64);
+        const col = tileId % 64;
+        return row >= 9 && row <= 15 && col >= 15 && col <= 34;
+    }
+
+    /**
+     * Returns the tile ID color offset to apply based on the building's occupant:
+     *   +0    (blue)   = unoccupied
+     *   +512  (green)  = goblin_elder
+     *   +2048 (purple) = villager that unlocks a unique special building
+     *   +1536 (red)    = regular villager
+     */
+    _getColorOffset(building) {
+        if (!building.occupant) return 0;
+        if (building.occupant === 'goblin_elder') return 512;
+        const unlocks = Object.values(BUILDING_DEFS).some(
+            d => d.unlockedBy === building.occupant && d.unique
+        );
+        return unlocks ? 2048 : 1536;
+    }
+
+    /**
+     * Apply the building's color offset to a tile ID if it's in the blue range.
+     */
+    _applyColorOffset(tileId, building) {
+        if (tileId < 0) return tileId;
+        const offset = this._getColorOffset(building);
+        if (offset > 0 && this._isInBlueRange(tileId)) return tileId + offset;
+        return tileId;
+    }
+
+    // ─── Chimney smoke ────────────────────────────────────────────────────────────
+
+    /**
+     * Call when a building becomes active_occupied.
+     * Creates a chimney smoke animator for small_houses.
+     */
+    async onBuildingOccupied(building) {
+        if (building.definitionId !== 'small_house') return;
+        if (this._chimneySmokers.has(building.id)) return;
+
+        const tileSize = this.tilemap.tileSize;
+        const smokeX = (building.tileX + 1) * tileSize + tileSize / 2 - 2;
+        const smokeY = (building.tileY + 2) * tileSize - 7;  // top of chimney tile
+
+        try {
+            const animator = new SpriteAnimator(smokeX, smokeY, 30, 12);
+            await animator.load('Elements/VFX/Chimney Smoke/chimneysmoke_03_strip30.png');
+            animator.setLooping(true);
+            const entry = { animator, pauseTimer: 0 };
+            //animator.setOnComplete(() => { entry.pauseTimer = 2; });
+            this._chimneySmokers.set(building.id, entry);
+        } catch (e) {
+            log.warn('Failed to load chimney smoke for building', building.id, e);
+        }
+    }
+
+    /**
+     * Call when a building is vacated or deconstructed.
+     */
+    onBuildingVacated(building) {
+        this._chimneySmokers.delete(building.id);
+    }
+
+    /**
+     * Update all chimney smoke animators. Call from game update loop.
+     */
+    updateChimneys(deltaTime) {
+        for (const entry of this._chimneySmokers.values()) {
+            if (entry.pauseTimer > 0) {
+                entry.pauseTimer -= deltaTime / 1000;
+                if (entry.pauseTimer <= 0) {
+                    entry.pauseTimer = 0;
+                    entry.animator.resetAnimation();
+                }
+            } else {
+                entry.animator.update(deltaTime);
+            }
+        }
+    }
+
+    /**
+     * Render chimney smoke for all occupied small_houses. Call from game render loop.
+     */
+    renderChimneys(ctx, camera) {
+        for (const entry of this._chimneySmokers.values()) {
+            entry.animator.render(ctx, camera);
+        }
+    }
+
     // ─── Private rendering helpers ───────────────────────────────────────────────
 
     _renderBuilding(ctx, camera, building, def, pass, alpha) {
@@ -329,7 +436,7 @@ export class BuildingManager {
             if (layer.renderPass !== pass) continue;
             for (let row = 0; row < layer.tiles.length; row++) {
                 for (let col = 0; col < (layer.tiles[row]?.length ?? 0); col++) {
-                    const tileId = layer.tiles[row][col];
+                    const tileId = this._applyColorOffset(layer.tiles[row][col], building);
                     if (tileId < 0) continue;
                     const src = this.tilemap.getTilesetSourceRect(tileId);
                     if (!src) continue;
@@ -341,6 +448,19 @@ export class BuildingManager {
                         dx, dy, tileSize, tileSize
                     );
                 }
+            }
+        }
+
+        // Draw chimney tile on top of the roof pass for small_house buildings
+        if (pass === 'roof' && building.definitionId === 'small_house' && building.chimneyTileId) {
+            const src = this.tilemap.getTilesetSourceRect(building.chimneyTileId);
+            if (src) {
+                // Chimney at local tile (col=1, row=2) of the 5×5 tilemap
+                ctx.drawImage(
+                    this.tilemap.tilesetImage,
+                    src.x, src.y, src.width, src.height,
+                    worldX + tileSize, worldY + 2 * tileSize, tileSize, tileSize
+                );
             }
         }
 

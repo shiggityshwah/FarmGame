@@ -75,15 +75,15 @@ describe('Well.getAdjacentServiceTile — Phase 2', () => {
         well = new Well(makeMockTilemap());
     });
 
-    it('should return tile west of the middle row: x=23, y=54', () => {
+    it('should return the well bottom tile (same x, bottom row y)', () => {
         const tile = well.getAdjacentServiceTile();
-        expect(tile.x).toBe(23); // tileX - 1 = 24 - 1
-        expect(tile.y).toBe(54); // tileY + 1 = 53 + 1
+        expect(tile.x).toBe(well.tileX);       // x = tileX (inside the well)
+        expect(tile.y).toBe(well.tileY + 2);   // y = bottom row of well
     });
 
-    it('service tile should not be blocked by the well itself', () => {
+    it('service tile is inside the well (pathfinder routes to nearest adjacent tile)', () => {
         const { x, y } = well.getAdjacentServiceTile();
-        expect(well.isObstacle(x, y)).toBe(false);
+        expect(well.isObstacle(x, y)).toBe(true);
     });
 });
 

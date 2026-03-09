@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<map version="1.10" tiledversion="1.11.2" orientation="orthogonal" renderorder="right-down" width="5" height="7" tilewidth="16" tileheight="16" infinite="0" nextlayerid="9" nextobjectid="17">
+ <editorsettings>
+  <export format="csv"/>
+ </editorsettings>
+ <tileset firstgid="1" source="spr_tileset_sunnysideworld_16px.tsx"/>
+ <layer id="2" name="Decor" width="5" height="7">
+  <data encoding="csv">
+0,0,0,0,0,
+0,0,0,0,0,
+0,0,0,0,0,
+0,0,0,0,0,
+0,0,0,0,0,
+0,0,0,0,0,
+0,0,206,207,208
+</data>
+ </layer>
+ <layer id="3" name="Buildings (Base)" width="5" height="7">
+  <data encoding="csv">
+0,0,0,0,0,
+0,0,0,0,0,
+0,0,0,0,0,
+2773,2774,2775,0,0,
+2837,2838,2839,0,0,
+2960,2840,2840,909,2962,
+0,0,0,0,0
+</data>
+ </layer>
+ <layer id="8" name="Buildings (Detail)" width="5" height="7">
+  <data encoding="csv">
+0,0,0,0,0,
+0,2966,2967,0,0,
+3029,3030,3031,0,0,
+0,0,0,0,0,
+0,0,0,0,0,
+2901,847,0,909,0,
+0,0,0,0,0
+</data>
+ </layer>
+ <layer id="4" name="Buildings (Upper)" width="5" height="7">
+  <data encoding="csv">
+0,0,2640,2641,2642,
+0,0,2832,2833,2834,
+0,0,2896,2897,2898,
+2773,2774,2960,2914,2962,
+2837,2838,2960,2840,2962,
+0,0,2960,0,0,
+0,0,0,0,0
+</data>
+ </layer>
+ <objectgroup id="5" name="Interactables">
+  <object id="12" x="9.6913" y="10.8332" width="59.661" height="84.7814">
+   <properties>
+    <property name="action" value="openCrafting"/>
+   </properties>
+  </object>
+ </objectgroup>
+ <objectgroup id="6" name="Collision">
+  <object id="14" x="9.9475" y="42.4531" width="59.0234" height="53.0355"/>
+ </objectgroup>
+</map>

@@ -39,6 +39,12 @@ export class Traveler {
         // Purchase pause — 1 s hold at each item before the transaction executes
         this._purchasePending    = false;
         this._purchasePauseTimer = 0;
+
+        // House-walking state (set after milestone recruitment via walkToHouse())
+        this._goingToHouse  = false;
+        this._housePhase    = 0;    // 0 = walk east/west to first waypoint X, 1 = follow waypoints
+        this._waypoints     = [];   // [{x,y}] world-pixel centres, great-path entry → door tile
+        this._waypointIndex = 0;    // current target waypoint
     }
 
     /**
@@ -149,10 +155,73 @@ export class Traveler {
                 }
                 if (this.y > this.startY) return;
             }
-            // Reached path Y — resume normal walking
+            // Reached path Y — resume normal walking (or begin house-walk if flagged)
             this.y = this.startY;
             this._returningToPath = false;
-            // fall through to normal walking
+            // fall through (to Phase 5 if _goingToHouse, else normal walking)
+        }
+
+        // ── Phase 5: walk to house after milestone recruitment ───────────────────
+        if (this._goingToHouse) {
+            const speed = CONFIG.traveler.speed * deltaTime / 1000;
+
+            if (this._waypoints.length === 0) {
+                this.isDespawned = true;
+                return;
+            }
+
+            if (this._housePhase === 0) {
+                // Walk east/west along great path to first waypoint X, keeping current Y
+                const targetX = this._waypoints[0].x;
+                const dx = targetX - this.x;
+                if (Math.abs(dx) <= speed) {
+                    this.x = targetX;
+                    this._housePhase = 1;
+                    this._waypointIndex = 0;
+                    for (const s of this.sprites) s.setPosition(this.x, this.y);
+                } else {
+                    const facingLeft = dx < 0;
+                    this.x += dx > 0 ? speed : -speed;
+                    for (const s of this.sprites) {
+                        s.setFacingLeft(facingLeft);
+                        s.setPosition(this.x, this.y);
+                        s.update(deltaTime);
+                    }
+                }
+                return;
+            }
+
+            if (this._housePhase === 1) {
+                // Follow waypoints in order: great-path entry → door tile
+                if (this._waypointIndex >= this._waypoints.length) {
+                    this.isDespawned = true;
+                    return;
+                }
+                const wp = this._waypoints[this._waypointIndex];
+                const dx = wp.x - this.x;
+                const dy = wp.y - this.y;
+                const dist = Math.sqrt(dx * dx + dy * dy);
+                if (dist <= speed) {
+                    this.x = wp.x;
+                    this.y = wp.y;
+                    for (const s of this.sprites) s.setPosition(this.x, this.y);
+                    this._waypointIndex++;
+                    if (this._waypointIndex >= this._waypoints.length) {
+                        this.isDespawned = true;
+                    }
+                } else {
+                    const ratio = speed / dist;
+                    this.x += dx * ratio;
+                    this.y += dy * ratio;
+                    const facingLeft = dx < 0;
+                    for (const s of this.sprites) {
+                        s.setFacingLeft(facingLeft);
+                        s.setPosition(this.x, this.y);
+                        s.update(deltaTime);
+                    }
+                }
+                return;
+            }
         }
 
         if (this.isStopped) return;
@@ -173,6 +242,30 @@ export class Traveler {
         this.standStopWorldX      = newSlotX;
         this._repositionTargetX   = newSlotX;
         this.isStopped            = false;
+    }
+
+    /**
+     * Called after milestone recruitment or debug villager spawn.
+     * Redirects the traveler to walk along path tiles to their house, then disappear.
+     *
+     * @param {{x:number,y:number}[]} waypoints  World-pixel centres ordered
+     *   great-path-entry → door tile.  First waypoint must lie on the great path so
+     *   the traveler aligns horizontally before following the path northward/southward.
+     */
+    walkToHouse(waypoints) {
+        this.isStopped          = false;
+        this.visitStand         = false;
+        this.wantedPurchases    = [];
+        this._reachedStandX     = false;
+        this._repositionTargetX = null;
+        this._goingToHouse      = true;
+        this._housePhase        = 0;
+        this._waypoints         = waypoints ?? [];
+        this._waypointIndex     = 0;
+        // First walk back north to great path Y, then begin house-walk
+        if (this.y > this.startY) {
+            this._returningToPath = true;
+        }
     }
 
     // Called by Game.js after all purchases are done (or if stand is busy/unavailable)

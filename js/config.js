@@ -208,6 +208,8 @@ export const CONFIG = {
     // === VILLAGER SYSTEM ===
     villagers: {
         maxRegularTravelersBeforeMilestone: 5,  // regular travelers before milestone traveler can spawn
+        townExpansionBase: 1,        // housed villagers required for 1st town chunk claim
+        townExpansionIncrement: 3,   // additional housed villagers per subsequent town chunk (sequence: 1,3,6,9,12…)
     },
 
     // === BUILD SYSTEM ===

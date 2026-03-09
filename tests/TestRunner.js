@@ -172,6 +172,12 @@ export function expect(actual) {
             }
         },
 
+        toBeGreaterThanOrEqualTo(expected) {
+            if (!(actual >= expected)) {
+                throw new AssertionError(`Expected ${actual} to be greater than or equal to ${expected}`);
+            }
+        },
+
         toBeLessThan(expected) {
             if (!(actual < expected)) {
                 throw new AssertionError(`Expected ${actual} to be less than ${expected}`);
@@ -276,6 +282,21 @@ export function expect(actual) {
                 }
                 if (typeof actual === 'string' && actual.includes(item)) {
                     throw new AssertionError(`Expected string not to contain "${item}"`);
+                }
+            },
+
+            toThrow() {
+                if (typeof actual !== 'function') {
+                    throw new AssertionError('not.toThrow() requires a function');
+                }
+                let threw = false;
+                try {
+                    actual();
+                } catch (e) {
+                    threw = true;
+                }
+                if (threw) {
+                    throw new AssertionError('Expected function not to throw an error');
                 }
             }
         }

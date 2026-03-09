@@ -162,6 +162,11 @@ export class Game {
         // Goblin hire state (UI shows goblin controls only after hiring)
         this.goblinHired = false;
 
+        // Goblin house (claimed when hired; null if no active_empty small_house available)
+        this.goblinHouseBuilding = null;
+        this._goblinNeedsHouse = false;  // true when hired without an available house
+        this._goblinIdleTimer  = 0;      // ms since goblin last had a job (for home-return)
+
         // Home upgrade state (Phase 3)
         this.homeUpgrades = {
             slots: [null],  // Level 1 = 1 slot; value: null | 'cauldron' | 'anvil' | 'shrine'
@@ -202,6 +207,9 @@ export class Game {
             goblinEverHired:        false,
         };
         this._prevInventoryGold = 50;  // Track for totalGoldEarned delta
+
+        // Town chunk expansion (villager-gated; 0 = no town chunks claimed yet)
+        this.townChunksUnlocked = 0;
 
         // Phase 4a: Villager + path connectivity (initialized in init())
         this.pathConnectivity = null;
@@ -326,7 +334,7 @@ export class Game {
             this.roadsideStand._onTravelerArrived = (t) => this._onTravelerAtStand(t);
             this.roadsideStand._onPurchaseReady   = (t) => this._onPurchaseReady(t);
 
-            // Initialize well (placed on farm chunk, x=24-25, y=53-55 east of house)
+            // Initialize well (placed on farm chunk, x=23-24, y=39-41 east of house)
             this.well = new Well(this.tilemap);
             this.well.registerInteractable();
 
@@ -468,9 +476,10 @@ export class Game {
             // Give player starting gold (enough to buy a few cheap seeds to start)
             this.inventory.addGold(50);
 
-            // Wire inventory into chunk manager (needed for gold-gated purchases)
+            // Wire inventory and game ref into chunk manager
             if (this.chunkManager) {
                 this.chunkManager.inventory = this.inventory;
+                this.chunkManager.game = this;
             }
 
             // Initialize UI manager
@@ -483,9 +492,6 @@ export class Game {
 
             // Initialize debug menu
             this._initDebugMenu();
-
-            // Initialize well menu event listeners
-            this._initWellMenu();
 
             // Initialize zone management panel event listeners
             this._initZonePanel();
@@ -607,6 +613,8 @@ export class Game {
 
             // Connect forest generator to tile selector (for forest tree selection)
             this.tileSelector.setForestGenerator(this.forestGenerator);
+            // Give tile selector access to game for player-placed path pickaxe removal
+            this.tileSelector.setGame(this);
 
             // Connect enemy manager to pathfinder and game
             this.enemyManager.setPathfinder(this.pathfinder);
@@ -1187,37 +1195,21 @@ export class Game {
         }
     }
 
-    // Open the well popup menu and refresh its displayed water level
+    // Open the well menu via UIManager's standard overlay
     _openWellMenu() {
-        const menu = document.getElementById('well-menu');
-        if (!menu) return;
-        this._refreshWellMenuStatus();
-        menu.style.display = 'block';
+        if (this.uiManager) this.uiManager.openWellMenu(this);
     }
 
     _refreshWellMenuStatus() {
-        const statusEl = document.getElementById('well-water-status');
-        const fillBtn  = document.getElementById('well-fill-btn');
-        const fillGoblinBtn = document.getElementById('well-fill-goblin-btn');
-        if (statusEl) {
-            statusEl.textContent =
-                `Human: ${this.wateringCanWater}/${this.wateringCanMaxWater}` +
-                (this.goblinHired ? `  |  Goblin: ${this.goblinWaterCanWater}/${this.goblinWaterCanMaxWater}` : '');
-        }
-        if (fillBtn) fillBtn.disabled = this.wateringCanWater >= this.wateringCanMaxWater;
-        if (fillGoblinBtn) {
-            fillGoblinBtn.style.display = this.goblinHired ? 'block' : 'none';
-            fillGoblinBtn.disabled = this.goblinWaterCanWater >= this.goblinWaterCanMaxWater;
-        }
+        if (this.uiManager) this.uiManager.refreshWellMenuIfOpen(this);
     }
 
-    // Queue a fill-well job for the specified worker
+    // Queue a fill-well job for the specified worker (called by UIManager well menu)
     _queueFillWellJob(workerId) {
         if (!this.well || !this.jobManager) return;
         const fillTool = { id: 'fill_well', name: 'Fill Well', animation: 'DOING' };
         const tile = this.well.getAdjacentServiceTile();
         this.jobManager.addJob(fillTool, [tile], workerId, workerId);
-        document.getElementById('well-menu').style.display = 'none';
     }
 
     // Called when the player purchases a new chunk
@@ -1446,10 +1438,63 @@ export class Game {
     // Called when a building's construction is complete
     _onBuildingCompleted(building) {
         log.info(`Building completed: ${building.id} (${building.definitionId}) at (${building.tileX},${building.tileY})`);
+        this._ejectWorkerFromBuilding('human', building);
+        this._ejectWorkerFromBuilding('goblin', building);
         this._updateBuildingConnectivity(building);
         if (this.villagerManager) {
             this.villagerManager.onHouseReady(building);
         }
+    }
+
+    // If a worker is standing inside the building footprint, teleport them to the nearest
+    // walkable tile just outside it so they don't get stuck in a wall.
+    _ejectWorkerFromBuilding(workerId, building) {
+        const pos = workerId === 'human' ? this.humanPosition : this.goblinPosition;
+        if (!pos) return;
+        const ts = this.tilemap.tileSize;
+        const def = BUILDING_DEFS[building.definitionId];
+        if (!def) return;
+        const tx = Math.floor(pos.x / ts);
+        const ty = Math.floor(pos.y / ts);
+        // Check if worker is inside the footprint
+        if (tx < building.tileX || tx >= building.tileX + def.footprint.width ||
+            ty < building.tileY || ty >= building.tileY + def.footprint.height) return;
+
+        // BFS outward from footprint border to find nearest walkable tile
+        const bx = building.tileX, by = building.tileY;
+        const bw = def.footprint.width, bh = def.footprint.height;
+        const visited = new Set();
+        const queue = [];
+        // Seed with all border-adjacent tiles
+        for (let dx = -1; dx <= bw; dx++) {
+            queue.push([bx + dx, by - 1]);
+            queue.push([bx + dx, by + bh]);
+        }
+        for (let dy = 0; dy < bh; dy++) {
+            queue.push([bx - 1, by + dy]);
+            queue.push([bx + bw, by + dy]);
+        }
+        let ejected = false;
+        for (const [ex, ey] of queue) {
+            const key = `${ex},${ey}`;
+            if (visited.has(key)) continue;
+            visited.add(key);
+            if (this.isTileWalkable(ex, ey)) {
+                const wx = ex * ts + ts / 2;
+                const wy = ey * ts + ts / 2;
+                pos.x = wx;
+                pos.y = wy;
+                if (workerId === 'human') {
+                    this.humanSprites?.forEach(s => s.setPosition(wx, wy));
+                } else {
+                    this.goblinSprite?.setPosition(wx, wy);
+                }
+                log.info(`Ejected ${workerId} from completed building to (${ex},${ey})`);
+                ejected = true;
+                break;
+            }
+        }
+        if (!ejected) log.warn(`Could not find walkable ejection tile for ${workerId} near building ${building.id}`);
     }
 
     // Check whether a building's door is path-connected to the great path and update its state.
@@ -1468,9 +1513,18 @@ export class Game {
         if (!wasConnected && connected && building.state === 'inactive') {
             building.state = 'active_empty';
             log.info(`Building ${building.id} is now active (path connected)`);
-            if (this.villagerManager) this.villagerManager.onHouseReady(building);
+            // If goblin was hired but had no house, claim this one
+            if (this.goblinHired && this._goblinNeedsHouse && building.definitionId === 'small_house') {
+                this._goblinClaimHouse(building);
+            } else if (this.villagerManager) {
+                this.villagerManager.onHouseReady(building);
+            }
         } else if (wasConnected && !connected &&
                    (building.state === 'active_empty' || building.state === 'active_occupied')) {
+            // Displace the villager before setting state to inactive
+            if (building.state === 'active_occupied' && this.villagerManager) {
+                this.villagerManager.onHouseDisconnected(building);
+            }
             building.state = 'inactive';
             log.info(`Building ${building.id} went inactive (path disconnected)`);
         }
@@ -1479,61 +1533,18 @@ export class Game {
     // ===== Building menu (deconstruct) =====
 
     _openBuildingMenu(building) {
-        this._closeBuildingMenu();
         const def = BUILDING_DEFS[building.definitionId];
         if (!def) return;
-
-        const stateLabel = {
-            inactive: 'Inactive (no path)',
-            active_empty: 'Active — Empty',
-            active_occupied: `Occupied by ${building.occupant ?? '?'}`
-        }[building.state] ?? building.state;
-
-        const panel = document.createElement('div');
-        panel.id = 'building-menu';
-        panel.style.cssText = `
-            position:fixed; top:50%; left:50%; transform:translate(-50%,-50%);
-            background:linear-gradient(180deg,#f5e6c8 0%,#e8d4a8 100%);
-            border:4px solid #8b7355; border-radius:12px; padding:16px 20px;
-            z-index:200; min-width:200px; box-shadow:0 8px 24px rgba(0,0,0,0.4);
-            font-family:inherit; color:#3a2a10;
-        `;
-        panel.innerHTML = `
-            <div style="font-size:15px;font-weight:bold;margin-bottom:6px;">${def.name}</div>
-            <div style="font-size:12px;color:#7a5c30;margin-bottom:12px;">${stateLabel}</div>
-            <button id="building-deconstruct-btn" style="
-                display:block;width:100%;padding:7px 12px;margin-bottom:6px;
-                background:linear-gradient(180deg,#e04040 0%,#b02020 100%);
-                border:2px solid #801010;border-radius:6px;cursor:pointer;
-                font-family:inherit;color:#fff;font-size:12px;font-weight:bold;">
-                Deconstruct
-            </button>
-            <button id="building-close-btn" style="
-                display:block;width:100%;padding:6px 12px;
-                background:linear-gradient(180deg,#c8b080 0%,#a89060 100%);
-                border:2px solid #806840;border-radius:6px;cursor:pointer;
-                font-family:inherit;color:#3a2a10;font-size:12px;">
-                Close
-            </button>
-        `;
-
-        document.body.appendChild(panel);
-        this._buildingMenuPanel = panel;
         this._buildingMenuBuilding = building;
-
-        document.getElementById('building-deconstruct-btn').addEventListener('click', () => {
-            this._deconstructBuilding(building);
-        });
-        document.getElementById('building-close-btn').addEventListener('click', () => {
-            this._closeBuildingMenu();
-        });
+        if (this.uiManager) {
+            this.uiManager.openBuildingMenu(building, def, () => this._deconstructBuilding(building));
+        }
     }
 
     _closeBuildingMenu() {
-        if (this._buildingMenuPanel) {
-            this._buildingMenuPanel.remove();
-            this._buildingMenuPanel = null;
+        if (this._buildingMenuBuilding) {
             this._buildingMenuBuilding = null;
+            if (this.uiManager?.activeMenu === 'building') this.uiManager.closeMenu();
         }
     }
 
@@ -2533,10 +2544,10 @@ export class Game {
         const houseFrontY = map.newHouseOffsetY + map.newHouseHeight - 1; // 52+5=57
         placeCol(houseEastX, farmTop, houseFrontY); // x=22, y=49–57
 
-        // 6. House front E-W — in front of door (y=57), from left of house to east path
-        //    Door at local (1,4) → world (17, 56); houseFrontY=57 is the last house row
+        // 6. House front E-W — in front of door (y=42), from left of house to shed front
+        //    Door at local (1,4) → world (17, 41); houseFrontY=42 is the row below house bottom
         const doorX = map.newHouseOffsetX + 1; // 17
-        placeRow(houseFrontY, doorX - 1, houseEastX); // y=57, x=16–22
+        placeRow(houseFrontY, doorX - 1, 28); // y=42, x=16–28 (extends past well to shed front)
 
         // 7. Door threshold paths — at each TMX tile-206 position from store/home tilemaps.
         //    These mark the tile directly in front of each building entrance; the path tile
@@ -2703,6 +2714,25 @@ export class Game {
         this.updateGoblinMovement(deltaTime);
         this._updateGoblinSlide(deltaTime);
 
+        // Goblin idle home-return: after 10s with no jobs, walk to house door
+        if (this.goblinHired && this.goblinHouseBuilding && this.goblinPosition) {
+            const goblinHasJob = (this.jobManager?.workers.get('goblin')?.currentJob != null)
+                || (this.jobManager?.queues.goblin?.length ?? 0) > 0;
+            if (!goblinHasJob) {
+                this._goblinIdleTimer += deltaTime;
+                if (this._goblinIdleTimer >= 10000) {
+                    this._goblinIdleTimer = 0;
+                    const def = BUILDING_DEFS[this.goblinHouseBuilding.definitionId];
+                    const ts  = this.tilemap.tileSize;
+                    const doorPx = (this.goblinHouseBuilding.tileX + (def?.doorOffset?.x ?? 2)) * ts + ts / 2;
+                    const doorPy = (this.goblinHouseBuilding.tileY + (def?.doorOffset?.y ?? 4)) * ts + ts / 2;
+                    this.moveWorkerToPixel('goblin', doorPx, doorPy);
+                }
+            } else {
+                this._goblinIdleTimer = 0;
+            }
+        }
+
         // Update human character animations
         // Note: Animation callbacks fire here - combat state must be set before this
         if (this.humanSprites) {
@@ -2767,6 +2797,11 @@ export class Game {
             } else {
                 this.chimneySmoke.update(deltaTime);
             }
+        }
+
+        // Update chimney smoke for all occupied small_houses
+        if (this.buildingManager) {
+            this.buildingManager.updateChimneys(deltaTime);
         }
 
         // Animate gold display count-up (~500ms to complete)
@@ -2873,11 +2908,7 @@ export class Game {
 
         // Render placed building ground/wall layers (above path overlays, below entities)
         if (this.buildingManager) {
-            const pt = this.humanPosition ? {
-                x: Math.floor(this.humanPosition.x / this.tilemap.tileSize),
-                y: Math.floor(this.humanPosition.y / this.tilemap.tileSize),
-            } : null;
-            this.buildingManager.render(this.ctx, this.camera, 'ground', pt);
+            this.buildingManager.render(this.ctx, this.camera, 'ground', null);
         }
 
         // Render tile selection highlight
@@ -3132,12 +3163,11 @@ export class Game {
 
         // Render placed building upper/roof layers (above characters)
         if (this.buildingManager) {
-            const pt = this.humanPosition ? {
-                x: Math.floor(this.humanPosition.x / this.tilemap.tileSize),
-                y: Math.floor(this.humanPosition.y / this.tilemap.tileSize),
-            } : null;
-            this.buildingManager.render(this.ctx, this.camera, 'upper', pt);
-            this.buildingManager.render(this.ctx, this.camera, 'roof', pt);
+            // Hide roof of the building whose menu is currently open
+            const buildingMenuOpen = this.uiManager?.activeMenu === 'building';
+            const menuBuildingId = buildingMenuOpen ? (this._buildingMenuBuilding?.id ?? null) : null;
+            this.buildingManager.render(this.ctx, this.camera, 'upper', null);
+            this.buildingManager.render(this.ctx, this.camera, 'roof', menuBuildingId);
         }
 
         // Render roadside stand banner (y=63, above all characters)
@@ -3150,15 +3180,23 @@ export class Game {
             this.well.renderTop(this.ctx);
         }
 
-        // Render new house roof layers and chimney smoke - hidden when player is inside
-        const playerOutsideNewHouse = !this.humanPosition ||
-            !this.tilemap.isPlayerInsideNewHouse(this.humanPosition.x, this.humanPosition.y);
-        if (playerOutsideNewHouse) {
-            this.tilemap.renderRoofLayers(this.ctx, this.camera);
-            // Chimney smoke renders above the roof on the tile above tile 349 (chimney in Roof Detail)
-            if (this.chimneySmoke) {
-                this.chimneySmoke.render(this.ctx, this.camera);
-            }
+        // House roof hidden when home upgrade (crafting) menu is open; shed roof hidden when storage menu is open
+        const craftingMenuOpen = this.uiManager?.activeMenu === 'crafting';
+        const storageMenuOpen = this.uiManager?.activeMenu === 'storage';
+        if (!craftingMenuOpen) {
+            this.tilemap.renderHouseRoofLayers(this.ctx, this.camera);
+        }
+        if (!storageMenuOpen) {
+            this.tilemap.renderShedRoofLayers(this.ctx, this.camera);
+        }
+        // Chimney smoke renders above the house roof when it is visible
+        if (this.chimneySmoke && !craftingMenuOpen) {
+            this.chimneySmoke.render(this.ctx, this.camera);
+        }
+
+        // Render chimney smoke for occupied small_houses
+        if (this.buildingManager) {
+            this.buildingManager.renderChimneys(this.ctx, this.camera);
         }
 
         // Render effects on top of everything (floating +1 icons, etc.)
@@ -3409,8 +3447,32 @@ export class Game {
         // Stand UI refresh
         if (this.uiManager) this.uiManager.refreshStandMenuIfOpen();
 
-        // Traveler departs
-        traveler.resumeWalking();
+        // Traveler walks to their new house instead of resuming path travel
+        if (traveler.targetHouse) {
+            const def = BUILDING_DEFS[traveler.targetHouse.definitionId];
+            const ts = this.tilemap.tileSize;
+            const doorOffX = def?.doorOffset?.x ?? 2;
+            const doorOffY = def?.doorOffset?.y ?? 4;
+            const doorX = traveler.targetHouse.tileX + doorOffX;
+            // doorPathY = tile one south of door = path-connected tile used by PathConnectivity
+            const doorPathY = traveler.targetHouse.tileY + doorOffY + 1;
+            const doorY     = traveler.targetHouse.tileY + doorOffY;
+
+            let waypoints = this.pathConnectivity?.getWaypointsToGreatPath(doorX, doorPathY, ts) ?? null;
+            if (waypoints) {
+                // Append the actual door tile as the final destination
+                waypoints.push({ x: doorX * ts + ts / 2, y: doorY * ts + ts / 2 });
+            } else {
+                // Fallback: straight walk to door (building not path-connected somehow)
+                waypoints = [
+                    { x: doorX * ts + ts / 2, y: CONFIG.traveler.pathCenterY },
+                    { x: doorX * ts + ts / 2, y: doorY * ts + ts / 2 },
+                ];
+            }
+            traveler.walkToHouse(waypoints);
+        } else {
+            traveler.resumeWalking();
+        }
     }
 
     /**
@@ -3670,28 +3732,7 @@ export class Game {
         this.inventory.onChange(() => { this.targetGold = this.inventory.getGold(); });
     }
 
-    // Wire up well menu button event listeners
-    _initWellMenu() {
-        const closeBtn = document.getElementById('well-close-btn');
-        const fillBtn  = document.getElementById('well-fill-btn');
-        const fillGoblinBtn = document.getElementById('well-fill-goblin-btn');
-
-        if (closeBtn) {
-            closeBtn.addEventListener('click', () => {
-                document.getElementById('well-menu').style.display = 'none';
-            });
-        }
-        if (fillBtn) {
-            fillBtn.addEventListener('click', () => {
-                this._queueFillWellJob('human');
-            });
-        }
-        if (fillGoblinBtn) {
-            fillGoblinBtn.addEventListener('click', () => {
-                this._queueFillWellJob('goblin');
-            });
-        }
-    }
+    // Well menu is now handled by UIManager.openWellMenu() — no static DOM wiring needed.
 
     // === Zone Management Panel ===
 
@@ -3858,6 +3899,47 @@ export class Game {
         log.info(`Crafting effect applied: ${recipeId}`);
     }
 
+    // Remove all trees, flowers, and weeds from every TOWN chunk (preserves buildings & paths)
+    _clearTownChunkContent() {
+        const { CHUNK_STATES } = window._chunkStates ?? {};
+        for (const chunk of this.chunkManager.chunks.values()) {
+            if (chunk.state !== 'town') continue;
+            const cb = this.chunkManager.getChunkBounds(chunk.col, chunk.row);
+            const bx = cb.x;
+            const by = cb.y;
+            const cs = CONFIG.chunks.size;
+
+            // Flowers & weeds
+            if (this.flowerManager) {
+                for (const f of this.flowerManager.flowers) {
+                    if (f.tileX >= bx && f.tileX < bx + cs && f.tileY >= by && f.tileY < by + cs)
+                        f.isGone = true;
+                }
+                for (const w of this.flowerManager.weeds) {
+                    if (w.tileX >= bx && w.tileX < bx + cs && w.tileY >= by && w.tileY < by + cs)
+                        w.isGone = true;
+                }
+            }
+
+            // Forest trees (sparse ForestGenerator trees)
+            if (this.forestGenerator) {
+                const toRemove = this.forestGenerator.trees.filter(t =>
+                    t.baseX >= bx && t.baseX < bx + cs && t.baseY >= by && t.baseY < by + cs
+                );
+                for (const tree of toRemove) {
+                    const idx = this.forestGenerator.trees.indexOf(tree);
+                    if (idx !== -1) this.forestGenerator.trees.splice(idx, 1);
+                    this.forestGenerator.trunkTileMap.delete(`${tree.baseX},${tree.baseY}`);
+                    this.forestGenerator.trunkTileMap.delete(`${tree.baseX + 1},${tree.baseY}`);
+                }
+                if (toRemove.length > 0 && typeof this.forestGenerator.updateNeighborFlags === 'function') {
+                    this.forestGenerator.updateNeighborFlags();
+                }
+            }
+        }
+        log.info('Cleared trees/flowers/weeds from all town chunks');
+    }
+
     // Add cheat buttons to the debug menu and make the gear button visible
     _initDebugMenu() {
         const menu = document.getElementById('customize-menu');
@@ -3894,6 +3976,13 @@ export class Game {
             <div class="debug-btn-row">
                 <button class="debug-cheat-btn" id="cheat-toggle-path-debug">Toggle Path Debug</button>
                 <button class="debug-cheat-btn" id="cheat-toggle-building-debug">Toggle Building Debug</button>
+            </div>
+            <div class="debug-btn-row">
+                <button class="debug-cheat-btn" id="cheat-add-villager-housed">Add Villager (Housed)</button>
+                <button class="debug-cheat-btn" id="cheat-add-villager-unhoused">Add Villager (Unhoused)</button>
+            </div>
+            <div class="debug-btn-row">
+                <button class="debug-cheat-btn" id="cheat-clear-town-chunks">Clear Town Chunks</button>
             </div>
         `;
         menu.appendChild(cheatSection);
@@ -3996,6 +4085,35 @@ export class Game {
         document.getElementById('cheat-toggle-building-debug').addEventListener('click', () => {
             this._showBuildingDebug = !this._showBuildingDebug;
             log.info(`Building debug: ${this._showBuildingDebug}`);
+        });
+
+        // "Add Villager (Housed)": spawns a walking entity on the great path that walks to nearest
+        // empty active house and claims it, then increments the villager count on arrival.
+        document.getElementById('cheat-add-villager-housed').addEventListener('click', () => {
+            if (!this.buildingManager || !this.villagerManager) {
+                log.warn('Debug: buildingManager or villagerManager not ready');
+                return;
+            }
+            const house = this.buildingManager.placedBuildings.find(
+                b => b.definitionId === 'small_house' && b.state === 'active_empty' && b.pathConnected
+            );
+            if (house) {
+                this.travelerManager.spawnDebugVillager(house, this.pathConnectivity);
+            } else {
+                this.villagerManager.pendingDebugVillagers++;
+                log.info(`Debug: no empty house — pendingDebugVillagers=${this.villagerManager.pendingDebugVillagers}`);
+            }
+        });
+
+        // "Add Villager (Unhoused)": instantly increments the villager total without housing.
+        document.getElementById('cheat-add-villager-unhoused').addEventListener('click', () => {
+            this.milestones.totalVillagersRecruited++;
+            log.info(`Debug: unhoused villager — totalVillagersRecruited=${this.milestones.totalVillagersRecruited}`);
+        });
+
+        // "Clear Town Chunks": removes trees, flowers, weeds from all TOWN state chunks.
+        document.getElementById('cheat-clear-town-chunks').addEventListener('click', () => {
+            this._clearTownChunkContent();
         });
 
         // ── Save / Load section ───────────────────────────────────────────────
@@ -4110,6 +4228,29 @@ export class Game {
         if (this.toolbar) this.toolbar.setGoblinHired(true);
         if (this.jobQueueUI) this.jobQueueUI.setGoblinHired(true);
         log.info('Goblin hired! Spawned at (22, 31)');
+
+        // Claim the first available active_empty small_house, or mark as needing one
+        if (this.buildingManager) {
+            const house = this.buildingManager.placedBuildings.find(
+                b => b.definitionId === 'small_house' && b.state === 'active_empty'
+            );
+            if (house) {
+                this._goblinClaimHouse(house);
+            } else {
+                this._goblinNeedsHouse = true;
+                log.info('Goblin hired but no house available — will claim the next one');
+            }
+        }
+    }
+
+    /** Assign a small_house to the goblin. */
+    _goblinClaimHouse(building) {
+        this.goblinHouseBuilding = building;
+        this._goblinNeedsHouse  = false;
+        this._goblinIdleTimer   = 0;
+        // Register as a villager (this also starts chimney smoke via VillagerManager)
+        this.villagerManager?.onVillagerRecruited('goblin_elder', building);
+        log.info(`Goblin claimed house ${building.id}`);
     }
 
     // Remove goblin from job system and hide all goblin UI.
@@ -4163,6 +4304,22 @@ export class Game {
         // Hide goblin UI controls
         if (this.toolbar) this.toolbar.setGoblinHired(false);
         if (this.jobQueueUI) this.jobQueueUI.setGoblinHired(false);
+
+        // Release goblin's claimed house
+        if (this.goblinHouseBuilding) {
+            const h = this.goblinHouseBuilding;
+            h.state = 'active_empty';
+            h.occupant = null;
+            this.buildingManager?.onBuildingVacated(h);
+            if (this.villagerManager) {
+                this.villagerManager.villagers = this.villagerManager.villagers.filter(
+                    v => v.houseId !== h.id
+                );
+            }
+            this.goblinHouseBuilding = null;
+        }
+        this._goblinNeedsHouse = false;
+        this._goblinIdleTimer  = 0;
 
         // Hide well goblin fill button if the well menu is open
         const fillGoblinBtn = document.getElementById('well-fill-goblin-btn');
