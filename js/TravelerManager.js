@@ -52,25 +52,30 @@ export class TravelerManager {
         return { leftPx, rightPx };
     }
 
-    async _spawnTraveler() {
+    /**
+     * Create a base Traveler positioned at the world edge on the great path.
+     * Shared setup for regular, milestone, and debug travelers.
+     * @param {string} [forceDirection] - 'east'|'west' or undefined for random
+     * @returns {{ traveler, direction, spawnX, despawnX, hairStyle }}
+     */
+    _createBaseTraveler(forceDirection) {
         const { leftPx, rightPx } = this._getWorldBounds();
         const margin = CONFIG.traveler.despawnMargin;
         const { hairStyles, pathCenterY } = CONFIG.traveler;
-
-        const direction = Math.random() < 0.5 ? 'east' : 'west';
-
-        // Spawn just off the world edge so they walk onto the great path naturally.
-        const spawnX  = direction === 'east' ? leftPx  - margin : rightPx + margin;
+        const direction = forceDirection ?? (Math.random() < 0.5 ? 'east' : 'west');
+        const spawnX   = direction === 'east' ? leftPx  - margin : rightPx + margin;
         const despawnX = direction === 'east' ? rightPx + margin : leftPx  - margin;
-
         const hairStyle = hairStyles[Math.floor(Math.random() * hairStyles.length)];
-
         const traveler = new Traveler(spawnX, pathCenterY, direction, hairStyle, this.stand);
-        traveler.despawnX = despawnX;  // walk to the opposite viewport edge then despawn
+        traveler.despawnX = despawnX;
+        return { traveler, direction, spawnX, despawnX, hairStyle };
+    }
+
+    async _spawnTraveler() {
+        const { traveler, direction, spawnX, despawnX, hairStyle } = this._createBaseTraveler();
         this._initTravelerPreferences(traveler);
         await traveler.load();
         this.travelers.push(traveler);
-
         log.debug(`Spawned traveler dir=${direction} hair=${hairStyle} x=${Math.round(spawnX)} despawnX=${Math.round(despawnX)} visitStand=${traveler.visitStand}`);
     }
 
@@ -78,16 +83,7 @@ export class TravelerManager {
         const milestone = VILLAGER_MILESTONES.find(m => m.id === villagerMilestoneId);
         if (!milestone) return;
 
-        const { leftPx, rightPx } = this._getWorldBounds();
-        const margin = CONFIG.traveler.despawnMargin;
-        const { hairStyles, pathCenterY } = CONFIG.traveler;
-        const direction = Math.random() < 0.5 ? 'east' : 'west';
-        const spawnX   = direction === 'east' ? leftPx  - margin : rightPx + margin;
-        const despawnX = direction === 'east' ? rightPx + margin : leftPx  - margin;
-        const hairStyle = hairStyles[Math.floor(Math.random() * hairStyles.length)];
-
-        const traveler = new Traveler(spawnX, pathCenterY, direction, hairStyle, this.stand);
-        traveler.despawnX = despawnX;
+        const { traveler } = this._createBaseTraveler();
         traveler.isMilestone = true;
         traveler.villagerType = villagerMilestoneId;
         traveler.villagerName = milestone.name;
@@ -273,20 +269,14 @@ export class TravelerManager {
      * @param {PathConnectivity|null}   pathConnectivity  Used to trace the path route
      */
     async spawnDebugVillager(building, pathConnectivity = null) {
-        const { leftPx, rightPx } = this._getWorldBounds();
-        const margin = CONFIG.traveler.despawnMargin;
-        const { hairStyles, pathCenterY } = CONFIG.traveler;
-        const direction = Math.random() < 0.5 ? 'east' : 'west';
-        const spawnX = direction === 'east' ? leftPx - margin : rightPx + margin;
-        const hairStyle = hairStyles[Math.floor(Math.random() * hairStyles.length)];
-
-        const traveler = new Traveler(spawnX, pathCenterY, direction, hairStyle, null);
+        const { traveler } = this._createBaseTraveler();
         traveler.despawnX = null;         // don't despawn at world edge
         traveler.visitStand = false;
         traveler.isDebugVillager = true;
         traveler._debugTargetBuilding = building;
 
         const tileSize = this.tilemap.tileSize;
+        const { pathCenterY } = CONFIG.traveler;
         const def = BUILDING_DEFS[building.definitionId];
         const doorOffsetX = def?.doorOffset?.x ?? 2;
         const doorOffsetY = def?.doorOffset?.y ?? 4;

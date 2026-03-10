@@ -178,6 +178,19 @@ export class ChunkManager {
         return chunk !== null && chunk.state === CHUNK_STATES.OWNED;
     }
 
+    /** Return a plain-object snapshot of all chunks for serialization. */
+    serializeChunks() {
+        const result = [];
+        for (const chunk of this.chunks.values()) {
+            result.push({
+                col: chunk.col, row: chunk.row, type: chunk.type, state: chunk.state,
+                isTownPlot: chunk.isTownPlot ?? false,
+                purchasedAsTown: chunk.purchasedAsTown ?? false,
+            });
+        }
+        return result;
+    }
+
     /** True if the tile is in the town chunk. */
     isTownChunk(tileX, tileY) {
         const chunk = this.getChunkForTile(tileX, tileY);

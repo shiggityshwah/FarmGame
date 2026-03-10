@@ -146,15 +146,7 @@ export class SaveManager {
     }
 
     _serializeChunks() {
-        const chunks = [];
-        for (const chunk of this.game.chunkManager.chunks.values()) {
-            chunks.push({
-                col: chunk.col, row: chunk.row, type: chunk.type, state: chunk.state,
-                isTownPlot: chunk.isTownPlot ?? false,
-                purchasedAsTown: chunk.purchasedAsTown ?? false,
-            });
-        }
-        return chunks;
+        return this.game.chunkManager.serializeChunks();
     }
 
     _serializeChunkTiles() {

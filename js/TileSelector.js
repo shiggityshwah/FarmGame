@@ -88,37 +88,8 @@ export class TileSelector {
         this.zoneExpansionTargetId = null;
     }
 
-    setCropManager(cropManager) {
-        this.cropManager = cropManager;
-    }
-
-    setEnemyManager(enemyManager) {
-        this.enemyManager = enemyManager;
-    }
-
-    setOreManager(oreManager) {
-        this.oreManager = oreManager;
-    }
-
-    setTreeManager(treeManager) {
-        this.treeManager = treeManager;
-    }
-
-    setFlowerManager(flowerManager) {
-        this.flowerManager = flowerManager;
-    }
-
-    setForestGenerator(forestGenerator) {
-        this.forestGenerator = forestGenerator;
-    }
-
-    setChunkManager(chunkManager) {
-        this.chunkManager = chunkManager;
-    }
-
-    setGame(game) {
-        this.game = game;
-    }
+    /** Inject multiple dependencies at once. Replaces individual setXxx() setter methods. */
+    setDependencies(deps) { Object.assign(this, deps); }
 
     setTool(tool) {
         this.currentTool = tool;

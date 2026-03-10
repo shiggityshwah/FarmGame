@@ -65,15 +65,7 @@ export class OreManager extends ResourceManager {
     }
 
     // Get ore vein at a tile position (checks all 4 tiles of each ore)
-    getOreAt(tileX, tileY) {
-        for (const ore of this.oreVeins) {
-            if (ore.isGone) continue;
-            if (ore.containsTile(tileX, tileY)) {
-                return ore;
-            }
-        }
-        return null;
-    }
+    getOreAt(tileX, tileY) { return this.getResourceAt(tileX, tileY); }
 
     // Mine an ore vein at a tile position
     mineOre(tileX, tileY) {
@@ -104,47 +96,9 @@ export class OreManager extends ResourceManager {
     // update() and _cleanupGone() inherited from ResourceManager
 
     render(ctx, camera) {
-        const tileSize = this.tilemap.tileSize;
-
-        // Render ore veins
         for (const ore of this.oreVeins) {
-            if (ore.isGone) continue;
-
-            const tileIds = ore.getTileIds();
-            if (tileIds.length === 0) continue;
-
-            // Apply alpha for fading ores
-            if (ore.alpha < 1) {
-                ctx.save();
-                ctx.globalAlpha = ore.alpha;
-            }
-
-            // Render 2x2 tiles
-            const positions = [
-                { x: ore.tileX, y: ore.tileY },         // top-left
-                { x: ore.tileX + 1, y: ore.tileY },     // top-right
-                { x: ore.tileX, y: ore.tileY + 1 },     // bottom-left
-                { x: ore.tileX + 1, y: ore.tileY + 1 }  // bottom-right
-            ];
-
-            for (let i = 0; i < 4 && i < tileIds.length; i++) {
-                const sourceRect = this.tilemap.getTilesetSourceRect(tileIds[i]);
-                const worldX = positions[i].x * tileSize;
-                const worldY = positions[i].y * tileSize;
-
-                ctx.drawImage(
-                    this.tilemap.tilesetImage,
-                    sourceRect.x, sourceRect.y, sourceRect.width, sourceRect.height,
-                    worldX, worldY, tileSize, tileSize
-                );
-            }
-
-            if (ore.alpha < 1) {
-                ctx.restore();
-            }
+            if (!ore.isGone) this.renderOre(ctx, ore);
         }
-
-        // Render mining effects
         this.renderEffects(ctx, null);
     }
 
@@ -174,40 +128,29 @@ export class OreManager extends ResourceManager {
     // Render a single ore vein (for depth-sorted rendering)
     renderOre(ctx, ore) {
         if (ore.isGone) return;
-
         const tileSize = this.tilemap.tileSize;
         const tileIds = ore.getTileIds();
         if (tileIds.length === 0) return;
 
-        // Apply alpha for fading ores
-        if (ore.alpha < 1) {
-            ctx.save();
-            ctx.globalAlpha = ore.alpha;
-        }
-
-        // Render 2x2 tiles
+        // 2x2 tile positions (top-left, top-right, bottom-left, bottom-right)
+        const ox = ore.tileX, oy = ore.tileY;
         const positions = [
-            { x: ore.tileX, y: ore.tileY },         // top-left
-            { x: ore.tileX + 1, y: ore.tileY },     // top-right
-            { x: ore.tileX, y: ore.tileY + 1 },     // bottom-left
-            { x: ore.tileX + 1, y: ore.tileY + 1 }  // bottom-right
+            { x: ox,     y: oy },
+            { x: ox + 1, y: oy },
+            { x: ox,     y: oy + 1 },
+            { x: ox + 1, y: oy + 1 },
         ];
 
-        for (let i = 0; i < 4 && i < tileIds.length; i++) {
-            const sourceRect = this.tilemap.getTilesetSourceRect(tileIds[i]);
-            const worldX = positions[i].x * tileSize;
-            const worldY = positions[i].y * tileSize;
-
-            ctx.drawImage(
-                this.tilemap.tilesetImage,
-                sourceRect.x, sourceRect.y, sourceRect.width, sourceRect.height,
-                worldX, worldY, tileSize, tileSize
-            );
-        }
-
-        if (ore.alpha < 1) {
-            ctx.restore();
-        }
+        this._withAlpha(ctx, ore.alpha, () => {
+            for (let i = 0; i < 4 && i < tileIds.length; i++) {
+                const src = this.tilemap.getTilesetSourceRect(tileIds[i]);
+                ctx.drawImage(
+                    this.tilemap.tilesetImage,
+                    src.x, src.y, src.width, src.height,
+                    positions[i].x * tileSize, positions[i].y * tileSize, tileSize, tileSize
+                );
+            }
+        });
     }
 
     // renderEffects() inherited from ResourceManager

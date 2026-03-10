@@ -185,64 +185,58 @@ export class CropManager extends ResourceManager {
             if (crop.isGone) continue;
             const tiles = crop.getTileIds();
             if (tiles.length === 0) continue;
+            this._withAlpha(ctx, crop.alpha, () => {
+                for (const tile of tiles) {
+                    if (!tile.isGround) continue;
+                    const src = this.tilemap.getTilesetSourceRect(tile.id);
+                    ctx.drawImage(
+                        this.tilemap.tilesetImage,
+                        src.x, src.y, src.width, src.height,
+                        crop.tileX * tileSize, (crop.tileY + tile.offsetY) * tileSize, tileSize, tileSize
+                    );
+                }
+            });
+        }
+    }
 
-            if (crop.alpha < 1) {
-                ctx.save();
-                ctx.globalAlpha = crop.alpha;
-            }
-
+    // Render ground tile for a single crop (for depth-sorted rendering pre-pass).
+    // Called just before renderCrop() so dirt/hoed tiles draw beneath the crop sprite.
+    renderCropGroundTile(ctx, crop) {
+        if (crop.isGone) return;
+        const tileSize = this.tilemap.tileSize;
+        const tiles = crop.getTileIds();
+        if (!tiles.length) return;
+        this._withAlpha(ctx, crop.alpha, () => {
             for (const tile of tiles) {
                 if (!tile.isGround) continue;
-                const sourceRect = this.tilemap.getTilesetSourceRect(tile.id);
-                const worldX = crop.tileX * tileSize;
-                const worldY = (crop.tileY + tile.offsetY) * tileSize;
+                const src = this.tilemap.getTilesetSourceRect(tile.id);
                 ctx.drawImage(
                     this.tilemap.tilesetImage,
-                    sourceRect.x, sourceRect.y, sourceRect.width, sourceRect.height,
-                    worldX, worldY, tileSize, tileSize
+                    src.x, src.y, src.width, src.height,
+                    crop.tileX * tileSize, (crop.tileY + tile.offsetY) * tileSize, tileSize, tileSize
                 );
             }
-
-            if (crop.alpha < 1) {
-                ctx.restore();
-            }
-        }
+        });
     }
 
     // Render a single crop sprite (for depth-sorted rendering) — skips ground tiles
     renderCrop(ctx, crop) {
         if (crop.isGone) return;
-
         const tileSize = this.tilemap.tileSize;
         const tiles = crop.getTileIds();
-        if (tiles.length === 0) return;
+        if (tiles.length === 0 || !tiles.some(t => !t.isGround)) return;
 
-        // Check if there are any non-ground tiles to draw
-        const hasNonGround = tiles.some(t => !t.isGround);
-        if (!hasNonGround) return;
-
-        // Apply alpha for fading crops
-        if (crop.alpha < 1) {
-            ctx.save();
-            ctx.globalAlpha = crop.alpha;
-        }
-
-        for (const tile of tiles) {
-            if (tile.isGround) continue;
-            const sourceRect = this.tilemap.getTilesetSourceRect(tile.id);
-            const worldX = crop.tileX * tileSize;
-            const worldY = (crop.tileY + tile.offsetY) * tileSize;
-
-            ctx.drawImage(
-                this.tilemap.tilesetImage,
-                sourceRect.x, sourceRect.y, sourceRect.width, sourceRect.height,
-                worldX, worldY, tileSize, tileSize
-            );
-        }
-
-        if (crop.alpha < 1) {
-            ctx.restore();
-        }
+        this._withAlpha(ctx, crop.alpha, () => {
+            for (const tile of tiles) {
+                if (tile.isGround) continue;
+                const src = this.tilemap.getTilesetSourceRect(tile.id);
+                ctx.drawImage(
+                    this.tilemap.tilesetImage,
+                    src.x, src.y, src.width, src.height,
+                    crop.tileX * tileSize, (crop.tileY + tile.offsetY) * tileSize, tileSize, tileSize
+                );
+            }
+        });
     }
 
     // renderEffects() inherited from ResourceManager

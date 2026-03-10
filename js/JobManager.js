@@ -149,10 +149,8 @@ export class JobManager {
         this.game.currentPath = null;
         this.game.currentWorkTile = null;
 
-        // Tell IdleManager it was preempted so it resets cleanly
-        if (this.game.idleManager) {
-            this.game.idleManager.onIdlePreempted();
-        }
+        // Tell IdleManager it was preempted so it resets cleanly (via Game facade)
+        this.game.onIdlePreempted?.();
     }
 
     // Try to assign jobs to any idle workers
@@ -375,9 +373,7 @@ export class JobManager {
 
         // Auto-refill: if water is empty before walking to next crop, go to well first
         if (job.tool.id === 'watering_can' && this.game.well) {
-            const water = workerId === 'human'
-                ? (this.game.wateringCanWater ?? 0)
-                : (this.game.goblinWaterCanWater ?? 0);
+            const water = this.game.getWaterLevel(workerId);
             if (water <= 0) {
                 log.debug(`[${workerId}] Watering can empty — auto-queueing well fill`);
                 this._autoQueueWellFill(workerId);
@@ -547,9 +543,7 @@ export class JobManager {
             if (!job.plantingPhase) {
                 // DIG animation just completed — create the hole, then start DOING phase 1
                 job.plantingPhase = 1;
-                if (this.game.overlayManager) {
-                    this.game.overlayManager.addOverlay(workX, workY, CONFIG.tiles.holeOverlay);
-                }
+                this.game.addHoleOverlay(workX, workY);
                 // Atomically continue — dig + plant + close are one sequence, no interrupt allowed
                 this.setWorkerAnimation(workerId, tool.animation, false, () => {
                     this.onAnimationCompleteForWorker(workerId);
@@ -822,14 +816,11 @@ export class JobManager {
     // Returns true if the tile should be skipped.
     isTileJobAlreadyDone(tool, tileX, tileY) {
         switch (tool.id) {
-            case 'hoe': {
+            case 'hoe':
                 // Use hoedTiles Set directly — isHoedTile() reads tilemap which misses forest tiles
-                const key = `${tileX},${tileY}`;
-                return !!(this.game.overlayManager && this.game.overlayManager.hoedTiles.has(key));
-            }
+                return this.game.isTileHoed(tileX, tileY);
             case 'shovel':
-                return !!(this.game.overlayManager &&
-                    this.game.overlayManager.hasOverlay(tileX, tileY, CONFIG.tiles.holeOverlay));
+                return this.game.hasHoleOverlay(tileX, tileY);
             case 'axe': {
                 const tree = this.game.treeManager?.getTreeAt(tileX, tileY);
                 if (tree && tree.canBeChopped()) return false;
@@ -847,8 +838,10 @@ export class JobManager {
                 return true;
             }
             case 'plant': {
-                // Already planted by another worker
-                if (this.game.cropManager && this.game.cropManager.getCropAt(tileX, tileY)) return true;
+                // Already planted by another worker.
+                // Use getCropBaseAt so a tall crop's upper sprite tile on the row above
+                // doesn't falsely mark this tile as done.
+                if (this.game.cropManager && this.game.cropManager.getCropBaseAt(tileX, tileY)) return true;
                 // Tile is plantable if it's hoed ground OR has a hole overlay (pre-dug or in-progress)
                 const key = `${tileX},${tileY}`;
                 const isHoed = this.game.overlayManager?.hoedTiles?.has(key) ?? false;
@@ -868,8 +861,7 @@ export class JobManager {
                        crop.stage >= GROWTH_STAGE.HARVESTABLE;
             }
             case 'idle_harvest': {
-                if (!this.game.cropManager) return true;
-                for (const crop of this.game.cropManager.crops) {
+                for (const crop of this.game.getCropsArray()) {
                     if (!crop.isHarvested && !crop.isGone &&
                         crop.containsTile(tileX, tileY) && crop.isReadyToHarvest()) {
                         return false;
@@ -932,18 +924,12 @@ export class JobManager {
                 }
 
                 // Mark tile as hoed and update edge overlays
-                if (this.game.overlayManager) {
-                    this.game.overlayManager.markTileAsHoed(tileX, tileY);
-                    // Also update edge overlays for neighboring hoed tiles
-                    this.updateNeighborEdgeOverlays(tileX, tileY);
-                }
+                this.game.markTileHoed(tileX, tileY);
+                this.updateNeighborEdgeOverlays(tileX, tileY);
                 break;
 
             case 'shovel':
-                // Add hole overlay
-                if (this.game.overlayManager) {
-                    this.game.overlayManager.addOverlay(tileX, tileY, CONFIG.tiles.holeOverlay);
-                }
+                this.game.addHoleOverlay(tileX, tileY);
                 break;
 
             case 'plant':
@@ -955,29 +941,17 @@ export class JobManager {
             case 'watering_can': {
                 // Check water level — auto-refill handles the empty case before we reach here,
                 // but guard just in case.
-                const wLevel = workerId === 'human'
-                    ? (this.game.wateringCanWater ?? 1)
-                    : (this.game.goblinWaterCanWater ?? 1);
-                if (wLevel <= 0) break;
+                if (this.game.getWaterLevel(workerId) <= 0) break;
                 const watered = this.game.cropManager?.waterCrop(tileX, tileY);
                 if (watered) {
-                    if (workerId === 'human') {
-                        this.game.wateringCanWater = Math.max(0, (this.game.wateringCanWater ?? 1) - 1);
-                    } else {
-                        this.game.goblinWaterCanWater = Math.max(0, (this.game.goblinWaterCanWater ?? 1) - 1);
-                    }
+                    this.game.deductWater(workerId);
                     this.game.toolbar?.refreshWaterDisplay?.();
                 }
                 break;
             }
 
             case 'fill_well': {
-                // Refill the worker's watering can to maximum
-                if (workerId === 'human') {
-                    this.game.wateringCanWater = this.game.wateringCanMaxWater ?? 20;
-                } else {
-                    this.game.goblinWaterCanWater = this.game.goblinWaterCanMaxWater ?? 20;
-                }
+                this.game.fillWateringCan(workerId);
                 this.game.toolbar?.refreshWaterDisplay?.();
                 this.game._refreshWellMenuStatus?.();
                 log.debug(`[${workerId}] Watering can refilled at well`);
@@ -1006,7 +980,7 @@ export class JobManager {
                     const harvested = this.game.cropManager.tryHarvest(tileX, tileY);
                     if (harvested && this.game.inventory) {
                         this.game.inventory.addCropByIndex(harvested.index);
-                        if (this.game.milestones) this.game.milestones.totalCropsHarvested++;
+                        this.game.incrementMilestone('totalCropsHarvested');
                         log.debug(`Idle harvested: ${harvested.name}`);
                         // Notify replenish zone manager so it can queue auto-replant
                         if (this.game.replenishZoneManager) {
@@ -1115,9 +1089,7 @@ export class JobManager {
         }
 
         // Remove the hole overlay first
-        if (this.game.overlayManager) {
-            this.game.overlayManager.removeOverlay(tileX, tileY);
-        }
+        this.game.removeHoleOverlay(tileX, tileY);
 
         // Consume the seed from inventory
         if (this.game.inventory && tool.seedType !== undefined) {
@@ -1143,7 +1115,7 @@ export class JobManager {
             const crop = this.game.cropManager.getCropAt(tileX, tileY);
             if (crop) {
                 crop.advancePlantingPhase();
-                if (this.game.milestones) this.game.milestones.totalCropsPlanted++;
+                this.game.incrementMilestone('totalCropsPlanted');
             }
         }
     }
@@ -1161,8 +1133,8 @@ export class JobManager {
         ];
 
         for (const neighbor of neighbors) {
-            if (this.game.overlayManager.isHoedTile(neighbor.x, neighbor.y)) {
-                this.game.overlayManager.updateEdgeOverlays(neighbor.x, neighbor.y);
+            if (this.game.isHoedTileEdge(neighbor.x, neighbor.y)) {
+                this.game.updateHoedEdgeOverlays(neighbor.x, neighbor.y);
             }
         }
     }

@@ -296,10 +296,14 @@ export class IdleManager {
                 const tileSize = this.game.tilemap.tileSize;
                 const hx = worldToTile(this.game.humanPosition.x, tileSize);
                 const hy = worldToTile(this.game.humanPosition.y, tileSize);
-                const path = this.game.findPath(hx, hy, service.x, service.y);
-                if (!path || path.length === 0) return null;
+                // The service tile is an obstacle — find the adjacent walkable tile to stand at,
+                // matching what moveCharacterTo does when the job actually runs.
+                const adj = this.game.findAdjacentStandingTile(hx, hy, service.x, service.y);
+                if (!adj) return null;
+                const path = this.game.findPath(hx, hy, adj.x, adj.y);
+                if (!path) return null;
                 // Return as a synthetic "item" with tileX/tileY for createJobForEvaluation
-                return { item: { tileX: service.x, tileY: service.y }, pathLength: path.length };
+                return { item: { tileX: service.x, tileY: service.y }, pathLength: path.length || 1 };
             }
         }
         return null;

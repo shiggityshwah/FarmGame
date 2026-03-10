@@ -3,6 +3,10 @@ import { CONFIG } from './config.js';
 
 const log = Logger.create('TilemapRenderer');
 
+/** Closed front door tile IDs — replaced with OPEN_DOOR_TILE when a character is on or adjacent. */
+const CLOSED_DOOR_TILES = new Set([780, 844, 976, 1488, 2000, 2512, 3024]);
+const OPEN_DOOR_TILE = 909;
+
 export class TilemapRenderer {
     constructor() {
         this.tileData = null;        // Base layer (grass) — used by CSV/procedural maps
@@ -19,6 +23,13 @@ export class TilemapRenderer {
         this.mapWidth = 0;
         this.mapHeight = 0;
         this.loaded = false;
+
+        /**
+         * Set of world tile coordinate strings ("x,y") occupied by any character.
+         * Updated each frame by Game.js. Used to open door tiles while characters are present.
+         * @type {Set<string>}
+         */
+        this._characterTiles = new Set();
 
         // House tilemap offset (where the house is placed on the map)
         this.houseOffsetX = 0;
@@ -695,38 +706,50 @@ export class TilemapRenderer {
         // the tile boundary - the padding contains the correct edge pixels.
         const overlap = 0.5;
 
-        // Render base layer - only render tiles within allocated chunks
-        for (let row = startRow; row <= endRow; row++) {
-            for (let col = startCol; col <= endCol; col++) {
-                // In chunk mode, only render if the chunk is allocated
-                if (this.mapType === 'chunk') {
-                    // Skip the great path zone — rendered separately by renderGreatPath()
-                    const { mainPathY, mainPathGap } = CONFIG.chunks;
-                    if (row >= mainPathY && row < mainPathY + mainPathGap) continue;
+        // Render base layer - only render tiles within allocated chunks.
+        // Cache last chunk lookup to avoid redundant Map lookups + string concat for sequential tiles
+        // in the same chunk (a 15-tile run produces 1 lookup instead of 15).
+        if (this.mapType === 'chunk') {
+            const { mainPathY, mainPathGap } = CONFIG.chunks;
+            let lastChunkKey = '';
+            let lastChunkExists = false;
+            for (let row = startRow; row <= endRow; row++) {
+                if (row >= mainPathY && row < mainPathY + mainPathGap) continue;
+                const adjRow = row >= mainPathY + mainPathGap ? row - mainPathGap : row;
+                const chunkRow = Math.floor(adjRow / this.CHUNK_SIZE);
+                for (let col = startCol; col <= endCol; col++) {
                     const chunkCol = Math.floor(col / this.CHUNK_SIZE);
-                    // Adjust row to chunk-space for the key lookup
-                    const adjRow = row >= mainPathY + mainPathGap ? row - mainPathGap : row;
-                    const chunkRow = Math.floor(adjRow / this.CHUNK_SIZE);
                     const chunkKey = `${chunkCol},${chunkRow}`;
-                    if (!this.chunkTiles.has(chunkKey)) {
-                        // Skip unallocated chunks - don't render default grass beyond map bounds
-                        continue;
+                    if (chunkKey !== lastChunkKey) {
+                        lastChunkKey = chunkKey;
+                        lastChunkExists = this.chunkTiles.has(chunkKey);
                     }
+                    if (!lastChunkExists) continue;
+
+                    const tileId = this.getTileAt(col, row);
+                    if (tileId === null || tileId === -1) continue;
+                    const sourceRect = this.getTilesetSourceRectWithPadding(tileId, overlap);
+                    ctx.drawImage(
+                        this.tilesetImage,
+                        sourceRect.x, sourceRect.y, sourceRect.width, sourceRect.height,
+                        col * this.tileSize - overlap, row * this.tileSize - overlap,
+                        this.tileSize + overlap * 2, this.tileSize + overlap * 2
+                    );
                 }
-                
-                const tileId = this.getTileAt(col, row);
-                if (tileId === null || tileId === -1) continue;
-
-                const sourceRect = this.getTilesetSourceRectWithPadding(tileId, overlap);
-                const worldX = col * this.tileSize;
-                const worldY = row * this.tileSize;
-
-                ctx.drawImage(
-                    this.tilesetImage,
-                    sourceRect.x, sourceRect.y, sourceRect.width, sourceRect.height,
-                    worldX - overlap, worldY - overlap,
-                    this.tileSize + overlap * 2, this.tileSize + overlap * 2
-                );
+            }
+        } else {
+            for (let row = startRow; row <= endRow; row++) {
+                for (let col = startCol; col <= endCol; col++) {
+                    const tileId = this.getTileAt(col, row);
+                    if (tileId === null || tileId === -1) continue;
+                    const sourceRect = this.getTilesetSourceRectWithPadding(tileId, overlap);
+                    ctx.drawImage(
+                        this.tilesetImage,
+                        sourceRect.x, sourceRect.y, sourceRect.width, sourceRect.height,
+                        col * this.tileSize - overlap, row * this.tileSize - overlap,
+                        this.tileSize + overlap * 2, this.tileSize + overlap * 2
+                    );
+                }
             }
         }
 
@@ -753,6 +776,22 @@ export class TilemapRenderer {
         }
     }
 
+    /**
+     * Update the set of character tile positions (world tile coords).
+     * Call each frame before any render pass. Door tiles open when a character is
+     * on or one tile south of them.
+     * @param {Array<{x:number,y:number}|null>} positions  Pixel positions of characters
+     */
+    setCharacterPositions(positions) {
+        this._characterTiles.clear();
+        for (const pos of positions) {
+            if (!pos) continue;
+            const tx = Math.floor(pos.x / this.tileSize);
+            const ty = Math.floor(pos.y / this.tileSize);
+            this._characterTiles.add(`${tx},${ty}`);
+        }
+    }
+
     renderLayer(ctx, layer, startCol, endCol, startRow, endRow, overlap = 0) {
         const layerData = layer.data;
         const offsetX = layer.offsetX;
@@ -770,8 +809,16 @@ export class TilemapRenderer {
                     continue;
                 }
 
-                const tileId = layerData[localY][localX];
+                let tileId = layerData[localY][localX];
                 if (tileId < 0) continue; // Skip empty tiles (-1)
+
+                // Open door when a character is on this tile or one tile to the south
+                if (CLOSED_DOOR_TILES.has(tileId)) {
+                    if (this._characterTiles.has(`${col},${row}`) ||
+                        this._characterTiles.has(`${col},${row + 1}`)) {
+                        tileId = OPEN_DOOR_TILE;
+                    }
+                }
 
                 const sourceRect = this.getTilesetSourceRectWithPadding(tileId, overlap);
                 const worldX = col * this.tileSize;
@@ -833,20 +880,31 @@ export class TilemapRenderer {
         };
 
         // Bridge columns where paths enter/exit the great path strip:
-        //   N-grass row (y=45, rowOffset=0): dynamic — any player path at y=44 creates a bridge
-        //   S-grass row (y=48, rowOffset=3): hardcoded at farm house east path x=22
+        //   N-grass row (rowOffset=0): dynamic — any player path at y=mainPathY-1 creates a bridge
+        //   S-grass row (rowOffset=3): hardcoded at farm house east path x=22
         const farmCrossX = this.newHouseOffsetX + this.newHouseWidth; // 16+6 = 22
+
+        // Lazily build the north bridge column cache (Set of X values).
+        // Invalidated by invalidateBridgeCache() when any path tile changes.
+        if (!this._bridgeColsCache) {
+            this._bridgeColsCache = new Set();
+            const scanY = mainPathY - 1;
+            const scanLeft  = this.mapStartX || 0;
+            const scanRight = (this.mapWidth || CONFIG.chunks.initialGridCols * CONFIG.chunks.size);
+            for (let x = scanLeft; x < scanRight; x++) {
+                if (CONFIG.tiles.path.includes(this.getTileAt(x, scanY))) {
+                    this._bridgeColsCache.add(x);
+                }
+            }
+        }
 
         for (let row = startRow; row <= endRow; row++) {
             const rowOffset = row - mainPathY; // 0=N-grass, 1-2=path, 3=S-grass
             for (let col = startCol; col <= endCol; col++) {
                 const worldX = col * tileSize;
                 const worldY = row * tileSize;
-                // N-grass row (y=45): bridge wherever a path tile exists at y=44 (home chunk bottom)
-                // S-grass row (y=48): bridge at farm house east-side path x=22
-                const isBridgeNorth = rowOffset === 0 &&
-                    CONFIG.tiles.path.includes(this.getTileAt(col, mainPathY - 1));
-                const isBridge = isBridgeNorth || (rowOffset === 3 && col === farmCrossX);
+                const isBridge = (rowOffset === 0 && this._bridgeColsCache.has(col))
+                              || (rowOffset === 3 && col === farmCrossX);
                 if (rowOffset === 1 || rowOffset === 2 || isBridge) {
                     drawTile(getPathTile(col), worldX, worldY);
                 } else {
@@ -857,6 +915,11 @@ export class TilemapRenderer {
                 }
             }
         }
+    }
+
+    /** Invalidate the north bridge column cache. Call after any path tile is added or removed. */
+    invalidateBridgeCache() {
+        this._bridgeColsCache = null;
     }
 
     // Render upper layers (above characters)

@@ -220,8 +220,10 @@ export class ReplenishZoneManager {
             // Must be a hoed tile
             if (!(overlayManager?.hoedTiles?.has(key) ?? false)) continue;
             const [tx, ty] = key.split(',').map(Number);
-            // Skip if a live crop is already present
-            if (cropManager?.getCropAt(tx, ty)) continue;
+            // Skip if a live crop is already planted on this tile.
+            // Use getCropBaseAt (not getCropAt) so the upper sprite tile of a tall
+            // crop planted on a neighbouring row doesn't falsely block this slot.
+            if (cropManager?.getCropBaseAt(tx, ty)) continue;
             this._queueReplant(zone.cropTypeIndex, tx, ty);
             queued++;
         }

@@ -66,12 +66,12 @@ export class VillagerManager {
         building.state = 'active_occupied';
         building.occupant = villagerType;
 
-        if (!isReturn) this.game.milestones.totalVillagersRecruited++;
+        if (!isReturn) this.game.incrementMilestone('totalVillagersRecruited');
 
         log.info(`Villager '${villagerType}' recruited into building ${building.id}`);
 
         // Start chimney smoke for this building
-        this.game.buildingManager?.onBuildingOccupied(building);
+        this.game.onBuildingOccupied(building);
 
         // Refresh toolbar special buildings section
         if (this.game.toolbar?.refreshBuildSubmenu) {
@@ -83,16 +83,19 @@ export class VillagerManager {
         if (idx !== -1) this._readyHouses.splice(idx, 1);
     }
 
+    /** Shared: stop chimney smoke and remove occupant from active villager list. */
+    _detachVillagerFromBuilding(building) {
+        this.game.onBuildingVacated(building);
+        this.villagers = this.villagers.filter(v => v.houseId !== building.id);
+    }
+
     /** Called when a building is deconstructed. Moves occupant to displaced queue. */
     onHouseDeconstructed(building) {
         if (building.occupant) {
             this.displacedQueue.push(building.occupant);
             log.info(`Villager '${building.occupant}' displaced from building ${building.id}`);
         }
-        // Stop chimney smoke for this building
-        this.game.buildingManager?.onBuildingVacated(building);
-        // Remove from villagers array
-        this.villagers = this.villagers.filter(v => v.houseId !== building.id);
+        this._detachVillagerFromBuilding(building);
     }
 
     /**
@@ -105,12 +108,8 @@ export class VillagerManager {
         const villagerType = building.occupant;
         this.displacedQueue.push(villagerType);
         log.info(`Villager '${villagerType}' displaced from building ${building.id} (path disconnected)`);
-        // Stop chimney smoke
-        this.game.buildingManager?.onBuildingVacated(building);
-        // Clear occupant on the building
         building.occupant = null;
-        // Remove from active villagers array
-        this.villagers = this.villagers.filter(v => v.houseId !== building.id);
+        this._detachVillagerFromBuilding(building);
     }
 
     getVillagerCount() {

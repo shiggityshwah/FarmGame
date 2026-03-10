@@ -113,15 +113,7 @@ export class TreeManager extends ResourceManager {
     }
 
     // Get tree at a tile position (checks all tiles of each tree)
-    getTreeAt(tileX, tileY) {
-        for (const tree of this.trees) {
-            if (tree.isGone) continue;
-            if (tree.containsTile(tileX, tileY)) {
-                return tree;
-            }
-        }
-        return null;
-    }
+    getTreeAt(tileX, tileY) { return this.getResourceAt(tileX, tileY); }
 
     // Chop a tree at a tile position
     // Each chop yields 1 wood - tree disappears when resources depleted
@@ -162,33 +154,20 @@ export class TreeManager extends ResourceManager {
     // Render a single tree (for depth-sorted rendering)
     renderTree(ctx, tree) {
         if (tree.isGone) return;
-
         const tileSize = this.tilemap.tileSize;
         const tiles = tree.getTilesForRender();
         if (tiles.length === 0) return;
 
-        // Apply alpha for fading trees
-        if (tree.alpha < 1) {
-            ctx.save();
-            ctx.globalAlpha = tree.alpha;
-        }
-
-        // Render all tiles of the tree
-        for (const tile of tiles) {
-            const sourceRect = this.tilemap.getTilesetSourceRect(tile.id);
-            const worldX = tile.x * tileSize;
-            const worldY = tile.y * tileSize;
-
-            ctx.drawImage(
-                this.tilemap.tilesetImage,
-                sourceRect.x, sourceRect.y, sourceRect.width, sourceRect.height,
-                worldX, worldY, tileSize, tileSize
-            );
-        }
-
-        if (tree.alpha < 1) {
-            ctx.restore();
-        }
+        this._withAlpha(ctx, tree.alpha, () => {
+            for (const tile of tiles) {
+                const src = this.tilemap.getTilesetSourceRect(tile.id);
+                ctx.drawImage(
+                    this.tilemap.tilesetImage,
+                    src.x, src.y, src.width, src.height,
+                    tile.x * tileSize, tile.y * tileSize, tileSize, tileSize
+                );
+            }
+        });
     }
 
     // renderEffects() inherited from ResourceManager

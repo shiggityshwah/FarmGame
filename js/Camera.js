@@ -59,7 +59,8 @@ export class Camera {
         return (screenY - this.canvasHeight / 2) / this.zoom + this.y;
     }
 
-    // Apply camera transformation to canvas context
+    // Apply camera transformation to canvas context.
+    // Also clears the cached visible bounds so they are recomputed on first call this frame.
     applyTransform(ctx) {
         // Reset and apply DPR scaling first
         this.dpr = window.devicePixelRatio || 1;
@@ -67,18 +68,22 @@ export class Camera {
         ctx.translate(this.canvasWidth / 2, this.canvasHeight / 2);
         ctx.scale(this.zoom, this.zoom);
         ctx.translate(-this.x, -this.y);
+        this._cachedBounds = null; // invalidate per-frame cache
     }
 
-    // Get visible world bounds (for culling)
+    // Get visible world bounds (for culling).
+    // Result is cached for the duration of a single frame — safe because camera
+    // position and zoom never change mid-frame after applyTransform() is called.
     getVisibleBounds() {
+        if (this._cachedBounds) return this._cachedBounds;
         const halfWidth = (this.canvasWidth / 2) / this.zoom;
         const halfHeight = (this.canvasHeight / 2) / this.zoom;
-
-        return {
+        this._cachedBounds = {
             left: this.x - halfWidth,
             right: this.x + halfWidth,
             top: this.y - halfHeight,
             bottom: this.y + halfHeight
         };
+        return this._cachedBounds;
     }
 }

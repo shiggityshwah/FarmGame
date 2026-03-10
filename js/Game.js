@@ -26,7 +26,7 @@ import { JobQueueUI } from './JobQueueUI.js';
 import { IdleManager } from './IdleManager.js';
 import { TravelerManager } from './TravelerManager.js';
 import { RoadsideStand } from './RoadsideStand.js';
-import { createHarvestEffect, updateEffects, renderEffects as renderFloatingEffects } from './EffectUtils.js';
+import { createHarvestEffect, updateEffects, renderEffects as renderFloatingEffects, renderEffectsMulti } from './EffectUtils.js';
 import { ReplenishZoneManager } from './ReplenishZoneManager.js';
 import { SaveManager } from './SaveManager.js';
 import { BuildingManager } from './BuildingManager.js';
@@ -158,6 +158,9 @@ export class Game {
 
         // Physics-based seed drop effects from fully-depleted trees
         this._treeSeedDropEffects = [];
+
+        // Pre-allocated depth-sort entity list — reused every frame to avoid GC pressure
+        this._depthEntities = [];
 
         // Goblin hire state (UI shows goblin controls only after hiring)
         this.goblinHired = false;
@@ -553,9 +556,11 @@ export class Game {
             this.overlayManager.setForestGenerator(this.forestGenerator);
             this.initPathEdgeOverlays();
             this.tileSelector = new TileSelector(this.tilemap, this.camera, this.overlayManager, this.cropManager);
-            this.tileSelector.setEnemyManager(this.enemyManager);
-            this.tileSelector.setOreManager(this.oreManager);
-            this.tileSelector.setTreeManager(this.treeManager);
+            this.tileSelector.setDependencies({
+                enemyManager: this.enemyManager,
+                oreManager: this.oreManager,
+                treeManager: this.treeManager,
+            });
             this.jobManager = new JobManager(this);
             // Register workers (characters that can process jobs)
             this.jobManager.registerWorker('human');
@@ -588,14 +593,14 @@ export class Game {
 
             // Initialize flower manager (spawns flowers on grass tiles over time)
             this.flowerManager = new FlowerManager(this.tilemap, this.overlayManager);
-            this.flowerManager.setCropManager(this.cropManager);
-            this.flowerManager.setTreeManager(this.treeManager);
-            this.flowerManager.setOreManager(this.oreManager);
-            this.flowerManager.setEnemyManager(this.enemyManager);
-            this.flowerManager.setForestGenerator(this.forestGenerator);
-            if (this.chunkManager) {
-                this.flowerManager.setChunkManager(this.chunkManager);
-            }
+            this.flowerManager.setDependencies({
+                cropManager: this.cropManager,
+                treeManager: this.treeManager,
+                oreManager: this.oreManager,
+                enemyManager: this.enemyManager,
+                forestGenerator: this.forestGenerator,
+                chunkManager: this.chunkManager ?? null,
+            });
 
             // Initialize traveler manager (spawns NPC travelers on the great path)
             this.travelerManager = new TravelerManager(this.tilemap);
@@ -603,18 +608,13 @@ export class Game {
             this.travelerManager.setCamera(this.camera);
             this.travelerManager.setVillagerManager(this.villagerManager);
 
-            // Connect flower manager to tile selector (for weed checking)
-            this.tileSelector.setFlowerManager(this.flowerManager);
-
-            // Connect chunk manager to tile selector (for ownership gates)
-            if (this.chunkManager) {
-                this.tileSelector.setChunkManager(this.chunkManager);
-            }
-
-            // Connect forest generator to tile selector (for forest tree selection)
-            this.tileSelector.setForestGenerator(this.forestGenerator);
-            // Give tile selector access to game for player-placed path pickaxe removal
-            this.tileSelector.setGame(this);
+            // Wire remaining TileSelector dependencies (deferred until their managers are ready)
+            this.tileSelector.setDependencies({
+                flowerManager: this.flowerManager,
+                chunkManager: this.chunkManager ?? null,
+                forestGenerator: this.forestGenerator,
+                game: this,
+            });
 
             // Connect enemy manager to pathfinder and game
             this.enemyManager.setPathfinder(this.pathfinder);
@@ -1217,6 +1217,9 @@ export class Game {
         log.info(`Chunk purchased: (${chunk.col}, ${chunk.row}) type=${chunk.type}`);
         const bounds = this.chunkManager.getChunkBounds(chunk.col, chunk.row);
 
+        // Invalidate FlowerManager spawn area cache — new chunk adds new valid spawn tiles
+        this.flowerManager?.invalidateSpawnAreasCache();
+
         // Wire expansion path helpers into ChunkManager now that overlay/path are ready
         this.chunkManager._pathPositions = this.pathPositions;
         this.chunkManager._overlayManager = this.overlayManager;
@@ -1428,6 +1431,7 @@ export class Game {
     _onPathChanged() {
         if (!this.pathConnectivity) return;
         this.pathConnectivity.invalidate();
+        this.tilemap?.invalidateBridgeCache(); // invalidate north-bridge column cache
         for (const b of this.buildingManager?.placedBuildings ?? []) {
             if (b.state === 'under_construction') continue;
             this._updateBuildingConnectivity(b);
@@ -1837,6 +1841,89 @@ export class Game {
 
     isTileOwned(x, y) {
         return this.chunkManager.isPlayerOwned(x, y);
+    }
+
+    // --- Facade methods: keep subsystems from reaching 2+ levels deep ---
+
+    isTileHoed(x, y) {
+        return !!(this.overlayManager?.hoedTiles.has(`${x},${y}`));
+    }
+
+    markTileHoed(x, y) {
+        this.overlayManager?.markTileAsHoed(x, y);
+    }
+
+    addHoleOverlay(x, y) {
+        this.overlayManager?.addOverlay(x, y, CONFIG.tiles.holeOverlay);
+    }
+
+    hasHoleOverlay(x, y) {
+        return !!(this.overlayManager?.hasOverlay(x, y, CONFIG.tiles.holeOverlay));
+    }
+
+    removeHoleOverlay(x, y) {
+        this.overlayManager?.removeOverlay(x, y);
+    }
+
+    isHoedTileEdge(x, y) {
+        return !!(this.overlayManager?.isHoedTile(x, y));
+    }
+
+    updateHoedEdgeOverlays(x, y) {
+        this.overlayManager?.updateEdgeOverlays(x, y);
+    }
+
+    incrementMilestone(key, amount = 1) {
+        if (this.milestones) this.milestones[key] += amount;
+    }
+
+    getWaterLevel(workerId) {
+        return workerId === 'goblin'
+            ? (this.goblinWaterCanWater ?? 0)
+            : (this.wateringCanWater ?? 0);
+    }
+
+    getWaterMax(workerId) {
+        return workerId === 'goblin'
+            ? (this.goblinWaterCanMaxWater ?? 20)
+            : (this.wateringCanMaxWater ?? 20);
+    }
+
+    deductWater(workerId, amount = 1) {
+        if (workerId === 'goblin') {
+            this.goblinWaterCanWater = Math.max(0, (this.goblinWaterCanWater ?? 1) - amount);
+        } else {
+            this.wateringCanWater = Math.max(0, (this.wateringCanWater ?? 1) - amount);
+        }
+    }
+
+    fillWateringCan(workerId) {
+        if (workerId === 'goblin') {
+            this.goblinWaterCanWater = this.goblinWaterCanMaxWater ?? 20;
+        } else {
+            this.wateringCanWater = this.wateringCanMaxWater ?? 20;
+        }
+    }
+
+    getCropsArray() {
+        return this.cropManager?.crops ?? [];
+    }
+
+    /** Called by JobManager when a player job preempts the idle job. */
+    onIdlePreempted() {
+        this.idleManager?.onIdlePreempted();
+    }
+
+    // --- Building lifecycle orchestration (keeps VillagerManager/BuildingManager decoupled) ---
+
+    /** Called when a villager occupies a building (starts chimney smoke, etc.). */
+    onBuildingOccupied(building) {
+        this.buildingManager?.onBuildingOccupied(building);
+    }
+
+    /** Called when a building loses its occupant (stops chimney smoke, etc.). */
+    onBuildingVacated(building) {
+        this.buildingManager?.onBuildingVacated(building);
     }
 
     /** Returns live combat targets for EnemyManager to choose from. */
@@ -2401,41 +2488,38 @@ export class Game {
 
     // ── Pixel-precise slide helpers ───────────────────────────────────────────
 
-    /** Update sub-tile slide for the human character (300 ms lerp). */
-    _updateHumanSlide(deltaTime) {
-        if (!this.humanIsSliding) return;
+    /**
+     * Shared sub-tile slide updater (300 ms lerp).
+     * Handles both human and goblin — keyed by workerId.
+     */
+    _updateSlide(workerId, deltaTime) {
         const SLIDE_DURATION = 300;
-        this.humanSlideElapsed += deltaTime;
-        const t = Math.min(1, this.humanSlideElapsed / SLIDE_DURATION);
-        this.humanPosition.x = this.humanSlideStart.x + (this.humanSlideTarget.px - this.humanSlideStart.x) * t;
-        this.humanPosition.y = this.humanSlideStart.y + (this.humanSlideTarget.py - this.humanSlideStart.y) * t;
-        if (this.humanSprites) {
-            for (const sprite of this.humanSprites) {
-                sprite.setPosition(this.humanPosition.x, this.humanPosition.y);
+        if (workerId === 'human') {
+            if (!this.humanIsSliding) return;
+            this.humanSlideElapsed += deltaTime;
+            const t = Math.min(1, this.humanSlideElapsed / SLIDE_DURATION);
+            this.humanPosition.x = this.humanSlideStart.x + (this.humanSlideTarget.px - this.humanSlideStart.x) * t;
+            this.humanPosition.y = this.humanSlideStart.y + (this.humanSlideTarget.py - this.humanSlideStart.y) * t;
+            if (this.humanSprites) {
+                for (const sprite of this.humanSprites) sprite.setPosition(this.humanPosition.x, this.humanPosition.y);
             }
-        }
-        if (t >= 1) {
-            this.humanIsSliding = false;
-            this.setAnimation('IDLE', true);
+            if (t >= 1) { this.humanIsSliding = false; this.setAnimation('IDLE', true); }
+        } else {
+            if (!this.goblinIsSliding) return;
+            this.goblinSlideElapsed += deltaTime;
+            const t = Math.min(1, this.goblinSlideElapsed / SLIDE_DURATION);
+            this.goblinPosition.x = this.goblinSlideStart.x + (this.goblinSlideTarget.px - this.goblinSlideStart.x) * t;
+            this.goblinPosition.y = this.goblinSlideStart.y + (this.goblinSlideTarget.py - this.goblinSlideStart.y) * t;
+            if (this.goblinSprite) this.goblinSprite.setPosition(this.goblinPosition.x, this.goblinPosition.y);
+            if (t >= 1) { this.goblinIsSliding = false; this.setGoblinAnimation('IDLE', true, null); }
         }
     }
 
+    /** Update sub-tile slide for the human character (300 ms lerp). */
+    _updateHumanSlide(deltaTime) { this._updateSlide('human', deltaTime); }
+
     /** Update sub-tile slide for the goblin character (300 ms lerp). */
-    _updateGoblinSlide(deltaTime) {
-        if (!this.goblinIsSliding) return;
-        const SLIDE_DURATION = 300;
-        this.goblinSlideElapsed += deltaTime;
-        const t = Math.min(1, this.goblinSlideElapsed / SLIDE_DURATION);
-        this.goblinPosition.x = this.goblinSlideStart.x + (this.goblinSlideTarget.px - this.goblinSlideStart.x) * t;
-        this.goblinPosition.y = this.goblinSlideStart.y + (this.goblinSlideTarget.py - this.goblinSlideStart.y) * t;
-        if (this.goblinSprite) {
-            this.goblinSprite.setPosition(this.goblinPosition.x, this.goblinPosition.y);
-        }
-        if (t >= 1) {
-            this.goblinIsSliding = false;
-            this.setGoblinAnimation('IDLE', true, null);
-        }
-    }
+    _updateGoblinSlide(deltaTime) { this._updateSlide('goblin', deltaTime); }
 
     /**
      * Move a worker to an exact pixel position via A* (to nearest tile) + sub-tile slide.
@@ -2866,6 +2950,9 @@ export class Game {
         // Compute visible bounds once per frame and share with all render systems
         const renderBounds = this.camera.getVisibleBounds();
 
+        // Update door-opening state for both tilemap and building renderers
+        this.tilemap.setCharacterPositions([this.humanPosition, this.goblinPosition]);
+
         // Render tilemap (chunk tiles — great path zone y=45-48 is skipped here)
         this.tilemap.render(this.ctx, this.camera);
 
@@ -2908,6 +2995,7 @@ export class Game {
 
         // Render placed building ground/wall layers (above path overlays, below entities)
         if (this.buildingManager) {
+            this.buildingManager.setCharacterPositions([this.humanPosition, this.goblinPosition]);
             this.buildingManager.render(this.ctx, this.camera, 'ground', null);
         }
 
@@ -2919,11 +3007,6 @@ export class Game {
         // Render work queue overlay (tiles waiting to be worked on)
         this.renderWorkQueueOverlay();
 
-        // Render crop dirt/ground tiles before all entities so characters always appear on top
-        if (this.cropManager) {
-            this.cropManager.renderAllCropGroundTiles(this.ctx);
-        }
-
         // Render replenishable zone borders (green=active, grey=paused) — drawn after ground tiles
         // so the border is visible on top of the dirt/hoed ground, but below crops and characters
         if (this.replenishZoneManager) {
@@ -2931,9 +3014,10 @@ export class Game {
         }
 
         // === DEPTH-SORTED RENDERING ===
-        // Collect all entities that need depth sorting
+        // Reuse pre-allocated array to avoid per-frame GC pressure
         const tileSize = this.tilemap.tileSize;
-        const depthEntities = [];
+        const depthEntities = this._depthEntities;
+        depthEntities.length = 0;
 
         // Add crops
         if (this.cropManager) {
@@ -3100,6 +3184,7 @@ export class Game {
         for (const item of depthEntities) {
             switch (item.type) {
                 case 'crop':
+                    this.cropManager.renderCropGroundTile(this.ctx, item.entity);
                     this.cropManager.renderCrop(this.ctx, item.entity);
                     break;
                 case 'ore':
@@ -3199,28 +3284,26 @@ export class Game {
             this.buildingManager.renderChimneys(this.ctx, this.camera);
         }
 
-        // Render effects on top of everything (floating +1 icons, etc.)
-        if (this.cropManager) {
-            this.cropManager.renderEffects(this.ctx, this.camera);
+        // Render all standard floating icon effects in one batched pass (1 save/restore total)
+        {
+            const tilesetImage = this.tilemap.tilesetImage;
+            const getTilesetSourceRect = id => this.tilemap.getTilesetSourceRect(id);
+            const tileSize = this.tilemap.tileSize;
+            renderEffectsMulti(this.ctx, [
+                this.cropManager?.effects,
+                this.oreManager?.effects,
+                this.treeManager?.effects,
+                this.forestGenerator?.choppingEffects,
+                this.flowerManager?.harvestEffects,
+                this._seedEffects,
+            ], tilesetImage, getTilesetSourceRect, tileSize);
         }
-        if (this.oreManager) {
-            this.oreManager.renderEffects(this.ctx, this.camera);
-        }
-        if (this.treeManager) {
-            this.treeManager.renderEffects(this.ctx, this.camera);
-        }
+        // FlowerManager weed click effects (physics-based leaf particles — not standard icons)
         if (this.flowerManager) {
-            this.flowerManager.renderEffects(this.ctx, this.camera);
-        }
-        if (this.forestGenerator) {
-            this.forestGenerator.renderEffects(this.ctx, this.camera);
+            this.flowerManager.renderWeedEffects(this.ctx, this.camera);
         }
         if (this.roadsideStand) {
             this.roadsideStand.renderSaleEffects(this.ctx);
-        }
-        if (this._seedEffects.length > 0) {
-            renderFloatingEffects(this.ctx, this._seedEffects, this.tilemap.tilesetImage,
-                id => this.tilemap.getTilesetSourceRect(id), this.tilemap.tileSize);
         }
 
         // Render physics-based tree seed drop effects (1/3-scale seed icons)

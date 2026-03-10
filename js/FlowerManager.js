@@ -1,6 +1,7 @@
 import { Flower, FLOWER_TYPES, getRandomFlowerType, getRandomFlowerTile } from './Flower.js';
 import { Weed, WEED_STAGES } from './Weed.js';
 import { CONFIG } from './config.js';
+import { withAlpha } from './EffectUtils.js';
 
 export class FlowerManager {
     constructor(tilemap, overlayManager) {
@@ -10,6 +11,8 @@ export class FlowerManager {
         this.weeds = [];
         this.harvestEffects = [];
         this.weedClickEffects = []; // Leaf splash effects when clicking weeds
+        // O(1) tile → flower lookup. Kept in sync with this.flowers on add/remove.
+        this._flowerTileMap = new Map(); // "x,y" → Flower
 
         // Spawning configuration
         // Fixed global spawn interval — one spawn attempt every N ms at full rate.
@@ -30,35 +33,8 @@ export class FlowerManager {
         this.hoedTileIds = new Set(CONFIG.tiles.hoedGround);
     }
 
-    // Set the crop manager reference for checking occupied tiles
-    setCropManager(cropManager) {
-        this.cropManager = cropManager;
-    }
-
-    // Set the tree manager reference for checking occupied tiles
-    setTreeManager(treeManager) {
-        this.treeManager = treeManager;
-    }
-
-    // Set the ore manager reference for checking occupied tiles
-    setOreManager(oreManager) {
-        this.oreManager = oreManager;
-    }
-
-    // Set the enemy manager reference for checking occupied tiles
-    setEnemyManager(enemyManager) {
-        this.enemyManager = enemyManager;
-    }
-
-    // Set the forest generator reference for checking forest tiles
-    setForestGenerator(forestGenerator) {
-        this.forestGenerator = forestGenerator;
-    }
-
-    // Set the chunk manager reference for iterating allocated chunks
-    setChunkManager(chunkManager) {
-        this.chunkManager = chunkManager;
-    }
+    /** Inject multiple dependencies at once. Replaces individual setXxx() setters. */
+    setDependencies(deps) { Object.assign(this, deps); }
 
     // Calculate the number of grass tiles in the spawnable area (unhoed grass only).
     // Result is cached for 5 seconds since this only changes when tiles are hoed.
@@ -216,8 +192,11 @@ export class FlowerManager {
         return { farmLeft: 0, farmRight: this.tilemap.mapWidth, grassStartY, farmBottom: this.tilemap.mapHeight };
     }
 
-    // Returns spawn area rects for all valid spawn zones (farm chunk grass + owned + town chunks)
+    // Returns spawn area rects for all valid spawn zones (farm chunk grass + owned + town chunks).
+    // Cached until invalidateSpawnAreasCache() is called (e.g. on chunk purchase).
     _getSpawnAreas() {
+        if (this._spawnAreasCache) return this._spawnAreasCache;
+
         const areas = [];
         const { farmLeft, farmRight, grassStartY, farmBottom } = this._getFarmBounds();
         areas.push({ left: farmLeft, right: farmRight, top: grassStartY, bottom: farmBottom });
@@ -233,7 +212,14 @@ export class FlowerManager {
             }
         }
 
+        this._spawnAreasCache = areas;
         return areas;
+    }
+
+    /** Invalidate the spawn area + grass count caches. Call on chunk purchase or map change. */
+    invalidateSpawnAreasCache() {
+        this._spawnAreasCache = null;
+        this.invalidateGrassCache();
     }
 
     // Get the effective max flower+weed count, scaling with available grass tiles.
@@ -356,6 +342,7 @@ export class FlowerManager {
 
         const flower = new Flower(tileX, tileY, flowerType, tileId);
         this.flowers.push(flower);
+        this._flowerTileMap.set(`${tileX},${tileY}`, flower);
         return flower;
     }
 
@@ -368,13 +355,8 @@ export class FlowerManager {
 
     // Get flower at a specific tile position
     getFlowerAt(tileX, tileY) {
-        for (const flower of this.flowers) {
-            if (flower.isGone || flower.isHarvested) continue;
-            if (flower.containsTile(tileX, tileY)) {
-                return flower;
-            }
-        }
-        return null;
+        const flower = this._flowerTileMap.get(`${tileX},${tileY}`);
+        return (flower && !flower.isGone && !flower.isHarvested) ? flower : null;
     }
 
     // Get weed at a specific tile position
@@ -463,222 +445,124 @@ export class FlowerManager {
 
         // Clean up gone flowers and weeds
         for (let i = this.flowers.length - 1; i >= 0; i--) {
-            if (this.flowers[i].isGone) this.flowers.splice(i, 1);
+            if (this.flowers[i].isGone) {
+                const f = this.flowers[i];
+                this._flowerTileMap.delete(`${f.tileX},${f.tileY}`);
+                this.flowers.splice(i, 1);
+            }
         }
         for (let i = this.weeds.length - 1; i >= 0; i--) {
             if (this.weeds[i].isGone) this.weeds.splice(i, 1);
         }
 
-        // Update harvest effects
-        for (let i = this.harvestEffects.length - 1; i >= 0; i--) {
-            const effect = this.harvestEffects[i];
-            effect.timer += deltaTime;
-            effect.y -= deltaTime * 0.05; // Float upward
-            effect.alpha = 1 - (effect.timer / effect.duration);
-
-            if (effect.timer >= effect.duration) {
-                this.harvestEffects.splice(i, 1);
+        // Update harvest effects (mark-and-sweep — avoids O(n) splice shifts)
+        {
+            let hasExpired = false;
+            for (let i = 0; i < this.harvestEffects.length; i++) {
+                const effect = this.harvestEffects[i];
+                effect.timer += deltaTime;
+                effect.y -= deltaTime * 0.05; // Float upward
+                effect.alpha = 1 - (effect.timer / effect.duration);
+                if (effect.timer >= effect.duration) hasExpired = true;
+            }
+            if (hasExpired) {
+                let write = 0;
+                for (let i = 0; i < this.harvestEffects.length; i++) {
+                    if (this.harvestEffects[i].timer < this.harvestEffects[i].duration) {
+                        this.harvestEffects[write++] = this.harvestEffects[i];
+                    }
+                }
+                this.harvestEffects.length = write;
             }
         }
 
-        // Update weed click effects (leaf splash)
-        for (let i = this.weedClickEffects.length - 1; i >= 0; i--) {
-            const effect = this.weedClickEffects[i];
-            effect.timer += deltaTime;
-            
-            // Update position
-            effect.x += effect.vx * (deltaTime / 16); // Normalize to 60fps
-            effect.y += effect.vy * (deltaTime / 16);
-            
-            // Apply lighter gravity (smaller effect)
-            effect.vy += 0.15 * (deltaTime / 16);
-            
-            // Update rotation
-            effect.rotation += effect.rotationSpeed * (deltaTime / 16);
-            
-            // Fade out
-            effect.alpha = 1 - (effect.timer / effect.duration);
-            
-            // Shrink slightly
-            effect.size *= 0.998;
-
-            if (effect.timer >= effect.duration || effect.alpha <= 0) {
-                this.weedClickEffects.splice(i, 1);
+        // Update weed click effects (mark-and-sweep)
+        {
+            let hasExpired = false;
+            for (let i = 0; i < this.weedClickEffects.length; i++) {
+                const effect = this.weedClickEffects[i];
+                effect.timer += deltaTime;
+                effect.x += effect.vx * (deltaTime / 16);
+                effect.y += effect.vy * (deltaTime / 16);
+                effect.vy += 0.15 * (deltaTime / 16);
+                effect.rotation += effect.rotationSpeed * (deltaTime / 16);
+                effect.alpha = 1 - (effect.timer / effect.duration);
+                effect.size *= 0.998;
+                if (effect.timer >= effect.duration || effect.alpha <= 0) hasExpired = true;
+            }
+            if (hasExpired) {
+                let write = 0;
+                for (let i = 0; i < this.weedClickEffects.length; i++) {
+                    const e = this.weedClickEffects[i];
+                    if (e.timer < e.duration && e.alpha > 0) this.weedClickEffects[write++] = e;
+                }
+                this.weedClickEffects.length = write;
             }
         }
     }
 
-    // Render all flowers and weeds
+    // Render all flowers and weeds (non-depth-sorted pass — not used in chunk mode)
     render(ctx, camera) {
-        const tileSize = this.tilemap.tileSize;
-
-        // Render flowers
-        for (const flower of this.flowers) {
-            if (flower.isGone) continue;
-
-            const tileData = flower.getTileData();
-            const sourceRect = this.tilemap.getTilesetSourceRect(tileData.id);
-            const worldX = flower.tileX * tileSize;
-            const worldY = (flower.tileY + tileData.offsetY) * tileSize;
-
-            if (flower.alpha < 1) {
-                ctx.save();
-                ctx.globalAlpha = flower.alpha;
-            }
-
-            ctx.drawImage(
-                this.tilemap.tilesetImage,
-                sourceRect.x, sourceRect.y, sourceRect.width, sourceRect.height,
-                worldX, worldY, tileSize, tileSize
-            );
-
-            if (flower.alpha < 1) {
-                ctx.restore();
-            }
-        }
-
-        // Render weeds
-        for (const weed of this.weeds) {
-            if (weed.isGone) continue;
-
-            const tileDataArray = weed.getTileData(); // Returns array of tiles
-            const worldX = weed.tileX * tileSize;
-
-            if (weed.alpha < 1) {
-                ctx.save();
-                ctx.globalAlpha = weed.alpha;
-            }
-
-            // Render all tiles for this weed (multi-tile weeds have multiple tiles)
-            for (const tileData of tileDataArray) {
-                const sourceRect = this.tilemap.getTilesetSourceRect(tileData.id);
-                const worldY = (weed.tileY + tileData.offsetY) * tileSize;
-
-                ctx.drawImage(
-                    this.tilemap.tilesetImage,
-                    sourceRect.x, sourceRect.y, sourceRect.width, sourceRect.height,
-                    worldX, worldY, tileSize, tileSize
-                );
-            }
-
-            if (weed.alpha < 1) {
-                ctx.restore();
-            }
-        }
+        for (const flower of this.flowers) { if (!flower.isGone) this.renderFlower(ctx, flower); }
+        for (const weed   of this.weeds)   { if (!weed.isGone)   this.renderWeed(ctx, weed); }
     }
 
     // Render a single flower (for depth-sorted rendering)
     renderFlower(ctx, flower) {
         if (flower.isGone) return;
-
         const tileSize = this.tilemap.tileSize;
         const tileData = flower.getTileData();
-        const sourceRect = this.tilemap.getTilesetSourceRect(tileData.id);
+        const src = this.tilemap.getTilesetSourceRect(tileData.id);
         const worldX = flower.tileX * tileSize;
         const worldY = (flower.tileY + tileData.offsetY) * tileSize;
-
-        if (flower.alpha < 1) {
-            ctx.save();
-            ctx.globalAlpha = flower.alpha;
-        }
-
-        ctx.drawImage(
-            this.tilemap.tilesetImage,
-            sourceRect.x, sourceRect.y, sourceRect.width, sourceRect.height,
-            worldX, worldY, tileSize, tileSize
+        withAlpha(ctx, flower.alpha, () =>
+            ctx.drawImage(this.tilemap.tilesetImage, src.x, src.y, src.width, src.height, worldX, worldY, tileSize, tileSize)
         );
-
-        if (flower.alpha < 1) {
-            ctx.restore();
-        }
     }
 
     // Render a single weed (for depth-sorted rendering)
     renderWeed(ctx, weed) {
         if (weed.isGone) return;
-
         const tileSize = this.tilemap.tileSize;
-        const tileDataArray = weed.getTileData(); // Returns array of tiles
+        const tileDataArray = weed.getTileData();
         const worldX = weed.tileX * tileSize;
-
-        if (weed.alpha < 1) {
-            ctx.save();
-            ctx.globalAlpha = weed.alpha;
-        }
-
-        // Render all tiles for this weed (multi-tile weeds have multiple tiles)
-        for (const tileData of tileDataArray) {
-            const sourceRect = this.tilemap.getTilesetSourceRect(tileData.id);
-            const worldY = (weed.tileY + tileData.offsetY) * tileSize;
-
-            ctx.drawImage(
-                this.tilemap.tilesetImage,
-                sourceRect.x, sourceRect.y, sourceRect.width, sourceRect.height,
-                worldX, worldY, tileSize, tileSize
-            );
-        }
-
-        if (weed.alpha < 1) {
-            ctx.restore();
-        }
+        withAlpha(ctx, weed.alpha, () => {
+            for (const tileData of tileDataArray) {
+                const src = this.tilemap.getTilesetSourceRect(tileData.id);
+                ctx.drawImage(
+                    this.tilemap.tilesetImage,
+                    src.x, src.y, src.width, src.height,
+                    worldX, (weed.tileY + tileData.offsetY) * tileSize, tileSize, tileSize
+                );
+            }
+        });
     }
 
-    // Render harvest effects
-    renderEffects(ctx, camera) {
-        const tileSize = this.tilemap.tileSize;
+    // renderEffects() is now a no-op: harvestEffects are batched by Game.js via renderEffectsMulti.
+    renderEffects(ctx, camera) {}
 
-        for (const effect of this.harvestEffects) {
-            ctx.save();
-            ctx.globalAlpha = effect.alpha;
-
-            const sourceRect = this.tilemap.getTilesetSourceRect(effect.tileId);
-            ctx.drawImage(
-                this.tilemap.tilesetImage,
-                sourceRect.x, sourceRect.y, sourceRect.width, sourceRect.height,
-                effect.x - tileSize / 2, effect.y - tileSize / 2,
-                tileSize, tileSize
-            );
-
-            // Draw "+1" or "+2" text
-            ctx.fillStyle = '#ffffff';
-            ctx.strokeStyle = '#000000';
-            ctx.lineWidth = 2;
-            ctx.font = 'bold 8px Arial';
-            ctx.textAlign = 'center';
-            const text = '+1';
-            ctx.strokeText(text, effect.x, effect.y - tileSize / 2 - 2);
-            ctx.fillText(text, effect.x, effect.y - tileSize / 2 - 2);
-
-            ctx.restore();
-        }
-
-        // Render weed click effects (leaf splash)
+    // Render physics-based weed click effects (leaf splash) — not part of the shared effect bus.
+    renderWeedEffects(ctx, camera) {
         for (const effect of this.weedClickEffects) {
-            ctx.save();
-            ctx.globalAlpha = effect.alpha;
-            ctx.translate(effect.x, effect.y);
-            ctx.rotate(effect.rotation);
-            
-            // Draw leaf shape (simple oval/leaf shape)
-            ctx.fillStyle = effect.color;
-            ctx.strokeStyle = 'rgba(0, 0, 0, 0.3)';
-            ctx.lineWidth = 1;
-            
-            // Draw a leaf shape (oval with a point)
-            ctx.beginPath();
-            ctx.ellipse(0, 0, effect.size, effect.size * 0.6, 0, 0, Math.PI * 2);
-            ctx.fill();
-            ctx.stroke();
-            
-            // Add a small stem/vein
-            ctx.beginPath();
-            ctx.moveTo(0, -effect.size);
-            ctx.lineTo(0, effect.size);
-            ctx.strokeStyle = 'rgba(0, 0, 0, 0.2)';
-            ctx.lineWidth = 0.5;
-            ctx.stroke();
-            
-            ctx.restore();
+            withAlpha(ctx, effect.alpha, () => {
+                ctx.save();
+                ctx.translate(effect.x, effect.y);
+                ctx.rotate(effect.rotation);
+                ctx.fillStyle = effect.color;
+                ctx.strokeStyle = 'rgba(0, 0, 0, 0.3)';
+                ctx.lineWidth = 1;
+                ctx.beginPath();
+                ctx.ellipse(0, 0, effect.size, effect.size * 0.6, 0, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.stroke();
+                ctx.beginPath();
+                ctx.moveTo(0, -effect.size);
+                ctx.lineTo(0, effect.size);
+                ctx.strokeStyle = 'rgba(0, 0, 0, 0.2)';
+                ctx.lineWidth = 0.5;
+                ctx.stroke();
+                ctx.restore();
+            });
         }
     }
 

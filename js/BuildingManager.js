@@ -16,9 +16,20 @@ import { SpriteAnimator } from './SpriteAnimator.js';
 
 const log = Logger.create('BuildingManager');
 
+/** Closed front door tile IDs — replaced with OPEN_DOOR_TILE when a character stands on them. */
+const CLOSED_DOOR_TILES = new Set([780, 844, 976, 1488, 2000, 2512, 3024]);
+const OPEN_DOOR_TILE = 909;
+
 export class BuildingManager {
     constructor(tilemap) {
         this.tilemap = tilemap;
+
+        /**
+         * Set of tile coordinate strings ("x,y") currently occupied by any character.
+         * Updated each frame by Game.js before render passes.
+         * @type {Set<string>}
+         */
+        this._characterTiles = new Set();
 
         /** All currently placed buildings (under construction and complete). */
         this.placedBuildings = [];
@@ -42,6 +53,23 @@ export class BuildingManager {
         // Chimney smoke per occupied small_house
         // Map<buildingId, { animator: SpriteAnimator, pauseTimer: number }>
         this._chimneySmokers = new Map();
+    }
+
+    /**
+     * Update the set of tile positions occupied by characters.
+     * Pass an array of {x, y} pixel positions; tiles are computed internally.
+     * Call this each frame before any render pass.
+     * @param {Array<{x:number,y:number}|null>} positions
+     */
+    setCharacterPositions(positions) {
+        this._characterTiles.clear();
+        const tileSize = this.tilemap.tileSize;
+        for (const pos of positions) {
+            if (!pos) continue;
+            const tx = Math.floor(pos.x / tileSize);
+            const ty = Math.floor(pos.y / tileSize);
+            this._characterTiles.add(`${tx},${ty}`);
+        }
     }
 
     /** Set the tileset image used for rendering buildings. */
@@ -436,8 +464,19 @@ export class BuildingManager {
             if (layer.renderPass !== pass) continue;
             for (let row = 0; row < layer.tiles.length; row++) {
                 for (let col = 0; col < (layer.tiles[row]?.length ?? 0); col++) {
-                    const tileId = this._applyColorOffset(layer.tiles[row][col], building);
+                    let tileId = this._applyColorOffset(layer.tiles[row][col], building);
                     if (tileId < 0) continue;
+
+                    // Swap closed door → open door when a character is on this tile or one tile south
+                    if (CLOSED_DOOR_TILES.has(tileId)) {
+                        const worldTileX = building.tileX + col;
+                        const worldTileY = building.tileY + row;
+                        if (this._characterTiles.has(`${worldTileX},${worldTileY}`) ||
+                            this._characterTiles.has(`${worldTileX},${worldTileY + 1}`)) {
+                            tileId = OPEN_DOOR_TILE;
+                        }
+                    }
+
                     const src = this.tilemap.getTilesetSourceRect(tileId);
                     if (!src) continue;
                     const dx = worldX + col * tileSize;
